@@ -15,6 +15,7 @@ import {
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { MODELS } from "@/app/components/assistant/ModelToggle";
 import {
+    OPENAI_ENABLED,
     isModelAvailable,
     modelGroupToProvider,
 } from "@/app/lib/modelAvailability";
@@ -61,14 +62,13 @@ export default function ModelsAndApiKeysPage() {
                     </h2>
                 </div>
                 <p className="text-sm text-gray-500 mb-4 max-w-xl">
-                    You must provide your own API keys for the app to work or
-                    add your API keys into the .env file if you are running your
-                    own instance of Mike.
+                    Add your own Claude or Gemini API keys here. OpenAI models
+                    are managed by the Mike server and do not require a user API
+                    key.
                 </p>
                 <p className="text-xs text-gray-400 mb-4 max-w-xl">
                     Title generation automatically routes to the cheapest model
-                    of whichever provider you&rsquo;ve configured (Gemini Flash
-                    Lite if a Gemini key is set, otherwise Claude Haiku).
+                    of whichever provider is available.
                 </p>
                 <div className="space-y-4 max-w-xl">
                     <ApiKeyField
@@ -105,7 +105,14 @@ function TabularModelDropdown({
     const [isOpen, setIsOpen] = useState(false);
     const selected = MODELS.find((m) => m.id === value);
     const selectedAvailable = isModelAvailable(value, apiKeys);
-    const groups: ("Anthropic" | "Google")[] = ["Anthropic", "Google"];
+    const visibleModels = MODELS.filter(
+        (m) => OPENAI_ENABLED || m.group !== "OpenAI",
+    );
+    const groups: ("OpenAI" | "Anthropic" | "Google")[] = [
+        "OpenAI",
+        "Anthropic",
+        "Google",
+    ];
 
     return (
         <DropdownMenu onOpenChange={setIsOpen}>
@@ -132,9 +139,10 @@ function TabularModelDropdown({
                 style={{ width: "var(--radix-dropdown-menu-trigger-width)" }}
                 align="start"
             >
-                {groups.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
-                    if (items.length === 0) return null;
+                {groups.filter((group) =>
+                    visibleModels.some((m) => m.group === group),
+                ).map((group, gi) => {
+                    const items = visibleModels.filter((m) => m.group === group);
                     return (
                         <div key={group}>
                             {gi > 0 && <DropdownMenuSeparator />}
@@ -154,7 +162,9 @@ function TabularModelDropdown({
                                         onSelect={() => onChange(m.id)}
                                         title={
                                             !available
-                                                ? `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
+                                                ? provider === "openai"
+                                                    ? "Ask an administrator to enable OpenAI for this deployment"
+                                                    : `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
                                                 : undefined
                                         }
                                     >

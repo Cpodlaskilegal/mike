@@ -3,6 +3,7 @@ import {
     resolveModel,
     DEFAULT_TITLE_MODEL,
     DEFAULT_TABULAR_MODEL,
+    OPENAI_LOW_MODELS,
     type UserApiKeys,
 } from "./llm";
 
@@ -19,6 +20,7 @@ export type UserModelSettings = {
 function resolveTitleModel(apiKeys: UserApiKeys): string {
     if (apiKeys.gemini?.trim()) return DEFAULT_TITLE_MODEL;
     if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
+    if (process.env.OPENAI_API_KEY?.trim()) return OPENAI_LOW_MODELS[0];
     return DEFAULT_TITLE_MODEL;
 }
 

@@ -27,7 +27,7 @@ under resource group `mike-prod-rg` in `eastus2`.
 - Container App secrets hold the database URL, storage key, registry password,
   and download signing secret.
 - Model provider keys are intentionally unset in Azure until real Gemini,
-  Anthropic, OpenRouter, or Resend secrets are provided.
+  Anthropic, OpenAI, OpenRouter, or Resend secrets are provided.
 - The database schema for a clean Azure PostgreSQL install is
   `backend/migrations/azure_postgres_schema.sql`.
 - Azure CLI has a stale local default group on this machine, so use

@@ -10,15 +10,19 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isModelAvailable } from "@/app/lib/modelAvailability";
+import { OPENAI_ENABLED, isModelAvailable } from "@/app/lib/modelAvailability";
 
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google";
+    group: "Anthropic" | "Google" | "OpenAI";
 }
 
 export const MODELS: ModelOption[] = [
+    { id: "gpt-5.5-pro", label: "GPT-5.5 Pro", group: "OpenAI" },
+    { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
+    { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
+    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", group: "OpenAI" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
     { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
@@ -29,7 +33,7 @@ export const DEFAULT_MODEL_ID = "gemini-3-flash-preview";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
-const GROUP_ORDER: ModelOption["group"][] = ["Anthropic", "Google"];
+const GROUP_ORDER: ModelOption["group"][] = ["OpenAI", "Anthropic", "Google"];
 
 interface Props {
     value: string;
@@ -44,6 +48,9 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
     const [isOpen, setIsOpen] = useState(false);
     const selected = MODELS.find((m) => m.id === value);
     const selectedLabel = selected?.label ?? "Model";
+    const visibleModels = MODELS.filter(
+        (m) => OPENAI_ENABLED || m.group !== "OpenAI",
+    );
     const selectedAvailable = apiKeys
         ? isModelAvailable(value, apiKeys)
         : true;
@@ -70,9 +77,10 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 z-50" side="top" align="start">
-                {GROUP_ORDER.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
-                    if (items.length === 0) return null;
+                {GROUP_ORDER.filter((group) =>
+                    visibleModels.some((m) => m.group === group),
+                ).map((group, gi) => {
+                    const items = visibleModels.filter((m) => m.group === group);
                     return (
                         <div key={group}>
                             {gi > 0 && <DropdownMenuSeparator />}

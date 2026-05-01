@@ -20,7 +20,10 @@ export function ApiKeyMissingModal({ open, onClose, provider, message }: Props) 
     const providerName = provider ? providerLabel(provider) : "this provider";
     const body =
         message ??
-        `You haven't added a ${providerName} API key yet. Add one in your account settings to use this model.`;
+        (provider === "openai"
+            ? "OpenAI models are not enabled on this Mike deployment. Ask an administrator to configure the server OpenAI key."
+            : `You haven't added a ${providerName} API key yet. Add one in your account settings to use this model.`);
+    const canConfigureInAccount = provider !== "openai";
 
     const handleGoToAccount = () => {
         onClose();
@@ -64,12 +67,14 @@ export function ApiKeyMissingModal({ open, onClose, provider, message }: Props) 
                     >
                         Cancel
                     </button>
-                    <button
-                        onClick={handleGoToAccount}
-                        className="rounded-lg bg-gray-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-700"
-                    >
-                        Go to account settings
-                    </button>
+                    {canConfigureInAccount && (
+                        <button
+                            onClick={handleGoToAccount}
+                            className="rounded-lg bg-gray-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-700"
+                        >
+                            Go to account settings
+                        </button>
+                    )}
                 </div>
             </div>
         </div>,
