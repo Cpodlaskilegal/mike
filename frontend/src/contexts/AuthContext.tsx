@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const checkUser = async () => {
             const {
                 data: { session },
-            } = await supabase.auth.getSession();
+            } = await supabase.auth.getSession({ interactive: true });
 
             if (session?.user) {
                 setUser({

@@ -17,7 +17,7 @@ const msal =
               auth: {
                   clientId,
                   authority: `https://login.microsoftonline.com/${tenantId}`,
-                  redirectUri: window.location.origin,
+                  redirectUri: `${window.location.origin}/login`,
               },
               cache: {
                   cacheLocation: "localStorage",
@@ -25,13 +25,20 @@ const msal =
           });
 
 let initPromise: Promise<void> | null = null;
+let redirectResult: AuthenticationResult | null = null;
 
 async function ensureMsal() {
     if (!msal) throw new Error("Authentication is only available in the browser");
     initPromise ??= msal.initialize().then(() => {
-        const redirectPromise = msal.handleRedirectPromise();
+        const redirectPromise = msal.handleRedirectPromise({
+            navigateToLoginRequestUrl: false,
+        });
         return redirectPromise.then((result) => {
-            if (result?.account) msal.setActiveAccount(result.account);
+            if (result?.account) {
+                redirectResult = result;
+                msal.setActiveAccount(result.account);
+                window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
+            }
         });
     });
     await initPromise;
@@ -50,25 +57,47 @@ function accountToUser(account: AccountInfo) {
     };
 }
 
-async function acquireToken(): Promise<AuthenticationResult | null> {
+async function acquireToken(options?: {
+    interactive?: boolean;
+}): Promise<AuthenticationResult | null> {
     const app = await ensureMsal();
     const account = app.getActiveAccount() ?? app.getAllAccounts()[0];
     if (!account || !apiScope) return null;
+    if (
+        redirectResult?.account?.homeAccountId === account.homeAccountId &&
+        redirectResult.accessToken
+    ) {
+        return redirectResult;
+    }
     try {
-        return await app.acquireTokenSilent({ account, scopes: [apiScope] });
+        const result = await app.acquireTokenSilent({ account, scopes: [apiScope] });
+        window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
+        return result;
     } catch (error) {
-        if (error instanceof InteractionRequiredAuthError) return null;
+        if (error instanceof InteractionRequiredAuthError) {
+            if (
+                options?.interactive &&
+                !window.sessionStorage.getItem("mikeApiTokenRedirectStarted")
+            ) {
+                window.sessionStorage.setItem("mikeApiTokenRedirectStarted", "1");
+                await app.acquireTokenRedirect({
+                    account,
+                    scopes: [apiScope],
+                });
+            }
+            return null;
+        }
         throw error;
     }
 }
 
 export const supabase = {
     auth: {
-        async getSession() {
+        async getSession(options?: { interactive?: boolean }) {
             const app = await ensureMsal();
             const account = app.getActiveAccount() ?? app.getAllAccounts()[0];
             if (!account) return { data: { session: null }, error: null };
-            const token = await acquireToken();
+            const token = await acquireToken(options);
             return {
                 data: {
                     session: token
@@ -83,6 +112,7 @@ export const supabase = {
         },
         async signInWithPassword(_credentials?: unknown) {
             const app = await ensureMsal();
+            window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
             await app.loginRedirect({
                 scopes: apiScope ? [apiScope] : [],
                 prompt: "select_account",
