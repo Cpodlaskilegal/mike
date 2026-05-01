@@ -2,6 +2,7 @@ import {
     AccountInfo,
     AuthenticationResult,
     EventType,
+    InteractionRequiredAuthError,
     PublicClientApplication,
 } from "@azure/msal-browser";
 
@@ -55,8 +56,9 @@ async function acquireToken(): Promise<AuthenticationResult | null> {
     if (!account || !apiScope) return null;
     try {
         return await app.acquireTokenSilent({ account, scopes: [apiScope] });
-    } catch {
-        return await app.acquireTokenPopup({ account, scopes: [apiScope] });
+    } catch (error) {
+        if (error instanceof InteractionRequiredAuthError) return null;
+        throw error;
     }
 }
 
@@ -81,12 +83,11 @@ export const supabase = {
         },
         async signInWithPassword(_credentials?: unknown) {
             const app = await ensureMsal();
-            const result = await app.loginPopup({
+            await app.loginRedirect({
                 scopes: apiScope ? [apiScope] : [],
                 prompt: "select_account",
             });
-            app.setActiveAccount(result.account);
-            return { data: { session: { access_token: result.accessToken, user: accountToUser(result.account) } }, error: null };
+            return { data: { session: null }, error: null };
         },
         async signUp(_credentials?: unknown) {
             return this.signInWithPassword();
@@ -94,7 +95,7 @@ export const supabase = {
         async signOut() {
             const app = await ensureMsal();
             const account = app.getActiveAccount();
-            if (account) await app.logoutPopup({ account });
+            if (account) await app.logoutRedirect({ account });
         },
         onAuthStateChange(callback: (_event: string, session: any) => void) {
             let callbackId: string | null = null;

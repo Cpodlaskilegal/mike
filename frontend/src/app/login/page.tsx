@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
 import { SiteLogo } from "@/components/site-logo";
 import { useAuth } from "@/contexts/AuthContext";
 export default function LoginPage() {
@@ -29,7 +28,6 @@ export default function LoginPage() {
 
             if (error) throw error;
 
-            router.push("/assistant");
         } catch (error: unknown) {
             setError(
                 error instanceof Error
@@ -49,21 +47,10 @@ export default function LoginPage() {
             <div className="w-full max-w-md">
                 {/* Login Form */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-8">
-                    <div className="flex justify-between items-center mb-6">
+                    <div className="mb-6">
                         <h2 className="text-left text-2xl font-serif">
                             Log In
                         </h2>
-                        <div className="bg-gray-100 p-1 rounded-md flex text-xs font-medium">
-                            <span className="text-gray-600 px-3 py-1 bg-white rounded-sm shadow-sm">
-                                Log in
-                            </span>
-                            <Link
-                                href="/signup"
-                                className="px-3 py-1 text-gray-500 hover:text-gray-900"
-                            >
-                                Sign up
-                            </Link>
-                        </div>
                     </div>
                     <form onSubmit={handleLogin} className="space-y-4">
                         <p className="text-sm leading-6 text-gray-600">
@@ -81,7 +68,9 @@ export default function LoginPage() {
                             disabled={loading}
                             className="w-full mt-5 bg-black hover:bg-gray-900 text-white"
                         >
-                            {loading ? "Opening Microsoft..." : "Continue with Microsoft"}
+                            {loading
+                                ? "Opening Microsoft..."
+                                : "Continue with Microsoft"}
                         </Button>
                     </form>
                 </div>

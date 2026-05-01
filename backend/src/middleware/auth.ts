@@ -38,7 +38,7 @@ export async function requireAuth(
     const token = auth.slice(7).trim();
     const { payload } = await jwtVerify(token, jwks, {
       issuer,
-      audience,
+      audience: [audience, `api://${audience}`],
     });
     const claims = payload as EntraClaims;
     const userId = claims.oid ?? claims.sub;
