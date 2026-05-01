@@ -525,7 +525,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
                 ...new Set(
                     (existingCells ?? []).map((cell) => cell.document_id),
                 ),
-            ];
+            ] as string[];
             if (documentIds.length === 0 && existingReview.project_id) {
                 const { data: projectDocs } = await db
                     .from("documents")

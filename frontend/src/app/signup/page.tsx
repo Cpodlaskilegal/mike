@@ -9,13 +9,11 @@ import Link from "next/link";
 import { SiteLogo } from "@/components/site-logo";
 import { CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { updateUserProfile } from "@/app/lib/mikeApi";
 
 export default function SignupPage() {
     const router = useRouter();
     const { isAuthenticated, authLoading } = useAuth();
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
     const [name, setName] = useState("");
     const [organisation, setOrganisation] = useState("");
     const [loading, setLoading] = useState(false);
@@ -33,25 +31,8 @@ export default function SignupPage() {
         setLoading(true);
         setError(null);
 
-        // Validate passwords match
-        if (password !== confirmPassword) {
-            setError("Passwords do not match");
-            setLoading(false);
-            return;
-        }
-
-        // Validate password length
-        if (password.length < 6) {
-            setError("Password must be at least 6 characters");
-            setLoading(false);
-            return;
-        }
-
         try {
-            const { data, error } = await supabase.auth.signUp({
-                email,
-                password,
-            });
+            const { data, error } = await supabase.auth.signUp();
 
             if (error) throw error;
 
@@ -59,32 +40,27 @@ export default function SignupPage() {
                 const trimmedName = name.trim();
                 const trimmedOrg = organisation.trim();
                 if (trimmedName || trimmedOrg) {
-                    // The handle_new_user DB trigger creates the
-                    // user_profiles row synchronously on auth.users insert,
-                    // so we UPDATE rather than upsert — RLS permits update
-                    // of the user's own row but blocks self-INSERT.
-                    const { error: profileError } = await supabase
-                        .from("user_profiles")
-                        .update({
-                            ...(trimmedName && { display_name: trimmedName }),
-                            ...(trimmedOrg && { organisation: trimmedOrg }),
-                            updated_at: new Date().toISOString(),
-                        })
-                        .eq("user_id", data.session.user.id);
-                    if (profileError) {
+                    await updateUserProfile({
+                        ...(trimmedName && { display_name: trimmedName }),
+                        ...(trimmedOrg && { organisation: trimmedOrg }),
+                    }).catch((profileError) =>
                         console.error(
                             "[signup] failed to persist profile fields",
                             profileError,
-                        );
-                    }
+                        ),
+                    );
                 }
             }
             setSuccess(true);
             setTimeout(() => {
                 router.push("/assistant");
             }, 2000);
-        } catch (error: any) {
-            setError(error.message || "An error occurred during signup");
+        } catch (error: unknown) {
+            setError(
+                error instanceof Error
+                    ? error.message
+                    : "An error occurred during signup",
+            );
         } finally {
             setLoading(false);
         }
@@ -141,6 +117,13 @@ export default function SignupPage() {
 
                     <form onSubmit={handleSignup} className="space-y-4">
                         <div>
+                            <p className="text-sm leading-6 text-gray-600">
+                                Use your Microsoft work account to create your
+                                Mike profile.
+                            </p>
+                        </div>
+
+                        <div>
                             <label
                                 htmlFor="name"
                                 className="block text-sm font-medium text-gray-700 mb-2"
@@ -182,62 +165,6 @@ export default function SignupPage() {
                             />
                         </div>
 
-                        <div>
-                            <label
-                                htmlFor="email"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Email
-                            </label>
-                            <Input
-                                id="email"
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                placeholder="Enter your email"
-                                required
-                                className="w-full"
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="password"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Password
-                            </label>
-                            <Input
-                                id="password"
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="Create a password (min. 6 characters)"
-                                required
-                                className="w-full"
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="confirmPassword"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Confirm Password
-                            </label>
-                            <Input
-                                id="confirmPassword"
-                                type="password"
-                                value={confirmPassword}
-                                onChange={(e) =>
-                                    setConfirmPassword(e.target.value)
-                                }
-                                placeholder="Confirm your password"
-                                required
-                                className="w-full"
-                            />
-                        </div>
-
                         {error && (
                             <div className="text-red-600 text-sm bg-red-50 p-3 rounded">
                                 {error}
@@ -249,7 +176,9 @@ export default function SignupPage() {
                             disabled={loading}
                             className="w-full bg-black hover:bg-gray-900 text-white"
                         >
-                            {loading ? "Creating account..." : "Sign up"}
+                            {loading
+                                ? "Opening Microsoft..."
+                                : "Continue with Microsoft"}
                         </Button>
                     </form>
 

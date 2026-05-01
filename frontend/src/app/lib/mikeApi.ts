@@ -1,6 +1,6 @@
 /**
  * Mike API client — all requests to the Node.js backend.
- * Attaches the Supabase auth token for user authentication.
+ * Attaches the Entra ID access token for user authentication.
  */
 
 import { supabase } from "@/lib/supabase";
@@ -71,6 +71,32 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     }
 
     return (await response.json()) as T;
+}
+
+export interface MikeUserProfile {
+    user_id: string;
+    display_name: string | null;
+    organisation: string | null;
+    message_credits_used: number;
+    credits_reset_date: string;
+    tier: string;
+    tabular_model: string;
+    claude_api_key: string | null;
+    gemini_api_key: string | null;
+}
+
+export async function getUserProfile(): Promise<MikeUserProfile> {
+    return apiRequest<MikeUserProfile>("/user/profile");
+}
+
+export async function updateUserProfile(
+    payload: Partial<MikeUserProfile>,
+): Promise<MikeUserProfile> {
+    return apiRequest<MikeUserProfile>("/user/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
 }
 
 // ---------------------------------------------------------------------------

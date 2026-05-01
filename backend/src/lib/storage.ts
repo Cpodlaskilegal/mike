@@ -1,93 +1,78 @@
 /**
- * Cloudflare R2 storage utilities for Mike document management.
- * R2 is S3-compatible — uses @aws-sdk/client-s3.
- *
- * Required env vars:
- *   R2_ENDPOINT_URL     — https://<account-id>.r2.cloudflarestorage.com
- *   R2_ACCESS_KEY_ID    — R2 API token (Access Key ID)
- *   R2_SECRET_ACCESS_KEY — R2 API token (Secret Access Key)
- *   R2_BUCKET_NAME      — bucket name (default: "mike")
+ * Azure Blob Storage utilities for Mike document management.
  */
 
 import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
+  BlobSASPermissions,
+  BlobServiceClient,
+  StorageSharedKeyCredential,
+  generateBlobSASQueryParameters,
+} from "@azure/storage-blob";
 
-function getClient(): S3Client {
-  return new S3Client({
-    region: "auto",
-    endpoint: process.env.R2_ENDPOINT_URL!,
-    credentials: {
-      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-    },
-  });
+const account = process.env.AZURE_STORAGE_ACCOUNT ?? "";
+const accountKey = process.env.AZURE_STORAGE_KEY ?? "";
+const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING ?? "";
+const containerName = process.env.AZURE_STORAGE_CONTAINER ?? "documents";
+
+function getContainerClient() {
+  if (connectionString) {
+    return BlobServiceClient.fromConnectionString(connectionString).getContainerClient(
+      containerName,
+    );
+  }
+  if (!account || !accountKey) {
+    throw new Error("Azure Blob Storage is not configured");
+  }
+  const credential = new StorageSharedKeyCredential(account, accountKey);
+  return new BlobServiceClient(
+    `https://${account}.blob.core.windows.net`,
+    credential,
+  ).getContainerClient(containerName);
 }
 
-const BUCKET = process.env.R2_BUCKET_NAME ?? "mike";
+function getSharedKeyCredential(): StorageSharedKeyCredential | null {
+  if (!account || !accountKey) return null;
+  return new StorageSharedKeyCredential(account, accountKey);
+}
 
 export const storageEnabled = Boolean(
-  process.env.R2_ENDPOINT_URL &&
-  process.env.R2_ACCESS_KEY_ID &&
-  process.env.R2_SECRET_ACCESS_KEY,
+  connectionString || (account && accountKey && containerName),
 );
-
-// ---------------------------------------------------------------------------
-// Upload
-// ---------------------------------------------------------------------------
 
 export async function uploadFile(
   key: string,
   content: ArrayBuffer,
   contentType: string,
 ): Promise<void> {
-  const client = getClient();
-  await client.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: Buffer.from(content),
-      ContentType: contentType,
-    }),
-  );
+  const blockBlob = getContainerClient().getBlockBlobClient(key);
+  await blockBlob.uploadData(Buffer.from(content), {
+    blobHTTPHeaders: { blobContentType: contentType },
+  });
 }
-
-// ---------------------------------------------------------------------------
-// Download
-// ---------------------------------------------------------------------------
 
 export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
   if (!storageEnabled) return null;
   try {
-    const client = getClient();
-    const response = await client.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    );
-    if (!response.Body) return null;
-    const bytes = await response.Body.transformToByteArray();
-    return bytes.buffer as ArrayBuffer;
+    const blob = getContainerClient().getBlobClient(key);
+    const response = await blob.download();
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.readableStreamBody ?? []) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const buffer = Buffer.concat(chunks);
+    return buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    ) as ArrayBuffer;
   } catch {
     return null;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Delete
-// ---------------------------------------------------------------------------
-
 export async function deleteFile(key: string): Promise<void> {
   if (!storageEnabled) return;
-  const client = getClient();
-  await client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  await getContainerClient().deleteBlob(key, { deleteSnapshots: "include" });
 }
-
-// ---------------------------------------------------------------------------
-// Signed URL (pre-signed for temporary direct access)
-// ---------------------------------------------------------------------------
 
 export async function getSignedUrl(
   key: string,
@@ -96,20 +81,26 @@ export async function getSignedUrl(
 ): Promise<string | null> {
   if (!storageEnabled) return null;
   try {
-    const client = getClient();
-    // Override the response Content-Disposition so the browser uses this
-    // filename on download, instead of the last path segment of the R2 key
-    // (which includes the document UUID). The `download` attribute on <a>
-    // is ignored for cross-origin URLs, so we have to set it server-side.
-    const responseContentDisposition = downloadFilename
+    const blob = getContainerClient().getBlobClient(key);
+    const credential = getSharedKeyCredential();
+    if (!credential) return blob.url;
+    const startsOn = new Date(Date.now() - 60_000);
+    const expiresOn = new Date(Date.now() + expiresIn * 1000);
+    const contentDisposition = downloadFilename
       ? buildContentDisposition("attachment", downloadFilename)
       : undefined;
-    const command = new GetObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      ResponseContentDisposition: responseContentDisposition,
-    });
-    return await awsGetSignedUrl(client, command, { expiresIn });
+    const sas = generateBlobSASQueryParameters(
+      {
+        containerName,
+        blobName: key,
+        permissions: BlobSASPermissions.parse("r"),
+        startsOn,
+        expiresOn,
+        contentDisposition,
+      },
+      credential,
+    ).toString();
+    return `${blob.url}?${sas}`;
   } catch {
     return null;
   }
@@ -139,10 +130,6 @@ export function buildContentDisposition(
   const normalized = normalizeDownloadFilename(filename);
   return `${kind}; filename="${sanitizeDispositionFilename(normalized)}"; filename*=UTF-8''${encodeRFC5987(normalized)}`;
 }
-
-// ---------------------------------------------------------------------------
-// Storage key helpers
-// ---------------------------------------------------------------------------
 
 export function storageKey(
   userId: string,

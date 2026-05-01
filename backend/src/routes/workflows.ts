@@ -1,15 +1,6 @@
 import { Router } from "express";
-import { createClient } from "@supabase/supabase-js";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
-
-function getAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
-    process.env.SUPABASE_SECRET_KEY ?? "",
-    { auth: { autoRefreshToken: false, persistSession: false } },
-  );
-}
 
 export const workflowsRouter = Router();
 
@@ -113,8 +104,7 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
         : { data: [] };
 
       // Fetch sharer emails via admin client
-      const admin = getAdminClient();
-      const { data: authData } = await admin.auth.admin.listUsers({ perPage: 1000 });
+      const { data: authData } = await db.auth.admin.listUsers({ perPage: 1000 });
       const authUsers = authData?.users ?? [];
 
       sharedWorkflows = wfs.map((wf) => {

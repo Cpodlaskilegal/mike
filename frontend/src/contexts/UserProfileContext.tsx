@@ -8,8 +8,8 @@ import React, {
     ReactNode,
     useCallback,
 } from "react";
-import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import { getUserProfile, updateUserProfile } from "@/app/lib/mikeApi";
 
 interface UserProfile {
     displayName: string | null;
@@ -49,37 +49,12 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
 
-    const loadProfile = useCallback(async (userId: string) => {
+    const loadProfile = useCallback(async () => {
         try {
-            const { data, error } = await supabase
-                .from("user_profiles")
-                .select("*")
-                .eq("user_id", userId)
-                .single();
+            const data = await getUserProfile();
 
             // Define credit limit constant
             const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
-
-            // Calculate a default future reset date (30 days from now)
-            const futureResetDate = new Date();
-            futureResetDate.setDate(futureResetDate.getDate() + 30);
-            const defaultResetDateStr = futureResetDate.toISOString();
-
-            if (error) {
-                // Set fallback profile data if profile doesn't exist
-                setProfile({
-                    displayName: null,
-                    organisation: null,
-                    messageCreditsUsed: 0,
-                    creditsResetDate: defaultResetDateStr,
-                    creditsRemaining: MONTHLY_CREDIT_LIMIT,
-                    tier: "Free",
-                    tabularModel: "gemini-3-flash-preview",
-                    claudeApiKey: null,
-                    geminiApiKey: null,
-                });
-                return;
-            }
 
             // Use fetched data to update profile state
             if (data) {
@@ -115,21 +90,12 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
                 // 2. Update database in background if needed
                 if (shouldUpdateDb) {
-                    supabase
-                        .from("user_profiles")
-                        .update({
-                            message_credits_used: 0,
-                            credits_reset_date: resetDate,
-                            updated_at: new Date().toISOString(),
-                        })
-                        .eq("user_id", userId)
-                        .then(({ error }) => {
-                            if (error)
-                                console.error(
-                                    "Failed to auto-reset credits",
-                                    error,
-                                );
-                        });
+                    updateUserProfile({
+                        message_credits_used: 0,
+                        credits_reset_date: resetDate,
+                    }).catch((error) =>
+                        console.error("Failed to auto-reset credits", error),
+                    );
                 }
             }
         } catch (e) {
@@ -157,7 +123,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (isAuthenticated && user) {
             setLoading(true);
-            loadProfile(user.id);
+            loadProfile();
         } else {
             setProfile(null);
             setLoading(false);
@@ -171,17 +137,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             }
 
             try {
-                const { error } = await supabase
-                    .from("user_profiles")
-                    .update({
-                        display_name: displayName,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq("user_id", user.id);
-
-                if (error) {
-                    throw error;
-                }
+                await updateUserProfile({ display_name: displayName });
 
                 setProfile((prev) => (prev ? { ...prev, displayName } : null));
                 return true;
@@ -196,14 +152,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         async (organisation: string): Promise<boolean> => {
             if (!user) return false;
             try {
-                const { error } = await supabase
-                    .from("user_profiles")
-                    .update({
-                        organisation,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq("user_id", user.id);
-                if (error) throw error;
+                await updateUserProfile({ organisation });
                 setProfile((prev) =>
                     prev ? { ...prev, organisation } : null,
                 );
@@ -224,14 +173,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             const dbField = field === "tabularModel" ? "tabular_model" : "";
             if (!dbField) return false;
             try {
-                const { error } = await supabase
-                    .from("user_profiles")
-                    .update({
-                        [dbField]: value,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq("user_id", user.id);
-                if (error) throw error;
+                await updateUserProfile({ [dbField]: value });
                 setProfile((prev) =>
                     prev ? { ...prev, [field]: value } : null,
                 );
@@ -255,14 +197,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 provider === "claude" ? "claudeApiKey" : "geminiApiKey";
             const normalized = value?.trim() ? value.trim() : null;
             try {
-                const { error } = await supabase
-                    .from("user_profiles")
-                    .update({
-                        [dbField]: normalized,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq("user_id", user.id);
-                if (error) throw error;
+                await updateUserProfile({ [dbField]: normalized });
                 setProfile((prev) =>
                     prev ? { ...prev, [stateField]: normalized } : null,
                 );
@@ -276,7 +211,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
     const reloadProfile = useCallback(async () => {
         if (user) {
-            await loadProfile(user.id);
+            await loadProfile();
         }
     }, [user, loadProfile]);
 
@@ -293,17 +228,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         try {
             const newCreditsUsed = profile.messageCreditsUsed + 1;
 
-            const { error } = await supabase
-                .from("user_profiles")
-                .update({
-                    message_credits_used: newCreditsUsed,
-                    updated_at: new Date().toISOString(),
-                })
-                .eq("user_id", user.id);
-
-            if (error) {
-                throw error;
-            }
+            await updateUserProfile({ message_credits_used: newCreditsUsed });
 
             // Update local state
             setProfile((prev) =>
