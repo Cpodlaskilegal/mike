@@ -173,6 +173,44 @@ export function DocView({
         [],
     );
 
+    // Scroll so the first highlight on `pageNum` lands at the vertical center
+    // of the viewer. We compute the scroll position explicitly on the scroll
+    // container — calling `scrollIntoView` on a child of the absolutely-
+    // positioned text layer can scroll just the overlay while leaving the
+    // canvas untouched, which is why we don't use it here.
+    const scrollToHighlightOnPage = useCallback((pageNum: number) => {
+        const pageEntry = renderedPagesRef.current[pageNum - 1];
+        const scrollEl = scrollContainerRef.current;
+        if (!pageEntry || !scrollEl) return;
+
+        const highlightEl = pageEntry.wrapper.querySelector<HTMLElement>(
+            ".pdf-text-highlight",
+        );
+        if (highlightEl) {
+            const containerRect = scrollEl.getBoundingClientRect();
+            const highlightRect = highlightEl.getBoundingClientRect();
+            const offsetWithinContainer = highlightRect.top - containerRect.top;
+            const targetTop =
+                scrollEl.scrollTop +
+                offsetWithinContainer -
+                scrollEl.clientHeight / 2 +
+                highlightRect.height / 2;
+            scrollEl.scrollTo({
+                top: Math.max(0, targetTop),
+                behavior: "instant" as ScrollBehavior,
+            });
+        } else {
+            const wrapperRect = pageEntry.wrapper.getBoundingClientRect();
+            const containerRect = scrollEl.getBoundingClientRect();
+            const targetTop =
+                scrollEl.scrollTop + (wrapperRect.top - containerRect.top);
+            scrollEl.scrollTo({
+                top: Math.max(0, targetTop),
+                behavior: "instant" as ScrollBehavior,
+            });
+        }
+    }, []);
+
     const renderPDF = useCallback(
         async (
             doc: import("pdfjs-dist").PDFDocumentProxy,
@@ -292,46 +330,8 @@ export function DocView({
 
             reveal();
         },
-        [applyHighlights],
+        [applyHighlights, scrollToHighlightOnPage],
     );
-
-    // Scroll so the first highlight on `pageNum` lands at the vertical center
-    // of the viewer. We compute the scroll position explicitly on the scroll
-    // container — calling `scrollIntoView` on a child of the absolutely-
-    // positioned text layer can scroll just the overlay while leaving the
-    // canvas untouched, which is why we don't use it here.
-    function scrollToHighlightOnPage(pageNum: number) {
-        const pageEntry = renderedPagesRef.current[pageNum - 1];
-        const scrollEl = scrollContainerRef.current;
-        if (!pageEntry || !scrollEl) return;
-
-        const highlightEl = pageEntry.wrapper.querySelector<HTMLElement>(
-            ".pdf-text-highlight",
-        );
-        if (highlightEl) {
-            const containerRect = scrollEl.getBoundingClientRect();
-            const highlightRect = highlightEl.getBoundingClientRect();
-            const offsetWithinContainer = highlightRect.top - containerRect.top;
-            const targetTop =
-                scrollEl.scrollTop +
-                offsetWithinContainer -
-                scrollEl.clientHeight / 2 +
-                highlightRect.height / 2;
-            scrollEl.scrollTo({
-                top: Math.max(0, targetTop),
-                behavior: "instant" as ScrollBehavior,
-            });
-        } else {
-            const wrapperRect = pageEntry.wrapper.getBoundingClientRect();
-            const containerRect = scrollEl.getBoundingClientRect();
-            const targetTop =
-                scrollEl.scrollTop + (wrapperRect.top - containerRect.top);
-            scrollEl.scrollTo({
-                top: Math.max(0, targetTop),
-                behavior: "instant" as ScrollBehavior,
-            });
-        }
-    }
 
     const rehighlightQuotes = useCallback(
         async (list: QuoteEntry[]) => {
@@ -342,7 +342,7 @@ export function DocView({
                 scrollToHighlightOnPage(scrollPage);
             }
         },
-        [applyHighlights],
+        [applyHighlights, scrollToHighlightOnPage],
     );
 
     // Trackpad pinch-to-zoom (wheel + ctrlKey)

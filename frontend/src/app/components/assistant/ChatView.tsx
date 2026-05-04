@@ -356,7 +356,7 @@ export function ChatView({
                 `calc(100dvh - ${headerHeight + gap + userMessageHeight + paddingBottom + marginBottom}px)`,
             );
         }
-    }, [messages.length, latestUserMessageRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const updateScrollButton = useCallback(() => {
         const c = messagesContainerRef.current;
@@ -494,8 +494,8 @@ export function ChatView({
                                         {msg.role === "user" ? (
                                             <UserMessage
                                                 content={msg.content ?? ""}
-                                                files={(msg as any).files}
-                                                workflow={(msg as any).workflow}
+                                                files={msg.files}
+                                                workflow={msg.workflow}
                                             />
                                         ) : (
                                             <AssistantMessage
@@ -505,11 +505,10 @@ export function ChatView({
                                                     i === messages.length - 1 &&
                                                     isResponseLoading
                                                 }
-                                                isError={!!(msg as any).error}
+                                                isError={!!msg.error}
                                                 errorMessage={
-                                                    typeof (msg as any).error ===
-                                                    "string"
-                                                        ? (msg as any).error
+                                                    typeof msg.error === "string"
+                                                        ? msg.error
                                                         : undefined
                                                 }
                                                 annotations={msg.annotations}

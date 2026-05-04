@@ -51,6 +51,7 @@ import type {
     MikeProject,
     MikeChat,
     TabularReview,
+    ColumnConfig,
 } from "@/app/components/shared/types";
 import { ToolbarTabs } from "@/app/components/shared/ToolbarTabs";
 import { RenameableTitle } from "@/app/components/shared/RenameableTitle";
@@ -661,7 +662,7 @@ export function ProjectPage({ projectId }: Props) {
         title: string,
         _projectId?: string,
         documentIds?: string[],
-        columnsConfig?: any,
+        columnsConfig?: ColumnConfig[] | null,
     ) {
         setCreatingReview(true);
         try {

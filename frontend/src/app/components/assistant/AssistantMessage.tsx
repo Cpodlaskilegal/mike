@@ -893,7 +893,9 @@ function MarkdownContent({
                         />
                     ),
                     p: ({ node, ...props }) => {
-                        const parent = (node as any)?.parent;
+                        const parent = (
+                            node as { parent?: { type?: string } } | undefined
+                        )?.parent;
                         if (parent?.type === "listItem") {
                             return (
                                 <p

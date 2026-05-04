@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
     PanelLeft,
     MessageSquare,
@@ -45,16 +45,43 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
         {},
     );
 
+    const showAssistantHistory = isOpen && pathname.startsWith("/assistant");
+    const missingProjectKey = useMemo(() => {
+        if (!showAssistantHistory || !chats) return "";
+
+        const ids = new Set<string>();
+        for (const chat of chats) {
+            if (chat.project_id && !projectNames[chat.project_id]) {
+                ids.add(chat.project_id);
+            }
+        }
+        return Array.from(ids).sort().join("|");
+    }, [showAssistantHistory, chats, projectNames]);
+
     useEffect(() => {
-        if (!user) return;
+        if (!user || !missingProjectKey) return;
+
+        const missingIds = new Set(missingProjectKey.split("|"));
+        let cancelled = false;
+
         listProjects()
             .then((projects) => {
-                const map: Record<string, string> = {};
-                for (const p of projects) map[p.id] = p.name;
-                setProjectNames(map);
+                if (cancelled) return;
+
+                setProjectNames((current) => {
+                    const next = { ...current };
+                    for (const p of projects) {
+                        if (missingIds.has(p.id)) next[p.id] = p.name;
+                    }
+                    return next;
+                });
             })
             .catch(() => {});
-    }, [user]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, [user, missingProjectKey]);
 
     useEffect(() => {
         if (!isOpen) setShouldAnimate(true);
@@ -182,7 +209,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
             })}
 
             {/* Assistant History */}
-            {isOpen && pathname.startsWith("/assistant") && (
+            {showAssistantHistory && (
                 <div className="mt-4 flex-1 min-h-0 flex flex-col">
                     <button
                         onClick={() => setHistoryCollapsed((v) => !v)}

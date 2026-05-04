@@ -2,6 +2,14 @@
 
 import { useRef, useState } from "react";
 
+type CaretDocument = Document & {
+    caretPositionFromPoint?: (
+        x: number,
+        y: number,
+    ) => { offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+};
+
 interface Props {
     value: string;
     onCommit: (newValue: string) => void;
@@ -15,7 +23,7 @@ export function RenameableTitle({ value, onCommit, suffix }: Props) {
     const escaped = useRef(false);
 
     function startEditing(e: React.MouseEvent) {
-        const doc = document as any;
+        const doc = document as CaretDocument;
         const caret = doc.caretPositionFromPoint?.(e.clientX, e.clientY);
         const range = !caret && doc.caretRangeFromPoint?.(e.clientX, e.clientY);
         caretPos.current = caret ? caret.offset : range ? range.startOffset : null;
