@@ -41,6 +41,24 @@ export type UserApiKeys = {
     gemini?: string | null;
 };
 
+export type ReasoningEffort =
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh";
+
+export type TextVerbosity = "low" | "medium" | "high";
+
+export type JsonSchemaTextFormat = {
+    type: "json_schema";
+    name: string;
+    description?: string;
+    schema: Record<string, unknown>;
+    strict?: boolean;
+};
+
 export type StreamChatParams = {
     model: string;
     systemPrompt: string;
@@ -57,6 +75,14 @@ export type StreamChatParams = {
      * one-shot completions should leave this off to save tokens and latency.
      */
     enableThinking?: boolean;
+    /**
+     * Provider-specific generation tuning. OpenAI uses these directly through
+     * the Responses API; Claude/Gemini ignore them unless their adapters add
+     * equivalent knobs later.
+     */
+    reasoningEffort?: ReasoningEffort;
+    textVerbosity?: TextVerbosity;
+    textFormat?: JsonSchemaTextFormat;
 };
 
 export type StreamChatResult = {

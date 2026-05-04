@@ -13,11 +13,11 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { MODELS } from "@/app/components/assistant/ModelToggle";
+import { TABULAR_MODELS } from "@/app/components/assistant/ModelToggle";
 import {
-    OPENAI_ENABLED,
     isModelAvailable,
     modelGroupToProvider,
+    type ProviderAvailability,
 } from "@/app/lib/modelAvailability";
 
 export default function ModelsAndApiKeysPage() {
@@ -45,6 +45,7 @@ export default function ModelsAndApiKeysPage() {
                             apiKeys={{
                                 claudeApiKey: profile?.claudeApiKey ?? null,
                                 geminiApiKey: profile?.geminiApiKey ?? null,
+                                openaiEnabled: profile?.openaiEnabled ?? false,
                             }}
                             onChange={(id) =>
                                 updateModelPreference("tabularModel", id)
@@ -99,14 +100,18 @@ function TabularModelDropdown({
     apiKeys,
 }: {
     value: string;
-    onChange: (id: string) => void;
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null };
+    onChange: (id: string) => Promise<boolean>;
+    apiKeys: ProviderAvailability;
 }) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = MODELS.find((m) => m.id === value);
+    const [pendingId, setPendingId] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [saved, setSaved] = useState(false);
+    const selected = TABULAR_MODELS.find((m) => m.id === value);
     const selectedAvailable = isModelAvailable(value, apiKeys);
-    const visibleModels = MODELS.filter(
-        (m) => OPENAI_ENABLED || m.group !== "OpenAI",
+    const openaiEnabled = apiKeys.openaiEnabled;
+    const visibleModels = TABULAR_MODELS.filter(
+        (m) => openaiEnabled || m.group !== "OpenAI",
     );
     const groups: ("OpenAI" | "Anthropic" | "Google")[] = [
         "OpenAI",
@@ -114,79 +119,115 @@ function TabularModelDropdown({
         "Google",
     ];
 
+    const handleSelect = async (id: string) => {
+        if (pendingId || id === value) return;
+        setError(null);
+        setSaved(false);
+        setPendingId(id);
+        try {
+            const ok = await onChange(id);
+            if (ok) {
+                setSaved(true);
+                window.setTimeout(() => setSaved(false), 2000);
+                return;
+            }
+            setError("Couldn’t save model preference. Please sign in again or retry.");
+        } catch (err) {
+            console.error("[models] failed to save tabular model", err);
+            setError("Couldn’t save model preference. Please sign in again or retry.");
+        } finally {
+            setPendingId(null);
+        }
+    };
+
     return (
-        <DropdownMenu onOpenChange={setIsOpen}>
-            <DropdownMenuTrigger asChild>
-                <button
-                    type="button"
-                    className="w-full h-9 rounded-md border border-gray-300 bg-white px-3 text-sm shadow-sm flex items-center justify-between gap-2 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10"
-                >
-                    <span className="flex items-center gap-2 min-w-0">
-                        {!selectedAvailable && (
-                            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-                        )}
-                        <span className="truncate text-gray-900">
-                            {selected?.label ?? "Select a model"}
+        <div className="space-y-1.5">
+            <DropdownMenu onOpenChange={setIsOpen}>
+                <DropdownMenuTrigger asChild>
+                    <button
+                        type="button"
+                        disabled={!!pendingId}
+                        className="w-full h-9 rounded-md border border-gray-300 bg-white px-3 text-sm shadow-sm flex items-center justify-between gap-2 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10 disabled:cursor-wait disabled:opacity-70"
+                    >
+                        <span className="flex items-center gap-2 min-w-0">
+                            {!selectedAvailable && (
+                                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
+                            )}
+                            <span className="truncate text-gray-900">
+                                {pendingId
+                                    ? "Saving..."
+                                    : selected?.label ?? "Select a model"}
+                            </span>
                         </span>
-                    </span>
-                    <ChevronDown
-                        className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
-                    />
-                </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-                className="z-50"
-                style={{ width: "var(--radix-dropdown-menu-trigger-width)" }}
-                align="start"
-            >
-                {groups.filter((group) =>
-                    visibleModels.some((m) => m.group === group),
-                ).map((group, gi) => {
-                    const items = visibleModels.filter((m) => m.group === group);
-                    return (
-                        <div key={group}>
-                            {gi > 0 && <DropdownMenuSeparator />}
-                            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-gray-400">
-                                {group}
-                            </DropdownMenuLabel>
-                            {items.map((m) => {
-                                const provider = modelGroupToProvider(m.group);
-                                const available = isModelAvailable(
-                                    m.id,
-                                    apiKeys,
-                                );
-                                return (
-                                    <DropdownMenuItem
-                                        key={m.id}
-                                        className="cursor-pointer"
-                                        onSelect={() => onChange(m.id)}
-                                        title={
-                                            !available
-                                                ? provider === "openai"
-                                                    ? "Ask an administrator to enable OpenAI for this deployment"
-                                                    : `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
-                                                : undefined
-                                        }
-                                    >
-                                        <span
-                                            className={`flex-1 ${available ? "" : "text-gray-400"}`}
+                        <ChevronDown
+                            className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                        />
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                    className="z-50"
+                    style={{ width: "var(--radix-dropdown-menu-trigger-width)" }}
+                    align="start"
+                >
+                    {groups.filter((group) =>
+                        visibleModels.some((m) => m.group === group),
+                    ).map((group, gi) => {
+                        const items = visibleModels.filter((m) => m.group === group);
+                        return (
+                            <div key={group}>
+                                {gi > 0 && <DropdownMenuSeparator />}
+                                <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-gray-400">
+                                    {group}
+                                </DropdownMenuLabel>
+                                {items.map((m) => {
+                                    const provider = modelGroupToProvider(m.group);
+                                    const available = isModelAvailable(
+                                        m.id,
+                                        apiKeys,
+                                    );
+                                    return (
+                                        <DropdownMenuItem
+                                            key={m.id}
+                                            className="cursor-pointer"
+                                            disabled={!!pendingId}
+                                            onSelect={() => void handleSelect(m.id)}
+                                            title={
+                                                !available
+                                                    ? provider === "openai"
+                                                        ? "Ask an administrator to enable OpenAI for this deployment"
+                                                        : `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
+                                                    : undefined
+                                            }
                                         >
-                                            {m.label}
-                                        </span>
-                                        {!available && (
-                                            <AlertCircle className="h-3.5 w-3.5 text-red-500 ml-1" />
-                                        )}
-                                        {m.id === value && available && (
-                                            <Check className="h-3.5 w-3.5 text-gray-600 ml-1" />
-                                        )}
-                                    </DropdownMenuItem>
-                                );
-                            })}
-                        </div>
-                    );
-                })}
-            </DropdownMenuContent>
-        </DropdownMenu>
+                                            <span
+                                                className={`flex-1 ${available ? "" : "text-gray-400"}`}
+                                            >
+                                                {m.label}
+                                            </span>
+                                            {pendingId === m.id && (
+                                                <span className="ml-1 text-xs text-gray-500">
+                                                    Saving
+                                                </span>
+                                            )}
+                                            {!available && (
+                                                <AlertCircle className="h-3.5 w-3.5 text-red-500 ml-1" />
+                                            )}
+                                            {m.id === value && (
+                                                <Check className="h-3.5 w-3.5 text-gray-600 ml-1" />
+                                            )}
+                                        </DropdownMenuItem>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })}
+                </DropdownMenuContent>
+            </DropdownMenu>
+            {error && <p className="text-xs text-red-600">{error}</p>}
+            {saved && !error && (
+                <p className="text-xs text-green-700">Model preference saved.</p>
+            )}
+        </div>
     );
 }
 

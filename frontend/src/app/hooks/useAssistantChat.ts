@@ -383,6 +383,16 @@ export function useAssistantChat({
                     try {
                         const data = JSON.parse(dataStr);
 
+                        if (data.type === "error") {
+                            const streamError = new Error(
+                                typeof data.message === "string"
+                                    ? data.message
+                                    : "Stream error",
+                            );
+                            streamError.name = "MikeStreamError";
+                            throw streamError;
+                        }
+
                         if (data.type === "chat_id") {
                             streamedChatId = data.chatId;
                             setChatId(data.chatId);
@@ -777,6 +787,9 @@ export function useAssistantChat({
                             continue;
                         }
                     } catch (e) {
+                        if (e instanceof Error && e.name === "MikeStreamError") {
+                            throw e;
+                        }
                         console.warn(
                             "[useAssistantChat] failed to parse SSE line:",
                             trimmed,
@@ -822,8 +835,8 @@ export function useAssistantChat({
             }
 
             return streamedChatId || null;
-        } catch (error: any) {
-            if (error.name === "AbortError") {
+        } catch (error: unknown) {
+            if (error instanceof Error && error.name === "AbortError") {
                 flushDrip();
                 setMessages((prev) => {
                     const last = prev[prev.length - 1];
@@ -873,7 +886,7 @@ export function useAssistantChat({
             } else {
                 stopDrip();
                 const errorMessage =
-                    typeof error?.message === "string" && error.message
+                    error instanceof Error && error.message
                         ? error.message
                         : "Sorry, something went wrong.";
                 setMessages((prev) => {

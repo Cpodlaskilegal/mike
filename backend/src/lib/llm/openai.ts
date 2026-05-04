@@ -5,12 +5,16 @@ import type {
     ResponseInput,
     ResponseInputItem,
     ResponseStreamEvent,
+    ResponseTextConfig,
     Tool,
 } from "openai/resources/responses/responses";
 import type {
+    JsonSchemaTextFormat,
     NormalizedToolCall,
+    ReasoningEffort,
     StreamChatParams,
     StreamChatResult,
+    TextVerbosity,
 } from "./types";
 
 const MAX_OUTPUT_TOKENS = 16384;
@@ -29,12 +33,50 @@ function isProModel(model: string): boolean {
     return model === "gpt-5.5-pro";
 }
 
-function reasoningForModel(model: string) {
-    if (model.endsWith("-pro")) return { effort: "high" as const };
-    if (model.endsWith("-mini") || model.endsWith("-nano")) {
-        return { effort: "low" as const };
+function defaultReasoningEffort(
+    model: string,
+    enableThinking?: boolean,
+): ReasoningEffort {
+    // OpenAI pro models are explicitly high-reasoning/non-streaming. For the
+    // normal chat surface, mirror Claude/Gemini by spending reasoning only
+    // where the UI is prepared to show it; extraction and short generated text
+    // stay lean unless a caller overrides this.
+    if (isProModel(model)) return "high";
+    if (enableThinking) {
+        if (model.endsWith("-mini") || model.endsWith("-nano")) return "low";
+        return "medium";
     }
-    return { effort: "medium" as const };
+    if (model.endsWith("-nano")) return "minimal";
+    return "low";
+}
+
+function reasoningForModel(
+    model: string,
+    reasoningEffort?: ReasoningEffort,
+    enableThinking?: boolean,
+) {
+    return {
+        effort: reasoningEffort ?? defaultReasoningEffort(model, enableThinking),
+    };
+}
+
+function textConfig(
+    textVerbosity?: TextVerbosity,
+    textFormat?: JsonSchemaTextFormat,
+): ResponseTextConfig | undefined {
+    if (!textVerbosity && !textFormat) return undefined;
+    const config: ResponseTextConfig = {};
+    if (textVerbosity) config.verbosity = textVerbosity;
+    if (textFormat) {
+        config.format = {
+            type: "json_schema",
+            name: textFormat.name,
+            description: textFormat.description,
+            schema: textFormat.schema,
+            strict: textFormat.strict,
+        };
+    }
+    return config;
 }
 
 function toInput(messages: StreamChatParams["messages"]): ResponseInput {
@@ -86,7 +128,13 @@ async function createStreamingResponse(
         input: ResponseInput;
         tools: Tool[];
         previousResponseId?: string;
+        enableThinking?: boolean;
+        reasoningEffort?: ReasoningEffort;
+        textVerbosity?: TextVerbosity;
+        textFormat?: JsonSchemaTextFormat;
         onDelta?: (delta: string) => void;
+        onReasoningDelta?: (delta: string) => void;
+        onReasoningBlockEnd?: () => void;
     },
 ): Promise<Response> {
     const stream = await openai.responses.create({
@@ -96,15 +144,37 @@ async function createStreamingResponse(
         previous_response_id: params.previousResponseId,
         tools: params.tools.length ? params.tools : undefined,
         max_output_tokens: MAX_OUTPUT_TOKENS,
-        reasoning: reasoningForModel(params.model),
+        reasoning: reasoningForModel(
+            params.model,
+            params.reasoningEffort,
+            params.enableThinking,
+        ),
+        text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
         stream: true,
     });
 
     let final: Response | null = null;
+    let reasoningOpen = false;
     for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
         if (event.type === "response.output_text.delta") {
             params.onDelta?.(event.delta);
+        } else if (
+            params.enableThinking &&
+            (event.type === "response.reasoning_summary_text.delta" ||
+                event.type === "response.reasoning_text.delta")
+        ) {
+            reasoningOpen = true;
+            params.onReasoningDelta?.(event.delta);
+        } else if (
+            params.enableThinking &&
+            (event.type === "response.reasoning_summary_text.done" ||
+                event.type === "response.reasoning_text.done")
+        ) {
+            if (reasoningOpen) {
+                params.onReasoningBlockEnd?.();
+                reasoningOpen = false;
+            }
         } else if (event.type === "response.completed") {
             final = event.response;
         } else if (event.type === "response.failed") {
@@ -131,6 +201,10 @@ async function createNonStreamingResponse(
         tools?: Tool[];
         previousResponseId?: string;
         maxTokens?: number;
+        enableThinking?: boolean;
+        reasoningEffort?: ReasoningEffort;
+        textVerbosity?: TextVerbosity;
+        textFormat?: JsonSchemaTextFormat;
     },
 ): Promise<Response> {
     const response = await openai.responses.create({
@@ -140,7 +214,12 @@ async function createNonStreamingResponse(
         previous_response_id: params.previousResponseId,
         tools: params.tools?.length ? params.tools : undefined,
         max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
-        reasoning: reasoningForModel(params.model),
+        reasoning: reasoningForModel(
+            params.model,
+            params.reasoningEffort,
+            params.enableThinking,
+        ),
+        text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
         stream: false,
     });
@@ -181,6 +260,10 @@ export async function streamOpenAI(
                   input,
                   tools: openaiTools,
                   previousResponseId,
+                  enableThinking: params.enableThinking,
+                  reasoningEffort: params.reasoningEffort,
+                  textVerbosity: params.textVerbosity,
+                  textFormat: params.textFormat,
               })
             : await createStreamingResponse(openai, {
                   model,
@@ -188,10 +271,16 @@ export async function streamOpenAI(
                   input,
                   tools: openaiTools,
                   previousResponseId,
+                  enableThinking: params.enableThinking,
+                  reasoningEffort: params.reasoningEffort,
+                  textVerbosity: params.textVerbosity,
+                  textFormat: params.textFormat,
                   onDelta: (delta) => {
                       fullText += delta;
                       callbacks.onContentDelta?.(delta);
                   },
+                  onReasoningDelta: callbacks.onReasoningDelta,
+                  onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
               });
 
         previousResponseId = response.id;
@@ -233,6 +322,9 @@ export async function completeOpenAIText(params: {
     systemPrompt?: string;
     user: string;
     maxTokens?: number;
+    reasoningEffort?: ReasoningEffort;
+    textVerbosity?: TextVerbosity;
+    textFormat?: JsonSchemaTextFormat;
 }): Promise<string> {
     const openai = client();
     const response = await createNonStreamingResponse(openai, {
@@ -240,6 +332,9 @@ export async function completeOpenAIText(params: {
         systemPrompt: params.systemPrompt,
         input: params.user,
         maxTokens: params.maxTokens ?? 512,
+        reasoningEffort: params.reasoningEffort,
+        textVerbosity: params.textVerbosity,
+        textFormat: params.textFormat,
     });
     return outputText(response);
 }

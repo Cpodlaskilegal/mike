@@ -2,7 +2,14 @@ import { streamClaude, completeClaudeText } from "./claude";
 import { streamGemini, completeGeminiText } from "./gemini";
 import { streamOpenAI, completeOpenAIText } from "./openai";
 import { providerForModel } from "./models";
-import type { StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
+import type {
+    JsonSchemaTextFormat,
+    ReasoningEffort,
+    StreamChatParams,
+    StreamChatResult,
+    TextVerbosity,
+    UserApiKeys,
+} from "./types";
 
 export * from "./types";
 export * from "./models";
@@ -22,6 +29,9 @@ export async function completeText(params: {
     user: string;
     maxTokens?: number;
     apiKeys?: UserApiKeys;
+    reasoningEffort?: ReasoningEffort;
+    textVerbosity?: TextVerbosity;
+    textFormat?: JsonSchemaTextFormat;
 }): Promise<string> {
     const provider = providerForModel(params.model);
     if (provider === "claude") return completeClaudeText(params);

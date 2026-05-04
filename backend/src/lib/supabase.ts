@@ -10,6 +10,16 @@ type Filter = {
 };
 type Order = { column: string; ascending: boolean; nullsFirst?: boolean };
 
+const JSONB_COLUMNS: Record<string, Set<string>> = {
+  projects: new Set(["shared_with"]),
+  documents: new Set(["structure_tree"]),
+  workflows: new Set(["columns_config"]),
+  chat_messages: new Set(["content", "files", "annotations", "workflow"]),
+  tabular_reviews: new Set(["columns_config", "shared_with"]),
+  tabular_cells: new Set(["citations"]),
+  tabular_review_chat_messages: new Set(["content", "annotations"]),
+};
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl:
@@ -185,25 +195,25 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     const clauses = this.filters.map((filter) => {
       const column = quoteIdent(filter.column);
       if (filter.kind === "eq") {
-        values.push(filter.value);
+        values.push(this.prepareValue(filter.column, filter.value));
         return `${column} = $${values.length}`;
       }
       if (filter.kind === "neq") {
-        values.push(filter.value);
+        values.push(this.prepareValue(filter.column, filter.value));
         return `${column} <> $${values.length}`;
       }
       if (filter.kind === "in") {
         const items = Array.isArray(filter.value) ? filter.value : [];
         if (items.length === 0) return "false";
         const placeholders = items.map((item) => {
-          values.push(item);
+          values.push(this.prepareValue(filter.column, item));
           return `$${values.length}`;
         });
         return `${column} in (${placeholders.join(", ")})`;
       }
       if (filter.kind === "is") {
         if (filter.value === null) return `${column} is null`;
-        values.push(filter.value);
+        values.push(this.prepareValue(filter.column, filter.value));
         return `${column} is not distinct from $${values.length}`;
       }
       if (filter.kind === "not") {
@@ -212,11 +222,7 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
         }
         throw new Error(`Unsupported not() filter: ${filter.column}.${filter.operator}`);
       }
-      values.push(
-        typeof filter.value === "string"
-          ? filter.value
-          : JSON.stringify(filter.value),
-      );
+      values.push(this.prepareValue(filter.column, filter.value));
       return `${column} @> $${values.length}::jsonb`;
     });
 
@@ -267,6 +273,12 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     return `${orderSql}${limitSql}`;
   }
 
+  private prepareValue(column: string, value: unknown): unknown {
+    if (value == null) return value;
+    if (!JSONB_COLUMNS[this.table]?.has(column)) return value;
+    return JSON.stringify(value);
+  }
+
   private async execute(): Promise<DbResult<any>> {
     try {
       const result =
@@ -309,7 +321,7 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     const values: unknown[] = [];
     const rowSql = this.rows.map((row) => {
       const placeholders = columns.map((column) => {
-        values.push(row[column] ?? null);
+        values.push(this.prepareValue(column, row[column] ?? null));
         return `$${values.length}`;
       });
       return `(${placeholders.join(", ")})`;
@@ -339,7 +351,7 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     const columns = Object.keys(this.updates);
     const values: unknown[] = [];
     const setSql = columns.map((column) => {
-      values.push(this.updates[column]);
+      values.push(this.prepareValue(column, this.updates[column]));
       return `${quoteIdent(column)} = $${values.length}`;
     });
     const where = this.addWhere(values);

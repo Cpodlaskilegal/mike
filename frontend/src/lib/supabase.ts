@@ -57,20 +57,38 @@ function accountToUser(account: AccountInfo) {
     };
 }
 
+type MikeSession = {
+    access_token: string;
+    user: ReturnType<typeof accountToUser>;
+};
+
+function isFreshToken(result: AuthenticationResult | null): result is AuthenticationResult {
+    const expiresAt = result?.expiresOn?.getTime();
+    if (!result?.accessToken || !expiresAt) return false;
+    return expiresAt - Date.now() > 60_000;
+}
+
 async function acquireToken(options?: {
     interactive?: boolean;
+    forceRefresh?: boolean;
 }): Promise<AuthenticationResult | null> {
     const app = await ensureMsal();
     const account = app.getActiveAccount() ?? app.getAllAccounts()[0];
     if (!account || !apiScope) return null;
     if (
+        !options?.forceRefresh &&
         redirectResult?.account?.homeAccountId === account.homeAccountId &&
-        redirectResult.accessToken
+        isFreshToken(redirectResult)
     ) {
         return redirectResult;
     }
+    if (redirectResult && !isFreshToken(redirectResult)) redirectResult = null;
     try {
-        const result = await app.acquireTokenSilent({ account, scopes: [apiScope] });
+        const result = await app.acquireTokenSilent({
+            account,
+            scopes: [apiScope],
+            forceRefresh: options?.forceRefresh,
+        });
         window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
         return result;
     } catch (error) {
@@ -93,7 +111,20 @@ async function acquireToken(options?: {
 
 export const supabase = {
     auth: {
-        async getSession(options?: { interactive?: boolean }) {
+        async getCurrentUser() {
+            const app = await ensureMsal();
+            const account = app.getActiveAccount() ?? app.getAllAccounts()[0];
+            return {
+                data: {
+                    user: account ? accountToUser(account) : null,
+                },
+                error: null,
+            };
+        },
+        async getSession(options?: {
+            interactive?: boolean;
+            forceRefresh?: boolean;
+        }) {
             const app = await ensureMsal();
             const account = app.getActiveAccount() ?? app.getAllAccounts()[0];
             if (!account) return { data: { session: null }, error: null };
@@ -127,23 +158,29 @@ export const supabase = {
             const account = app.getActiveAccount();
             if (account) await app.logoutRedirect({ account });
         },
-        onAuthStateChange(callback: (_event: string, session: any) => void) {
+        onAuthStateChange(
+            callback: (_event: string, session: MikeSession | null) => void,
+        ) {
             let callbackId: string | null = null;
-            ensureMsal().then((app) => {
-                callbackId = app.addEventCallback((event) => {
-                    if (
-                        event.eventType === EventType.LOGIN_SUCCESS ||
-                        event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS
-                    ) {
-                        this.getSession().then(({ data }) =>
-                            callback(event.eventType, data.session),
-                        );
-                    }
-                    if (event.eventType === EventType.LOGOUT_SUCCESS) {
-                        callback(event.eventType, null);
-                    }
+            ensureMsal()
+                .then((app) => {
+                    callbackId = app.addEventCallback((event) => {
+                        if (
+                            event.eventType === EventType.LOGIN_SUCCESS ||
+                            event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS
+                        ) {
+                            this.getSession().then(({ data }) =>
+                                callback(event.eventType, data.session),
+                            );
+                        }
+                        if (event.eventType === EventType.LOGOUT_SUCCESS) {
+                            callback(event.eventType, null);
+                        }
+                    });
+                })
+                .catch(() => {
+                    callback("AUTH_INIT_FAILED", null);
                 });
-            });
             return {
                 data: {
                     subscription: {

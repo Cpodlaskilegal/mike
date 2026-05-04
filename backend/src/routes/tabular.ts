@@ -10,13 +10,34 @@ import {
     type ChatMessage,
     type TabularCellStore,
 } from "../lib/chatTools";
-import { completeText, streamChatWithTools } from "../lib/llm";
+import { completeText, providerForModel, streamChatWithTools } from "../lib/llm";
 import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import {
     checkProjectAccess,
     ensureReviewAccess,
     listAccessibleProjectIds,
 } from "../lib/access";
+
+const TABULAR_CELL_RESULT_FORMAT = {
+    type: "json_schema" as const,
+    name: "tabular_cell_result",
+    description:
+        "A single extracted tabular review cell result with a confidence flag and supporting reasoning.",
+    strict: true,
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["summary", "flag", "reasoning"],
+        properties: {
+            summary: { type: "string" },
+            flag: {
+                type: "string",
+                enum: ["green", "grey", "yellow", "red"],
+            },
+            reasoning: { type: "string" },
+        },
+    },
+};
 
 function formatPromptSuffix(format?: string, tags?: string[]): string {
     switch (format) {
@@ -275,6 +296,23 @@ tabularRouter.post("/prompt", requireAuth, async (req, res) => {
             user: userMessage,
             maxTokens: 512,
             apiKeys: api_keys,
+            reasoningEffort: "minimal",
+            textVerbosity: "low",
+            textFormat: {
+                type: "json_schema",
+                name: "tabular_column_prompt",
+                description:
+                    "A generated legal tabular review column prompt.",
+                strict: true,
+                schema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["prompt"],
+                    properties: {
+                        prompt: { type: "string" },
+                    },
+                },
+            },
         });
         const parsed = JSON.parse(
             raw
@@ -1368,6 +1406,9 @@ The "summary" field must contain only the extracted value with inline citations 
             user: `Document: ${filename}\n\n${documentText.slice(0, 120_000)}\n\n---\nInstruction: ${fullPrompt}`,
             maxTokens: 2048,
             apiKeys,
+            reasoningEffort: "low",
+            textVerbosity: "low",
+            textFormat: TABULAR_CELL_RESULT_FORMAT,
         });
     } catch (err) {
         console.error("[queryGemini] completion failed", err);
@@ -1428,6 +1469,8 @@ async function generateChatTitle(
             user: `${contextBlock}Generate a short title (4-6 words) for a chat that starts with the message below. The title should reflect the user's specific question, not the review or project name. Return only the title, no punctuation, no quotes:\n\n${firstUserMessage}`,
             maxTokens: 64,
             apiKeys,
+            reasoningEffort: "minimal",
+            textVerbosity: "low",
         });
         return raw.trim().slice(0, 80) || null;
     } catch {
@@ -1528,6 +1571,93 @@ Rules:
 
     const USER = `Document: ${filename}\n\n${documentText.slice(0, 120_000)}\n\n---\nColumns to extract:\n${columnsDesc}`;
 
+    const normalizeResult = (parsed: {
+        column_index?: unknown;
+        summary?: unknown;
+        flag?: unknown;
+        reasoning?: unknown;
+    }): { columnIndex: number; result: CellResult } | null => {
+        if (typeof parsed.column_index !== "number") return null;
+        const col = columns.find((c) => c.index === parsed.column_index);
+        if (!col) return null;
+        return {
+            columnIndex: parsed.column_index,
+            result: {
+                summary: String(parsed.summary ?? "").trim() || "Not addressed",
+                flag: (["green", "grey", "yellow", "red"] as const).includes(
+                    parsed.flag as "green",
+                )
+                    ? (parsed.flag as CellResult["flag"])
+                    : "grey",
+                reasoning: String(parsed.reasoning ?? ""),
+            },
+        };
+    };
+
+    if (providerForModel(model) === "openai") {
+        const raw = await completeText({
+            model,
+            systemPrompt: `${SYSTEM}\n\nFor this OpenAI call, return one JSON object matching the provided schema instead of JSON lines.`,
+            user: USER,
+            maxTokens: 4096,
+            apiKeys,
+            reasoningEffort: "low",
+            textVerbosity: "low",
+            textFormat: {
+                type: "json_schema",
+                name: "tabular_bulk_cell_results",
+                description:
+                    "Structured extraction results for all requested tabular review columns.",
+                strict: true,
+                schema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["results"],
+                    properties: {
+                        results: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                additionalProperties: false,
+                                required: [
+                                    "column_index",
+                                    "summary",
+                                    "flag",
+                                    "reasoning",
+                                ],
+                                properties: {
+                                    column_index: {
+                                        type: "number",
+                                        enum: columns.map((col) => col.index),
+                                    },
+                                    summary: { type: "string" },
+                                    flag: {
+                                        type: "string",
+                                        enum: ["green", "grey", "yellow", "red"],
+                                    },
+                                    reasoning: { type: "string" },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const parsed = JSON.parse(raw) as {
+            results?: {
+                column_index?: unknown;
+                summary?: unknown;
+                flag?: unknown;
+                reasoning?: unknown;
+            }[];
+        };
+        for (const item of parsed.results ?? []) {
+            const normalized = normalizeResult(item);
+            if (normalized) await onResult(normalized.columnIndex, normalized.result);
+        }
+        return;
+    }
+
     let contentBuffer = "";
     const pending: Promise<unknown>[] = [];
 
@@ -1541,18 +1671,8 @@ Rules:
                 flag?: unknown;
                 reasoning?: unknown;
             };
-            if (typeof parsed.column_index !== "number") return;
-            const col = columns.find((c) => c.index === parsed.column_index);
-            if (!col) return;
-            await onResult(parsed.column_index, {
-                summary: String(parsed.summary ?? "").trim() || "Not addressed",
-                flag: (["green", "grey", "yellow", "red"] as const).includes(
-                    parsed.flag as "green",
-                )
-                    ? (parsed.flag as CellResult["flag"])
-                    : "grey",
-                reasoning: String(parsed.reasoning ?? ""),
-            });
+            const normalized = normalizeResult(parsed);
+            if (normalized) await onResult(normalized.columnIndex, normalized.result);
         } catch {
             // malformed line — skip
         }
@@ -1565,6 +1685,8 @@ Rules:
             messages: [{ role: "user", content: USER }],
             tools: [],
             apiKeys,
+            reasoningEffort: "low",
+            textVerbosity: "low",
             callbacks: {
                 onContentDelta: (delta) => {
                     contentBuffer += delta;

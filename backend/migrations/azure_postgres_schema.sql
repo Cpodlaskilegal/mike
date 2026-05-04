@@ -173,8 +173,12 @@ create table if not exists public.chat_messages (
   content jsonb,
   files jsonb,
   annotations jsonb,
+  workflow jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table public.chat_messages
+  add column if not exists workflow jsonb;
 
 create index if not exists idx_chat_messages_chat on public.chat_messages(chat_id);
 

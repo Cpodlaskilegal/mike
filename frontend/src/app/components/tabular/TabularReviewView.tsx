@@ -90,6 +90,7 @@ export function TRView({ reviewId, projectId }: Props) {
     const apiKeys = {
         claudeApiKey: profile?.claudeApiKey ?? null,
         geminiApiKey: profile?.geminiApiKey ?? null,
+        openaiEnabled: profile?.openaiEnabled ?? false,
     };
     const tabularModel = profile?.tabularModel ?? "gemini-3-flash-preview";
 
@@ -283,6 +284,10 @@ export function TRView({ reviewId, projectId }: Props) {
 
         try {
             const response = await streamTabularGeneration(reviewId);
+            if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(detail || `HTTP ${response.status}`);
+            }
             if (!response.body) throw new Error("No body");
 
             const reader = response.body.getReader();
@@ -302,6 +307,15 @@ export function TRView({ reviewId, projectId }: Props) {
                     if (dataStr === "[DONE]") break;
                     try {
                         const data = JSON.parse(dataStr);
+                        if (data.type === "error") {
+                            const streamError = new Error(
+                                typeof data.message === "string"
+                                    ? data.message
+                                    : "Generation failed",
+                            );
+                            streamError.name = "MikeStreamError";
+                            throw streamError;
+                        }
                         if (data.type === "cell_update") {
                             setCells((prev) =>
                                 prev.map((c) =>
@@ -316,11 +330,22 @@ export function TRView({ reviewId, projectId }: Props) {
                                 ),
                             );
                         }
-                    } catch {}
+                    } catch (err) {
+                        if (err instanceof Error && err.name === "MikeStreamError") {
+                            throw err;
+                        }
+                    }
                 }
             }
         } catch (err) {
             console.error("Generation failed", err);
+            setCells((prev) =>
+                prev.map((cell) =>
+                    cell.status === "generating"
+                        ? { ...cell, status: "error" as const }
+                        : cell,
+                ),
+            );
         } finally {
             setGenerating(false);
         }

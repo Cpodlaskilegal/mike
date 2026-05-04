@@ -40,25 +40,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
 
         const checkUser = async () => {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession({ interactive: true });
+            try {
+                const {
+                    data: { session },
+                } = await supabase.auth.getSession();
 
-            if (session?.user) {
-                setUser({
-                    id: session.user.id,
-                    email: session.user.email || "",
-                });
-                ensureProfile(session.access_token);
+                if (session?.user) {
+                    setUser({
+                        id: session.user.id,
+                        email: session.user.email || "",
+                    });
+                    ensureProfile(session.access_token);
+                } else {
+                    setUser(null);
+                }
+            } catch (error) {
+                console.error("[auth] failed to initialize", error);
+                setUser(null);
+            } finally {
+                setAuthLoading(false);
             }
-            setAuthLoading(false);
         };
 
         checkUser();
 
         const {
             data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        } = supabase.auth.onAuthStateChange(async (event, session) => {
+            if (event === "LOGOUT_SUCCESS" || event === "AUTH_INIT_FAILED") {
+                setUser(null);
+                setAuthLoading(false);
+                return;
+            }
             if (session?.user) {
                 setUser({
                     id: session.user.id,

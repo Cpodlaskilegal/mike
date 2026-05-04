@@ -20,9 +20,9 @@ export const OPENAI_MAIN_MODELS = [
 export const CLAUDE_MID_MODELS = ["claude-sonnet-4-6"] as const;
 export const GEMINI_MID_MODELS = ["gemini-3-flash-preview"] as const;
 export const OPENAI_MID_MODELS = [
-    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
+    "gpt-5.4-nano",
 ] as const;
 
 // Low-tier (used for title generation, lightweight extractions) — user picks
@@ -47,6 +47,15 @@ const ALL_MODELS = new Set<string>([
     ...OPENAI_LOW_MODELS,
 ]);
 
+const TABULAR_MODELS = new Set<string>([
+    ...CLAUDE_MID_MODELS,
+    ...GEMINI_MID_MODELS,
+    ...GEMINI_MAIN_MODELS,
+    ...OPENAI_MID_MODELS,
+    ...CLAUDE_LOW_MODELS,
+    ...GEMINI_LOW_MODELS,
+]);
+
 // ---------------------------------------------------------------------------
 // Provider inference
 // ---------------------------------------------------------------------------
@@ -61,4 +70,12 @@ export function providerForModel(model: string): Provider {
 export function resolveModel(id: string | null | undefined, fallback: string): string {
     if (id && ALL_MODELS.has(id)) return id;
     return fallback;
+}
+
+export function isKnownModelId(id: unknown): id is string {
+    return typeof id === "string" && ALL_MODELS.has(id);
+}
+
+export function isTabularModelId(id: unknown): id is string {
+    return typeof id === "string" && TABULAR_MODELS.has(id);
 }

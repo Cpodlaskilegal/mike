@@ -9,7 +9,11 @@ import React, {
     useCallback,
 } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { getUserProfile, updateUserProfile } from "@/app/lib/mikeApi";
+import {
+    getUserProfile,
+    updateUserProfile,
+    type MikeUserProfile,
+} from "@/app/lib/mikeApi";
 
 interface UserProfile {
     displayName: string | null;
@@ -21,6 +25,7 @@ interface UserProfile {
     tabularModel: string;
     claudeApiKey: string | null;
     geminiApiKey: string | null;
+    openaiEnabled: boolean;
 }
 
 interface UserProfileContextType {
@@ -44,6 +49,24 @@ const UserProfileContext = createContext<UserProfileContextType | undefined>(
     undefined,
 );
 
+const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
+
+function mapProfile(data: MikeUserProfile): UserProfile {
+    const creditsUsed = data.message_credits_used ?? 0;
+    return {
+        displayName: data.display_name,
+        organisation: data.organisation ?? null,
+        messageCreditsUsed: creditsUsed,
+        creditsResetDate: data.credits_reset_date,
+        creditsRemaining: MONTHLY_CREDIT_LIMIT - creditsUsed,
+        tier: data.tier || "Free",
+        tabularModel: data.tabular_model || "gemini-3-flash-preview",
+        claudeApiKey: data.claude_api_key ?? null,
+        geminiApiKey: data.gemini_api_key ?? null,
+        openaiEnabled: !!data.openai_enabled,
+    };
+}
+
 export function UserProfileProvider({ children }: { children: ReactNode }) {
     const { user, isAuthenticated } = useAuth();
     const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -53,14 +76,10 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         try {
             const data = await getUserProfile();
 
-            // Define credit limit constant
-            const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
-
             // Use fetched data to update profile state
             if (data) {
                 let creditsUsed = data.message_credits_used;
                 let resetDate = data.credits_reset_date;
-                let creditsRemaining = MONTHLY_CREDIT_LIMIT - creditsUsed;
                 let shouldUpdateDb = false;
 
                 // Check if credits have expired and need reset
@@ -70,23 +89,17 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                     newResetDate.setDate(newResetDate.getDate() + 30);
                     resetDate = newResetDate.toISOString();
                     creditsUsed = 0;
-                    creditsRemaining = MONTHLY_CREDIT_LIMIT;
                     shouldUpdateDb = true;
                 }
 
                 // 1. Update local state immediately
-                setProfile({
-                    displayName: data.display_name,
-                    organisation: data.organisation ?? null,
-                    messageCreditsUsed: creditsUsed,
-                    creditsResetDate: resetDate,
-                    creditsRemaining: creditsRemaining,
-                    tier: data.tier || "Free",
-                    tabularModel:
-                        data.tabular_model || "gemini-3-flash-preview",
-                    claudeApiKey: data.claude_api_key ?? null,
-                    geminiApiKey: data.gemini_api_key ?? null,
-                });
+                setProfile(
+                    mapProfile({
+                        ...data,
+                        message_credits_used: creditsUsed,
+                        credits_reset_date: resetDate,
+                    }),
+                );
 
                 // 2. Update database in background if needed
                 if (shouldUpdateDb) {
@@ -99,6 +112,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 }
             }
         } catch (e) {
+            console.error("[profile] failed to load user profile", e);
             // Calculate a default future reset date for fallback
             const futureResetDate = new Date();
             futureResetDate.setDate(futureResetDate.getDate() + 30);
@@ -114,6 +128,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tabularModel: "gemini-3-flash-preview",
                 claudeApiKey: null,
                 geminiApiKey: null,
+                openaiEnabled: false,
             });
         } finally {
             setLoading(false);
@@ -137,11 +152,11 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             }
 
             try {
-                await updateUserProfile({ display_name: displayName });
-
-                setProfile((prev) => (prev ? { ...prev, displayName } : null));
+                const updated = await updateUserProfile({ display_name: displayName });
+                setProfile(mapProfile(updated));
                 return true;
-            } catch {
+            } catch (error) {
+                console.error("[profile] failed to update display name", error);
                 return false;
             }
         },
@@ -152,12 +167,11 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         async (organisation: string): Promise<boolean> => {
             if (!user) return false;
             try {
-                await updateUserProfile({ organisation });
-                setProfile((prev) =>
-                    prev ? { ...prev, organisation } : null,
-                );
+                const updated = await updateUserProfile({ organisation });
+                setProfile(mapProfile(updated));
                 return true;
-            } catch {
+            } catch (error) {
+                console.error("[profile] failed to update organisation", error);
                 return false;
             }
         },
@@ -173,12 +187,15 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             const dbField = field === "tabularModel" ? "tabular_model" : "";
             if (!dbField) return false;
             try {
-                await updateUserProfile({ [dbField]: value });
-                setProfile((prev) =>
-                    prev ? { ...prev, [field]: value } : null,
-                );
+                const updated = await updateUserProfile({ [dbField]: value });
+                setProfile(mapProfile(updated));
                 return true;
-            } catch {
+            } catch (error) {
+                console.error("[profile] failed to update model preference", {
+                    field,
+                    value,
+                    error,
+                });
                 return false;
             }
         },
@@ -193,16 +210,13 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             if (!user) return false;
             const dbField =
                 provider === "claude" ? "claude_api_key" : "gemini_api_key";
-            const stateField =
-                provider === "claude" ? "claudeApiKey" : "geminiApiKey";
             const normalized = value?.trim() ? value.trim() : null;
             try {
-                await updateUserProfile({ [dbField]: normalized });
-                setProfile((prev) =>
-                    prev ? { ...prev, [stateField]: normalized } : null,
-                );
+                const updated = await updateUserProfile({ [dbField]: normalized });
+                setProfile(mapProfile(updated));
                 return true;
-            } catch {
+            } catch (error) {
+                console.error(`[profile] failed to save ${provider} API key`, error);
                 return false;
             }
         },
@@ -228,21 +242,12 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         try {
             const newCreditsUsed = profile.messageCreditsUsed + 1;
 
-            await updateUserProfile({ message_credits_used: newCreditsUsed });
-
-            // Update local state
-            setProfile((prev) =>
-                prev
-                    ? {
-                          ...prev,
-                          messageCreditsUsed: newCreditsUsed,
-                          creditsRemaining: 999999 - newCreditsUsed, // temporarily unlimited
-                      }
-                    : null,
-            );
+            const updated = await updateUserProfile({ message_credits_used: newCreditsUsed });
+            setProfile(mapProfile(updated));
 
             return true;
         } catch (err) {
+            console.error("[profile] failed to increment message credits", err);
             return false;
         }
     }, [user, profile]);

@@ -28,13 +28,14 @@ import type {
     ColumnConfig,
     MikeDocument,
 } from "../shared/types";
-import { ModelToggle } from "../assistant/ModelToggle";
+import { ModelToggle, TABULAR_MODELS } from "../assistant/ModelToggle";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
 import { PreResponseWrapper } from "../shared/PreResponseWrapper";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    type ProviderAvailability,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 
@@ -187,15 +188,25 @@ function TRResponseStatus({ isActive }: { isActive: boolean }) {
 
     useEffect(() => {
         if (wasActiveRef.current && !isActive) {
-            setShowDone(true);
-            setDoneVisible(true);
-            const t = setTimeout(() => setDoneVisible(false), 1500);
+            let hideTimer: ReturnType<typeof setTimeout> | null = null;
+            const showTimer = setTimeout(() => {
+                setShowDone(true);
+                setDoneVisible(true);
+                hideTimer = setTimeout(() => setDoneVisible(false), 1500);
+            }, 0);
             wasActiveRef.current = isActive;
-            return () => clearTimeout(t);
+            return () => {
+                clearTimeout(showTimer);
+                if (hideTimer) clearTimeout(hideTimer);
+            };
         }
         if (!wasActiveRef.current && isActive) {
-            setShowDone(false);
-            setDoneVisible(false);
+            const resetTimer = setTimeout(() => {
+                setShowDone(false);
+                setDoneVisible(false);
+            }, 0);
+            wasActiveRef.current = isActive;
+            return () => clearTimeout(resetTimer);
         }
         wasActiveRef.current = isActive;
     }, [isActive]);
@@ -452,8 +463,8 @@ function TRChatInput({
     onSubmit: (value: string) => void;
     onCancel: () => void;
     model: string;
-    onModelChange: (id: string) => void;
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null };
+    onModelChange: (id: string) => void | Promise<boolean>;
+    apiKeys: ProviderAvailability;
 }) {
     const [value, setValue] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -496,6 +507,7 @@ function TRChatInput({
                         value={model}
                         onChange={onModelChange}
                         apiKeys={apiKeys}
+                        models={TABULAR_MODELS}
                     />
                     <button
                         type="button"
@@ -610,6 +622,7 @@ export function TRChatPanel({
     const apiKeys = {
         claudeApiKey: profile?.claudeApiKey ?? null,
         geminiApiKey: profile?.geminiApiKey ?? null,
+        openaiEnabled: profile?.openaiEnabled ?? false,
     };
     const currentModel = profile?.tabularModel ?? "gemini-3-flash-preview";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
@@ -1009,6 +1022,10 @@ export function TRChatPanel({
                 controller.signal,
                 { reviewTitle, projectName },
             );
+            if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(detail || `HTTP ${response.status}`);
+            }
             if (!response.body) throw new Error("No response body");
 
             const reader = response.body.getReader();
@@ -1029,6 +1046,16 @@ export function TRChatPanel({
 
                     try {
                         const data = JSON.parse(dataStr);
+
+                        if (data.type === "error") {
+                            const streamError = new Error(
+                                typeof data.message === "string"
+                                    ? data.message
+                                    : "Stream error",
+                            );
+                            streamError.name = "MikeStreamError";
+                            throw streamError;
+                        }
 
                         if (data.type === "chat_id") {
                             const newId = data.chatId as string;
@@ -1232,7 +1259,10 @@ export function TRChatPanel({
                             });
                             continue;
                         }
-                    } catch {
+                    } catch (err) {
+                        if (err instanceof Error && err.name === "MikeStreamError") {
+                            throw err;
+                        }
                         /* skip malformed */
                     }
                 }
@@ -1253,6 +1283,10 @@ export function TRChatPanel({
             });
         } catch (err: unknown) {
             const isAbort = err instanceof Error && err.name === "AbortError";
+            const errorMessage =
+                err instanceof Error && err.message
+                    ? err.message
+                    : "An error occurred. Please try again.";
             stopDrip();
             clearStreamingPlaceholders();
             setMessages((prev) => {
@@ -1274,7 +1308,7 @@ export function TRChatPanel({
                                     type: "content" as const,
                                     text: isAbort
                                         ? ""
-                                        : "An error occurred. Please try again.",
+                                        : errorMessage,
                                 },
                             ],
                         };

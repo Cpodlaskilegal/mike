@@ -8,7 +8,9 @@ const issuer = tenantId
   ? `https://login.microsoftonline.com/${tenantId}/v2.0`
   : "";
 const jwks = tenantId
-  ? createRemoteJWKSet(new URL(`${issuer}/discovery/v2.0/keys`))
+  ? createRemoteJWKSet(
+      new URL(`https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`),
+    )
   : null;
 
 type EntraClaims = {
@@ -56,7 +58,10 @@ export async function requireAuth(
     res.locals.userEmail = normalizedEmail;
     res.locals.token = token;
     next();
-  } catch {
+  } catch (error) {
+    console.warn("[auth] token validation failed", {
+      reason: error instanceof Error ? error.message : "unknown",
+    });
     res.status(401).json({ detail: "Invalid or expired token" });
   }
 }

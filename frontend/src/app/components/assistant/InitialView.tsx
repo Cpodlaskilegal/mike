@@ -28,11 +28,11 @@ export function InitialView({ onSubmit }: InitialViewProps) {
         profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
 
     useLayoutEffect(() => {
-        if (!profile || !textRef.current) return;
+        if (!textRef.current) return;
         const h1Width = textRef.current.offsetWidth;
         setIconOffset((h1Width + GAP) / 2);
         setTextOffset((ICON_SIZE + GAP) / 2);
-    }, [profile]);
+    }, [username]);
 
     useEffect(() => {
         if (!iconOffset) return;
