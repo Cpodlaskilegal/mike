@@ -161,14 +161,15 @@ export const supabase = {
         onAuthStateChange(
             callback: (_event: string, session: MikeSession | null) => void,
         ) {
+            // Only react to login/logout. Listening for ACQUIRE_TOKEN_SUCCESS
+            // here is unsafe: the handler calls getSession(), which calls
+            // acquireTokenSilent, which itself emits ACQUIRE_TOKEN_SUCCESS —
+            // an infinite refresh loop that hammers the API and pegs Safari.
             let callbackId: string | null = null;
             ensureMsal()
                 .then((app) => {
                     callbackId = app.addEventCallback((event) => {
-                        if (
-                            event.eventType === EventType.LOGIN_SUCCESS ||
-                            event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS
-                        ) {
+                        if (event.eventType === EventType.LOGIN_SUCCESS) {
                             this.getSession().then(({ data }) =>
                                 callback(event.eventType, data.session),
                             );
