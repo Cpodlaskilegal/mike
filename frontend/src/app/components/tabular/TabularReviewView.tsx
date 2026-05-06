@@ -92,7 +92,7 @@ export function TRView({ reviewId, projectId }: Props) {
         geminiApiKey: profile?.geminiApiKey ?? null,
         openaiEnabled: profile?.openaiEnabled ?? false,
     };
-    const tabularModel = profile?.tabularModel ?? "gemini-3-flash-preview";
+    const tabularModel = profile?.tabularModel ?? "gpt-5.4-mini";
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);

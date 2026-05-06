@@ -13,14 +13,15 @@ export type UserModelSettings = {
     api_keys: UserApiKeys;
 };
 
-// Title generation is a lightweight task — always routed to the cheapest model
-// of whichever provider the user has keys for: Gemini Flash Lite if Gemini is
-// available, otherwise Claude Haiku. With no user keys set, defaults to Gemini
-// (the dev-mode env fallback).
+// Title generation is a lightweight task — always routed to the cheapest
+// available model. Order: server-managed OpenAI (default for this Azure
+// deployment), then user-supplied Claude key, then user-supplied Gemini key.
+// Falls through to DEFAULT_TITLE_MODEL (gpt-5.4-nano) which still requires
+// OPENAI_API_KEY to be set on the server.
 function resolveTitleModel(apiKeys: UserApiKeys): string {
-    if (apiKeys.gemini?.trim()) return DEFAULT_TITLE_MODEL;
-    if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
     if (process.env.OPENAI_API_KEY?.trim()) return OPENAI_LOW_MODELS[0];
+    if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
+    if (apiKeys.gemini?.trim()) return DEFAULT_TITLE_MODEL;
     return DEFAULT_TITLE_MODEL;
 }
 

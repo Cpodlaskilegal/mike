@@ -624,7 +624,7 @@ export function TRChatPanel({
         geminiApiKey: profile?.geminiApiKey ?? null,
         openaiEnabled: profile?.openaiEnabled ?? false,
     };
-    const currentModel = profile?.tabularModel ?? "gemini-3-flash-preview";
+    const currentModel = profile?.tabularModel ?? "gpt-5.4-mini";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);
     const [chats, setChats] = useState<TRChat[]>([]);

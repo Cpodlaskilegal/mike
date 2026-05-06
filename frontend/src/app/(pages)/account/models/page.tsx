@@ -40,7 +40,7 @@ export default function ModelsAndApiKeysPage() {
                         <TabularModelDropdown
                             value={
                                 profile?.tabularModel ??
-                                "gemini-3-flash-preview"
+                                "gpt-5.4-mini"
                             }
                             apiKeys={{
                                 claudeApiKey: profile?.claudeApiKey ?? null,
@@ -63,9 +63,8 @@ export default function ModelsAndApiKeysPage() {
                     </h2>
                 </div>
                 <p className="text-sm text-gray-500 mb-4 max-w-xl">
-                    Add your own Claude or Gemini API keys here. OpenAI models
-                    are managed by the Mike server and do not require a user API
-                    key.
+                    Add your own Claude API key here. OpenAI models are managed
+                    by the Mike server and do not require a user API key.
                 </p>
                 <p className="text-xs text-gray-400 mb-4 max-w-xl">
                     Title generation automatically routes to the cheapest model
@@ -78,14 +77,6 @@ export default function ModelsAndApiKeysPage() {
                         initialValue={profile?.claudeApiKey ?? ""}
                         onSave={(value) =>
                             updateApiKey("claude", value.trim() || null)
-                        }
-                    />
-                    <ApiKeyField
-                        label="Google (Gemini) API Key"
-                        placeholder="AI…"
-                        initialValue={profile?.geminiApiKey ?? ""}
-                        onSave={(value) =>
-                            updateApiKey("gemini", value.trim() || null)
                         }
                     />
                 </div>
@@ -113,11 +104,7 @@ function TabularModelDropdown({
     const visibleModels = TABULAR_MODELS.filter(
         (m) => openaiEnabled || m.group !== "OpenAI",
     );
-    const groups: ("OpenAI" | "Anthropic" | "Google")[] = [
-        "OpenAI",
-        "Anthropic",
-        "Google",
-    ];
+    const groups: ("OpenAI" | "Anthropic")[] = ["OpenAI", "Anthropic"];
 
     const handleSelect = async (id: string) => {
         if (pendingId || id === value) return;
@@ -195,7 +182,7 @@ function TabularModelDropdown({
                                                 !available
                                                     ? provider === "openai"
                                                         ? "Ask an administrator to enable OpenAI for this deployment"
-                                                        : `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
+                                                        : `Add a Claude API key to use this model`
                                                     : undefined
                                             }
                                         >

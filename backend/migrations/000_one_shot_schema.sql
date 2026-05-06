@@ -17,7 +17,7 @@ create table if not exists public.user_profiles (
   tier text not null default 'Free',
   message_credits_used integer not null default 0,
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
-  tabular_model text not null default 'gemini-3-flash-preview',
+  tabular_model text not null default 'gpt-5.4-mini',
   claude_api_key text,
   gemini_api_key text,
   created_at timestamptz not null default now(),

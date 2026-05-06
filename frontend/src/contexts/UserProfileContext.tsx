@@ -60,7 +60,7 @@ function mapProfile(data: MikeUserProfile): UserProfile {
         creditsResetDate: data.credits_reset_date,
         creditsRemaining: MONTHLY_CREDIT_LIMIT - creditsUsed,
         tier: data.tier || "Free",
-        tabularModel: data.tabular_model || "gemini-3-flash-preview",
+        tabularModel: data.tabular_model || "gpt-5.4-mini",
         claudeApiKey: data.claude_api_key ?? null,
         geminiApiKey: data.gemini_api_key ?? null,
         openaiEnabled: !!data.openai_enabled,
@@ -125,7 +125,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 creditsResetDate: futureResetDate.toISOString(),
                 creditsRemaining: 999999, // temporarily unlimited
                 tier: "Free",
-                tabularModel: "gemini-3-flash-preview",
+                tabularModel: "gpt-5.4-mini",
                 claudeApiKey: null,
                 geminiApiKey: null,
                 openaiEnabled: false,
