@@ -1,39 +1,28 @@
-export type ModelProvider = "claude" | "gemini" | "openai";
-export type ModelGroup = "Anthropic" | "Google" | "OpenAI";
+import { MODELS, type ModelOption } from "../components/assistant/ModelToggle";
+import type { ApiKeyState } from "@/app/lib/mikeApi";
 
-export type ProviderAvailability = {
-    claudeApiKey: string | null;
-    geminiApiKey: string | null;
-    openaiEnabled: boolean;
-};
+export type ModelProvider = "claude" | "gemini" | "openai";
 
 export function getModelProvider(modelId: string): ModelProvider | null {
-    if (modelId.startsWith("claude")) return "claude";
-    if (modelId.startsWith("gemini")) return "gemini";
-    if (modelId.startsWith("gpt-")) return "openai";
-    return null;
+    const model = MODELS.find((m) => m.id === modelId);
+    if (!model) return null;
+    return modelGroupToProvider(model.group);
 }
 
 export function isModelAvailable(
     modelId: string,
-    apiKeys: ProviderAvailability,
+    apiKeys: ApiKeyState,
 ): boolean {
     const provider = getModelProvider(modelId);
     if (!provider) return false;
-    if (provider === "openai") return apiKeys.openaiEnabled;
-    return provider === "claude"
-        ? !!apiKeys.claudeApiKey?.trim()
-        : !!apiKeys.geminiApiKey?.trim();
+    return isProviderAvailable(provider, apiKeys);
 }
 
 export function isProviderAvailable(
     provider: ModelProvider,
-    apiKeys: ProviderAvailability,
+    apiKeys: ApiKeyState,
 ): boolean {
-    if (provider === "openai") return apiKeys.openaiEnabled;
-    return provider === "claude"
-        ? !!apiKeys.claudeApiKey?.trim()
-        : !!apiKeys.geminiApiKey?.trim();
+    return !!apiKeys[provider]?.configured;
 }
 
 export function providerLabel(provider: ModelProvider): string {
@@ -43,7 +32,7 @@ export function providerLabel(provider: ModelProvider): string {
 }
 
 export function modelGroupToProvider(
-    group: ModelGroup,
+    group: ModelOption["group"],
 ): ModelProvider {
     if (group === "Anthropic") return "claude";
     if (group === "OpenAI") return "openai";

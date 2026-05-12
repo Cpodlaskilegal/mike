@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { SiteLogo } from "@/components/site-logo";
 import { useAuth } from "@/contexts/AuthContext";
+
 export default function LoginPage() {
     const router = useRouter();
     const { isAuthenticated, authLoading } = useAuth();
@@ -25,9 +26,7 @@ export default function LoginPage() {
 
         try {
             const { error } = await supabase.auth.signInWithPassword();
-
             if (error) throw error;
-
         } catch (error: unknown) {
             setError(
                 error instanceof Error
@@ -45,7 +44,6 @@ export default function LoginPage() {
                 <SiteLogo size="md" className="md:text-4xl" asLink />
             </div>
             <div className="w-full max-w-md">
-                {/* Login Form */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-8">
                     <div className="mb-6">
                         <h2 className="text-left text-2xl font-serif">

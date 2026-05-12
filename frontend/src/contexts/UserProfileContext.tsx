@@ -10,9 +10,12 @@ import React, {
 } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
+    type ApiKeyState,
+    type ApiKeyProvider,
+    type UserProfile as ApiUserProfile,
     getUserProfile,
+    saveApiKey,
     updateUserProfile,
-    type MikeUserProfile,
 } from "@/app/lib/mikeApi";
 
 interface UserProfile {
@@ -23,9 +26,7 @@ interface UserProfile {
     creditsRemaining: number;
     tier: string;
     tabularModel: string;
-    claudeApiKey: string | null;
-    geminiApiKey: string | null;
-    openaiEnabled: boolean;
+    apiKeys: ApiKeyState;
 }
 
 interface UserProfileContextType {
@@ -38,7 +39,7 @@ interface UserProfileContextType {
         value: string,
     ) => Promise<boolean>;
     updateApiKey: (
-        provider: "claude" | "gemini",
+        provider: ApiKeyProvider,
         value: string | null,
     ) => Promise<boolean>;
     reloadProfile: () => Promise<void>;
@@ -49,21 +50,32 @@ const UserProfileContext = createContext<UserProfileContextType | undefined>(
     undefined,
 );
 
-const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
+const API_KEY_PROVIDERS: ApiKeyProvider[] = ["claude", "gemini", "openai"];
 
-function mapProfile(data: MikeUserProfile): UserProfile {
-    const creditsUsed = data.message_credits_used ?? 0;
+function emptyApiKeys(): ApiKeyState {
     return {
-        displayName: data.display_name,
-        organisation: data.organisation ?? null,
-        messageCreditsUsed: creditsUsed,
-        creditsResetDate: data.credits_reset_date,
-        creditsRemaining: MONTHLY_CREDIT_LIMIT - creditsUsed,
-        tier: data.tier || "Free",
-        tabularModel: data.tabular_model || "gpt-5.4-mini",
-        claudeApiKey: data.claude_api_key ?? null,
-        geminiApiKey: data.gemini_api_key ?? null,
-        openaiEnabled: !!data.openai_enabled,
+        claude: { configured: false, source: null },
+        gemini: { configured: false, source: null },
+        openai: { configured: false, source: null },
+    };
+}
+
+function toProfile(data: ApiUserProfile): UserProfile {
+    const { apiKeyStatus, ...profile } = data;
+    const apiKeys = emptyApiKeys();
+    for (const provider of API_KEY_PROVIDERS) {
+        apiKeys[provider] = {
+            configured: !!apiKeyStatus?.[provider],
+            source:
+                apiKeyStatus?.sources?.[provider] ??
+                (apiKeyStatus?.[provider] ? "user" : null),
+        };
+    }
+
+    return {
+        ...profile,
+        tabularModel: profile.tabularModel || "gpt-5.4-mini",
+        apiKeys,
     };
 }
 
@@ -74,61 +86,22 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
     const loadProfile = useCallback(async () => {
         try {
-            const data = await getUserProfile();
-
-            // Use fetched data to update profile state
-            if (data) {
-                let creditsUsed = data.message_credits_used;
-                let resetDate = data.credits_reset_date;
-                let shouldUpdateDb = false;
-
-                // Check if credits have expired and need reset
-                if (resetDate && new Date() > new Date(resetDate)) {
-                    // Calculate new reset date
-                    const newResetDate = new Date();
-                    newResetDate.setDate(newResetDate.getDate() + 30);
-                    resetDate = newResetDate.toISOString();
-                    creditsUsed = 0;
-                    shouldUpdateDb = true;
-                }
-
-                // 1. Update local state immediately
-                setProfile(
-                    mapProfile({
-                        ...data,
-                        message_credits_used: creditsUsed,
-                        credits_reset_date: resetDate,
-                    }),
-                );
-
-                // 2. Update database in background if needed
-                if (shouldUpdateDb) {
-                    updateUserProfile({
-                        message_credits_used: 0,
-                        credits_reset_date: resetDate,
-                    }).catch((error) =>
-                        console.error("Failed to auto-reset credits", error),
-                    );
-                }
-            }
-        } catch (e) {
-            console.error("[profile] failed to load user profile", e);
-            // Calculate a default future reset date for fallback
+            const profileData = await getUserProfile();
+            setProfile(toProfile(profileData));
+        } catch (error) {
+            console.error("[profile] failed to load user profile", error);
             const futureResetDate = new Date();
             futureResetDate.setDate(futureResetDate.getDate() + 30);
 
-            // Set fallback profile data on exception
             setProfile({
                 displayName: null,
                 organisation: null,
                 messageCreditsUsed: 0,
                 creditsResetDate: futureResetDate.toISOString(),
-                creditsRemaining: 999999, // temporarily unlimited
+                creditsRemaining: 999999,
                 tier: "Free",
                 tabularModel: "gpt-5.4-mini",
-                claudeApiKey: null,
-                geminiApiKey: null,
-                openaiEnabled: false,
+                apiKeys: emptyApiKeys(),
             });
         } finally {
             setLoading(false);
@@ -147,13 +120,12 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
     const updateDisplayName = useCallback(
         async (displayName: string): Promise<boolean> => {
-            if (!user) {
-                return false;
-            }
-
+            if (!user) return false;
             try {
-                const updated = await updateUserProfile({ display_name: displayName });
-                setProfile(mapProfile(updated));
+                const updated = await updateUserProfile({ displayName });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
                 return true;
             } catch (error) {
                 console.error("[profile] failed to update display name", error);
@@ -168,7 +140,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             if (!user) return false;
             try {
                 const updated = await updateUserProfile({ organisation });
-                setProfile(mapProfile(updated));
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
                 return true;
             } catch (error) {
                 console.error("[profile] failed to update organisation", error);
@@ -179,16 +153,15 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     );
 
     const updateModelPreference = useCallback(
-        async (
-            field: "tabularModel",
-            value: string,
-        ): Promise<boolean> => {
-            if (!user) return false;
-            const dbField = field === "tabularModel" ? "tabular_model" : "";
-            if (!dbField) return false;
+        async (field: "tabularModel", value: string): Promise<boolean> => {
+            if (!user || field !== "tabularModel") return false;
             try {
-                const updated = await updateUserProfile({ [dbField]: value });
-                setProfile(mapProfile(updated));
+                const updated = await updateUserProfile({
+                    tabularModel: value,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
                 return true;
             } catch (error) {
                 console.error("[profile] failed to update model preference", {
@@ -204,16 +177,26 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
     const updateApiKey = useCallback(
         async (
-            provider: "claude" | "gemini",
+            provider: ApiKeyProvider,
             value: string | null,
         ): Promise<boolean> => {
             if (!user) return false;
-            const dbField =
-                provider === "claude" ? "claude_api_key" : "gemini_api_key";
             const normalized = value?.trim() ? value.trim() : null;
             try {
-                const updated = await updateUserProfile({ [dbField]: normalized });
-                setProfile(mapProfile(updated));
+                const status = await saveApiKey(provider, normalized);
+                setProfile((prev) => {
+                    if (!prev) return null;
+                    const nextApiKeys = { ...prev.apiKeys };
+                    for (const keyProvider of API_KEY_PROVIDERS) {
+                        nextApiKeys[keyProvider] = {
+                            configured: !!status[keyProvider],
+                            source:
+                                status.sources?.[keyProvider] ??
+                                (status[keyProvider] ? "user" : null),
+                        };
+                    }
+                    return { ...prev, apiKeys: nextApiKeys };
+                });
                 return true;
             } catch (error) {
                 console.error(`[profile] failed to save ${provider} API key`, error);
@@ -230,26 +213,8 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     }, [user, loadProfile]);
 
     const incrementMessageCredits = useCallback(async (): Promise<boolean> => {
-        if (!user || !profile) {
-            return false;
-        }
-
-        // Check if user has credits remaining
-        if (profile.creditsRemaining <= 0) {
-            return false;
-        }
-
-        try {
-            const newCreditsUsed = profile.messageCreditsUsed + 1;
-
-            const updated = await updateUserProfile({ message_credits_used: newCreditsUsed });
-            setProfile(mapProfile(updated));
-
-            return true;
-        } catch (err) {
-            console.error("[profile] failed to increment message credits", err);
-            return false;
-        }
+        if (!user || !profile || profile.creditsRemaining <= 0) return false;
+        return false;
     }, [user, profile]);
 
     return (

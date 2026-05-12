@@ -113,7 +113,9 @@ export function normalizeDownloadFilename(name: string): string {
 }
 
 export function sanitizeDispositionFilename(name: string): string {
-  return normalizeDownloadFilename(name).replace(/["\\]/g, "_");
+  return normalizeDownloadFilename(name)
+    .replace(/["\\]/g, "_")
+    .replace(/[^\x20-\x7E]/g, "_");
 }
 
 export function encodeRFC5987(str: string): string {

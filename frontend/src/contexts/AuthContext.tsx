@@ -34,8 +34,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             await fetch(`${apiBase}/user/profile`, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${accessToken}` },
-            }).catch((e) => {
-                console.log(e);
+            }).catch((error) => {
+                console.error("[auth] failed to ensure profile", error);
             });
         };
 
@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             try {
                 const {
                     data: { session },
-                } = await supabase.auth.getSession();
+                } = await supabase.auth.getSession({ interactive: true });
 
                 if (session?.user) {
                     setUser({

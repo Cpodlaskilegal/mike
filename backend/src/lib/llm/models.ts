@@ -54,6 +54,7 @@ const TABULAR_MODELS = new Set<string>([
     ...OPENAI_MID_MODELS,
     ...CLAUDE_LOW_MODELS,
     ...GEMINI_LOW_MODELS,
+    ...OPENAI_LOW_MODELS,
 ]);
 
 // ---------------------------------------------------------------------------

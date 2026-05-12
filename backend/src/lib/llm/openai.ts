@@ -19,11 +19,11 @@ import type {
 
 const MAX_OUTPUT_TOKENS = 16384;
 
-function client(): OpenAI {
-    const apiKey = process.env.OPENAI_API_KEY?.trim();
+function client(apiKeyOverride?: string | null): OpenAI {
+    const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) {
         throw new Error(
-            "OPENAI_API_KEY is required to use OpenAI models. Configure the server-managed key before selecting an OpenAI model.",
+            "An OpenAI API key is required to use OpenAI models. Configure OPENAI_API_KEY or save a user OpenAI key before selecting an OpenAI model.",
         );
     }
     return new OpenAI({ apiKey });
@@ -245,7 +245,7 @@ export async function streamOpenAI(
         runTools,
     } = params;
     const maxIter = params.maxIterations ?? 10;
-    const openai = client();
+    const openai = client(params.apiKeys?.openai);
     const openaiTools = toOpenAITools(tools);
     let input = toInput(params.messages);
     let previousResponseId: string | undefined;
@@ -322,11 +322,12 @@ export async function completeOpenAIText(params: {
     systemPrompt?: string;
     user: string;
     maxTokens?: number;
+    apiKeys?: { openai?: string | null };
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
 }): Promise<string> {
-    const openai = client();
+    const openai = client(params.apiKeys?.openai);
     const response = await createNonStreamingResponse(openai, {
         model: params.model,
         systemPrompt: params.systemPrompt,

@@ -145,6 +145,18 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     return this;
   }
 
+  filter(column: string, operator: string, value: unknown) {
+    if (operator === "cs" || operator === "contains") {
+      this.filters.push({ kind: "contains", column, value });
+      return this;
+    }
+    if (operator === "eq") {
+      this.filters.push({ kind: "eq", column, value });
+      return this;
+    }
+    throw new Error(`Unsupported filter: ${column}.${operator}`);
+  }
+
   is(column: string, value: unknown) {
     this.filters.push({ kind: "is", column, value });
     return this;
@@ -222,7 +234,7 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
         }
         throw new Error(`Unsupported not() filter: ${filter.column}.${filter.operator}`);
       }
-      values.push(this.prepareValue(filter.column, filter.value));
+      values.push(this.prepareContainsValue(filter.column, filter.value));
       return `${column} @> $${values.length}::jsonb`;
     });
 
@@ -276,6 +288,19 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
   private prepareValue(column: string, value: unknown): unknown {
     if (value == null) return value;
     if (!JSONB_COLUMNS[this.table]?.has(column)) return value;
+    return JSON.stringify(value);
+  }
+
+  private prepareContainsValue(column: string, value: unknown): unknown {
+    if (value == null) return value;
+    if (!JSONB_COLUMNS[this.table]?.has(column)) return value;
+    if (typeof value === "string") {
+      try {
+        return JSON.stringify(JSON.parse(value));
+      } catch {
+        return JSON.stringify(value);
+      }
+    }
     return JSON.stringify(value);
   }
 

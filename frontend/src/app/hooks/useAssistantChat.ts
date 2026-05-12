@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { streamChat, streamProjectChat } from "@/app/lib/mikeApi";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
@@ -70,6 +70,14 @@ export function useAssistantChat({
         const events = last.events ?? [];
         const idx = findLastContentIndex(events);
         if (idx < 0) return prev;
+        const current = events[idx];
+        if (
+            current.type === "content" &&
+            current.text === text &&
+            !!current.isStreaming === !!isStreaming
+        ) {
+            return prev;
+        }
         const newEvents = [...events];
         newEvents[idx] = isStreaming
             ? { type: "content", text, isStreaming: true }
@@ -149,7 +157,10 @@ export function useAssistantChat({
         dripIntervalRef.current = setInterval(() => {
             const target = dripTargetRef.current;
             const displayLen = dripDisplayLenRef.current;
-            if (displayLen >= target.length) return;
+            if (displayLen >= target.length) {
+                stopDrip();
+                return;
+            }
 
             const newLen = Math.min(
                 displayLen + DRIP_CHARS_PER_TICK,
@@ -173,8 +184,16 @@ export function useAssistantChat({
             setMessages((prev) =>
                 updateLastContentEvent(prev, visibleText, true),
             );
+
+            if (newLen >= target.length) {
+                stopDrip();
+            }
         }, 16);
     };
+
+    useEffect(() => {
+        return () => stopDrip();
+    }, []);
 
     const cancel = () => {
         if (abortControllerRef.current) {
@@ -231,11 +250,11 @@ export function useAssistantChat({
     const pushEvent = (event: AssistantEvent) => {
         finalizeStreamingContent();
         finalizeStreamingReasoning();
-        // Drop any in-flight placeholder unless we're pushing one ourselves.
-        let next = eventsRef.current;
-        if (event.type !== "tool_call_start" && event.type !== "thinking") {
-            next = next.filter((e) => !isStreamingPlaceholder(e));
-        }
+        // A real event, or a more specific placeholder such as
+        // tool_call_start, should replace any generic "Thinking..." line.
+        const next = eventsRef.current.filter(
+            (e) => !isStreamingPlaceholder(e),
+        );
         eventsRef.current = [...next, event];
         const snapshot = [...eventsRef.current];
         setMessages((prev) => {

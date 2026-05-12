@@ -15,6 +15,7 @@ import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import {
     checkProjectAccess,
     ensureReviewAccess,
+    filterAccessibleDocumentIds,
     listAccessibleProjectIds,
 } from "../lib/access";
 
@@ -213,6 +214,14 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         if (!access.ok)
             return void res.status(404).json({ detail: "Project not found" });
     }
+    const allowedDocumentIds = Array.isArray(document_ids)
+        ? await filterAccessibleDocumentIds(
+              document_ids,
+              userId,
+              userEmail,
+              db,
+          )
+        : [];
     const { data: review, error } = await db
         .from("tabular_reviews")
         .insert({
@@ -229,7 +238,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             .status(500)
             .json({ detail: error?.message ?? "Failed to create review" });
 
-    const cells = document_ids.flatMap((docId) =>
+    const cells = allowedDocumentIds.flatMap((docId) =>
         columns_config.map((col) => ({
             review_id: review.id,
             document_id: docId,
@@ -352,7 +361,13 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
         .from("tabular_cells")
         .select("*")
         .eq("review_id", reviewId);
-    const docIds = [...new Set((cells ?? []).map((c) => c.document_id))];
+    const docIds: string[] = Array.from(
+        new Set<string>(
+            (cells ?? [])
+                .map((c) => c.document_id)
+                .filter((id): id is string => typeof id === "string"),
+        ),
+    );
     const docsResult =
         docIds.length > 0
             ? await db.from("documents").select("*").in("id", docIds)
@@ -536,9 +551,23 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 
         if (Array.isArray(req.body.document_ids)) {
             // document_ids is the new source of truth — delete removed docs' cells
-            const newDocIds = req.body.document_ids as string[];
+            const requestedDocIds = req.body.document_ids as string[];
             const existingDocIds = (existingCells ?? []).map(
                 (cell) => cell.document_id,
+            );
+            const existingDocIdSet = new Set(existingDocIds);
+            const newDocCandidates = requestedDocIds.filter(
+                (id) => !existingDocIdSet.has(id),
+            );
+            const newDocAllowed = await filterAccessibleDocumentIds(
+                newDocCandidates,
+                userId,
+                userEmail,
+                db,
+            );
+            const newDocAllowedSet = new Set(newDocAllowed);
+            const newDocIds = requestedDocIds.filter(
+                (id) => existingDocIdSet.has(id) || newDocAllowedSet.has(id),
             );
             const removedDocIds = existingDocIds.filter(
                 (id) => !newDocIds.includes(id),
@@ -695,6 +724,14 @@ tabularRouter.post(
         if (!column)
             return void res.status(400).json({ detail: "Column not found" });
 
+        const docAllowed = await filterAccessibleDocumentIds(
+            [document_id],
+            userId,
+            userEmail,
+            db,
+        );
+        if (docAllowed.length === 0)
+            return void res.status(404).json({ detail: "Document not found" });
         const { data: doc } = await db
             .from("documents")
             .select("id, filename, file_type")
@@ -800,13 +837,26 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     for (const cell of cells ?? [])
         cellMap.set(`${cell.document_id}:${cell.column_index}`, cell);
 
-    const docIds = [...new Set((cells ?? []).map((c) => c.document_id))];
+    const docIds: string[] = Array.from(
+        new Set<string>(
+            (cells ?? [])
+                .map((c) => c.document_id)
+                .filter((id): id is string => typeof id === "string"),
+        ),
+    );
+    const allowedDocIds = new Set(
+        await filterAccessibleDocumentIds(docIds, userId, userEmail, db),
+    );
     let docs: Record<string, unknown>[] = [];
     if (docIds.length > 0) {
-        const { data } = await db
-            .from("documents")
-            .select("id, filename, file_type, page_count")
-            .in("id", docIds);
+        const filteredIds = docIds.filter((id) => allowedDocIds.has(id));
+        const { data } =
+            filteredIds.length > 0
+                ? await db
+                      .from("documents")
+                      .select("id, filename, file_type, page_count")
+                      .in("id", filteredIds)
+                : { data: [] as Record<string, unknown>[] };
         docs = data ?? [];
     } else if (review.project_id) {
         const { data } = await db
