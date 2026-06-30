@@ -1,6 +1,6 @@
-// Shared TypeScript types for Mike AI legal assistant
+// Shared TypeScript types for Docket AI legal assistant
 
-export interface MikeFolder {
+export interface DocketFolder {
   id: string;
   project_id: string;
   user_id: string;
@@ -10,7 +10,7 @@ export interface MikeFolder {
   updated_at: string;
 }
 
-export interface MikeProject {
+export interface DocketProject {
   id: string;
   user_id: string;
   is_owner?: boolean;
@@ -19,14 +19,14 @@ export interface MikeProject {
   shared_with: string[];
   created_at: string;
   updated_at: string;
-  documents?: MikeDocument[];
-  folders?: MikeFolder[];
+  documents?: DocketDocument[];
+  folders?: DocketFolder[];
   document_count?: number;
   chat_count?: number;
   review_count?: number;
 }
 
-export interface MikeDocument {
+export interface DocketDocument {
   id: string;
   user_id?: string;
   project_id: string | null;
@@ -53,7 +53,7 @@ export interface StructureNode {
   children: StructureNode[];
 }
 
-export interface MikeChat {
+export interface DocketChat {
   id: string;
   project_id: string | null;
   user_id: string;
@@ -61,7 +61,7 @@ export interface MikeChat {
   created_at: string;
 }
 
-export interface MikeEditAnnotation {
+export interface DocketEditAnnotation {
   type?: "edit_data";
   kind?: "edit";
   edit_id: string;
@@ -129,6 +129,74 @@ export type AssistantEvent =
     }
   | { type: "workflow_applied"; workflow_id: string; title: string }
   | {
+        type: "case_citation";
+        cluster_id: number | null;
+        case_name: string | null;
+        citation: string | null;
+        url: string;
+        pdfUrl?: string | null;
+        dateFiled?: string | null;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "courtlistener_search_case_law";
+        query: string;
+        result_count: number;
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "courtlistener_get_cases";
+        cluster_ids: number[];
+        case_count: number;
+        opinion_count: number;
+        cases?: {
+            cluster_id: number;
+            case_name: string | null;
+            citation: string | null;
+            dateFiled?: string | null;
+            url?: string | null;
+        }[];
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "courtlistener_find_in_case";
+        cluster_id: number | null;
+        query: string;
+        total_matches: number;
+        case_name?: string | null;
+        citation?: string | null;
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "courtlistener_read_case";
+        cluster_id: number | null;
+        case_name?: string | null;
+        citation?: string | null;
+        opinion_count: number;
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "courtlistener_verify_citations";
+        citation_count: number;
+        match_count: number;
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "mcp_tool_call";
+        connector_id: string;
+        connector_name: string;
+        tool_name: string;
+        openai_tool_name: string;
+        status: "ok" | "error";
+        error?: string;
+        isStreaming?: boolean;
+    }
+  | {
         type: "doc_edited";
         filename: string;
         document_id: string;
@@ -136,19 +204,19 @@ export type AssistantEvent =
         /** Per-document monotonic Vn written at emit time. */
         version_number?: number | null;
         download_url: string;
-        annotations: MikeEditAnnotation[];
+        annotations: DocketEditAnnotation[];
         error?: string;
         isStreaming?: boolean;
     }
   | { type: "content"; text: string; isStreaming?: boolean };
 
-export interface MikeMessage {
+export interface DocketMessage {
   role: "user" | "assistant";
   content: string;
   files?: { filename: string; document_id?: string }[];
   workflow?: { id: string; title: string };
   model?: string;
-  annotations?: MikeCitationAnnotation[];
+  annotations?: DocketCitationAnnotation[];
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
@@ -166,7 +234,7 @@ export interface CitationQuote {
  * like "41-42" and a `quote` containing the `[[PAGE_BREAK]]` sentinel at the
  * break point (text before is on page 41, text after is on page 42).
  */
-export interface MikeCitationAnnotation {
+export interface DocketCitationAnnotation {
   type: "citation_data";
   ref: number;
   doc_id: string;
@@ -186,7 +254,7 @@ const PAGE_BREAK_SENTINEL = "[[PAGE_BREAK]]";
  * cross-page citation with page "N-M" and a `[[PAGE_BREAK]]` split yields two.
  */
 export function expandCitationToEntries(
-  a: MikeCitationAnnotation,
+  a: DocketCitationAnnotation,
 ): CitationQuote[] {
   const rangeMatch =
     typeof a.page === "string"
@@ -208,13 +276,13 @@ export function expandCitationToEntries(
 }
 
 /** Format the page(s) of a citation for display, e.g. "Page 3" or "Page 41-42". */
-export function formatCitationPage(a: MikeCitationAnnotation): string {
+export function formatCitationPage(a: DocketCitationAnnotation): string {
   if (typeof a.page === "string") return `Page ${a.page}`;
   return `Page ${a.page}`;
 }
 
 /** Produce a reader-friendly version of the quote (replaces [[PAGE_BREAK]] with "..."). */
-export function displayCitationQuote(a: MikeCitationAnnotation): string {
+export function displayCitationQuote(a: DocketCitationAnnotation): string {
   return a.quote.replaceAll(PAGE_BREAK_SENTINEL, "...");
 }
 
@@ -272,7 +340,7 @@ export interface TabularCell {
 
 // Workflows
 
-export interface MikeWorkflow {
+export interface DocketWorkflow {
   id: string;
   user_id: string | null;
   title: string;
@@ -289,13 +357,13 @@ export interface MikeWorkflow {
 
 // API helpers
 
-export interface MikeChatDetailOut {
-  chat: MikeChat;
-  messages: MikeMessage[];
+export interface DocketChatDetailOut {
+  chat: DocketChat;
+  messages: DocketMessage[];
 }
 
 export interface TabularReviewDetailOut {
   review: TabularReview;
   cells: TabularCell[];
-  documents: MikeDocument[];
+  documents: DocketDocument[];
 }

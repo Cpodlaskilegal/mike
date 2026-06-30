@@ -2,17 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import { streamChat, streamProjectChat } from "@/app/lib/docketApi";
+import { describeChatError } from "@/app/lib/chatErrors";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
 import type {
     AssistantEvent,
-    MikeCitationAnnotation,
-    MikeMessage,
+    DocketCitationAnnotation,
+    DocketMessage,
 } from "@/app/components/shared/types";
 
 interface UseAssistantChatOptions {
-    initialMessages?: MikeMessage[];
+    initialMessages?: DocketMessage[];
     chatId?: string;
     projectId?: string;
 }
@@ -39,12 +40,15 @@ export function useAssistantChat({
     } = useChatHistoryContext();
     const { generate: generateTitle } = useGenerateChatTitle();
 
-    const [messages, setMessages] = useState<MikeMessage[]>(initialMessages);
+    const [messages, setMessages] = useState<DocketMessage[]>(initialMessages);
     const [isResponseLoading, setIsResponseLoading] = useState(false);
     const [isLoadingCitations, setIsLoadingCitations] = useState(false);
     const [chatId, setChatId] = useState<string | undefined>(initialChatId);
 
     const abortControllerRef = useRef<AbortController | null>(null);
+    const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(
+        null,
+    );
 
     const dripIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const dripTargetRef = useRef<string>("");
@@ -59,11 +63,30 @@ export function useAssistantChat({
         }
     };
 
+    // Without this, navigating away mid-stream leaves the SSE connection and
+    // 60Hz drip timer running. On Safari (single shared NetworkProcess) a
+    // handful of orphaned streams will eventually wedge the whole browser.
+    useEffect(() => {
+        return () => {
+            abortControllerRef.current?.abort();
+            abortControllerRef.current = null;
+            const r = readerRef.current;
+            readerRef.current = null;
+            if (r) {
+                r.cancel().catch(() => {});
+            }
+            if (dripIntervalRef.current !== null) {
+                clearInterval(dripIntervalRef.current);
+                dripIntervalRef.current = null;
+            }
+        };
+    }, []);
+
     const updateLastContentEvent = (
-        prev: MikeMessage[],
+        prev: DocketMessage[],
         text: string,
         isStreaming?: boolean,
-    ): MikeMessage[] => {
+    ): DocketMessage[] => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role !== "assistant") return prev;
@@ -292,7 +315,7 @@ export function useAssistantChat({
     };
 
     const handleChat = async (
-        message: MikeMessage,
+        message: DocketMessage,
         opts?: {
             displayedDoc?: { filename: string; documentId: string } | null;
         },
@@ -307,7 +330,7 @@ export function useAssistantChat({
             lastMessage.role === "user" &&
             lastMessage.content === message.content;
 
-        const newMessages: MikeMessage[] = isMessageAlreadyAdded
+        const newMessages: DocketMessage[] = isMessageAlreadyAdded
             ? messages
             : [...messages, message];
 
@@ -375,11 +398,12 @@ export function useAssistantChat({
 
             if (!response.ok) {
                 const errText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errText}`);
+                throw new Error(errText || `HTTP ${response.status}`);
             }
 
             const reader = response.body?.getReader();
             if (!reader) throw new Error("No response body");
+            readerRef.current = reader;
 
             const decoder = new TextDecoder();
             let buffer = "";
@@ -406,9 +430,9 @@ export function useAssistantChat({
                             const streamError = new Error(
                                 typeof data.message === "string"
                                     ? data.message
-                                    : "Stream error",
+                                    : "The assistant failed before it could finish.",
                             );
-                            streamError.name = "MikeStreamError";
+                            streamError.name = "DocketStreamError";
                             throw streamError;
                         }
 
@@ -574,6 +598,64 @@ export function useAssistantChat({
                                 workflow_id: data.workflow_id as string,
                                 title: data.title as string,
                             });
+                            continue;
+                        }
+
+                        if (data.type === "case_citation") {
+                            pushEvent({
+                                type: "case_citation",
+                                cluster_id:
+                                    typeof data.cluster_id === "number"
+                                        ? data.cluster_id
+                                        : null,
+                                case_name:
+                                    typeof data.case_name === "string"
+                                        ? data.case_name
+                                        : null,
+                                citation:
+                                    typeof data.citation === "string"
+                                        ? data.citation
+                                        : null,
+                                url: data.url as string,
+                                pdfUrl:
+                                    typeof data.pdfUrl === "string"
+                                        ? data.pdfUrl
+                                        : null,
+                                dateFiled:
+                                    typeof data.dateFiled === "string"
+                                        ? data.dateFiled
+                                        : null,
+                            });
+                            continue;
+                        }
+
+                        if (
+                            data.type === "courtlistener_search_case_law" ||
+                            data.type === "courtlistener_get_cases" ||
+                            data.type === "courtlistener_find_in_case" ||
+                            data.type === "courtlistener_read_case" ||
+                            data.type === "courtlistener_verify_citations"
+                        ) {
+                            pushEvent(data as AssistantEvent);
+                            pushThinkingPlaceholder();
+                            continue;
+                        }
+
+                        if (data.type === "mcp_tool_call_start") {
+                            pushEvent({
+                                type: "tool_call_start",
+                                name:
+                                    typeof data.openai_tool_name === "string"
+                                        ? data.openai_tool_name
+                                        : "mcp_tool_call",
+                                isStreaming: true,
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "mcp_tool_call") {
+                            pushEvent(data as AssistantEvent);
+                            pushThinkingPlaceholder();
                             continue;
                         }
 
@@ -772,7 +854,7 @@ export function useAssistantChat({
                                     download_url:
                                         (data.download_url as string) ?? "",
                                     annotations: Array.isArray(data.annotations)
-                                        ? (data.annotations as import("@/app/components/shared/types").MikeEditAnnotation[])
+                                        ? (data.annotations as import("@/app/components/shared/types").DocketEditAnnotation[])
                                         : [],
                                     error:
                                         typeof data.error === "string"
@@ -791,7 +873,7 @@ export function useAssistantChat({
                             // finalised message.
                             clearStreamingPlaceholders();
                             const incoming = (data.citations ??
-                                []) as MikeCitationAnnotation[];
+                                []) as DocketCitationAnnotation[];
                             setMessages((prev) => {
                                 const updated = [...prev];
                                 const last = updated[updated.length - 1];
@@ -806,7 +888,7 @@ export function useAssistantChat({
                             continue;
                         }
                     } catch (e) {
-                        if (e instanceof Error && e.name === "MikeStreamError") {
+                        if (e instanceof Error && e.name === "DocketStreamError") {
                             throw e;
                         }
                         console.warn(
@@ -904,10 +986,7 @@ export function useAssistantChat({
                 });
             } else {
                 stopDrip();
-                const errorMessage =
-                    error instanceof Error && error.message
-                        ? error.message
-                        : "Sorry, something went wrong.";
+                const errorMessage = describeChatError(error);
                 setMessages((prev) => {
                     const last = prev[prev.length - 1];
                     if (last?.role === "assistant") {
@@ -933,12 +1012,21 @@ export function useAssistantChat({
             setIsLoadingCitations(false);
             return null;
         } finally {
+            const r = readerRef.current;
+            readerRef.current = null;
+            if (r) {
+                try {
+                    await r.cancel();
+                } catch {
+                    // reader may already be released or cancelled
+                }
+            }
             abortControllerRef.current = null;
         }
     };
 
     const handleNewChat = async (
-        message: MikeMessage,
+        message: DocketMessage,
         projectId?: string,
     ): Promise<string | null> => {
         if (!message.content.trim()) return null;

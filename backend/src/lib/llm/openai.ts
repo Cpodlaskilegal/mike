@@ -248,7 +248,6 @@ export async function streamOpenAI(
     const openai = client(params.apiKeys?.openai);
     const openaiTools = toOpenAITools(tools);
     let input = toInput(params.messages);
-    let previousResponseId: string | undefined;
     let fullText = "";
 
     for (let iter = 0; iter < maxIter; iter++) {
@@ -259,7 +258,6 @@ export async function streamOpenAI(
                   systemPrompt,
                   input,
                   tools: openaiTools,
-                  previousResponseId,
                   enableThinking: params.enableThinking,
                   reasoningEffort: params.reasoningEffort,
                   textVerbosity: params.textVerbosity,
@@ -270,7 +268,6 @@ export async function streamOpenAI(
                   systemPrompt,
                   input,
                   tools: openaiTools,
-                  previousResponseId,
                   enableThinking: params.enableThinking,
                   reasoningEffort: params.reasoningEffort,
                   textVerbosity: params.textVerbosity,
@@ -283,7 +280,6 @@ export async function streamOpenAI(
                   onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
               });
 
-        previousResponseId = response.id;
         if (isProModel(model)) {
             const text = outputText(response);
             fullText += text;
@@ -307,11 +303,15 @@ export async function streamOpenAI(
         for (const call of normalizedCalls) callbacks.onToolCallStart?.(call);
 
         const results = await runTools(normalizedCalls);
-        input = results.map((result): ResponseInputItem => ({
-            type: "function_call_output",
-            call_id: result.tool_use_id,
-            output: result.content,
-        }));
+        input = [
+            ...input,
+            ...(response.output as ResponseInputItem[]),
+            ...results.map((result): ResponseInputItem => ({
+                type: "function_call_output",
+                call_id: result.tool_use_id,
+                output: result.content,
+            })),
+        ];
     }
 
     return { fullText };

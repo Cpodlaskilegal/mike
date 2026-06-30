@@ -1,12 +1,12 @@
 "use client";
 
 import { FileText, File, X, AlertCircle, Loader2 } from "lucide-react";
-import type { MikeDocument } from "./types";
+import type { DocketDocument } from "./types";
 
 interface Props {
-  document: MikeDocument;
+  document: DocketDocument;
   onRemove?: (id: string) => void;
-  onClick?: (doc: MikeDocument) => void;
+  onClick?: (doc: DocketDocument) => void;
   selected?: boolean;
 }
 

@@ -3,7 +3,7 @@ import { Pool, type QueryResult } from "pg";
 type DbError = { message: string };
 type DbResult<T = any> = { data: any; error: DbError | null; count?: number | null };
 type Filter = {
-  kind: "eq" | "neq" | "in" | "contains" | "is" | "not";
+  kind: "eq" | "neq" | "in" | "contains" | "is" | "not" | "gt";
   column: string;
   value: unknown;
   operator?: string;
@@ -15,13 +15,20 @@ const JSONB_COLUMNS: Record<string, Set<string>> = {
   documents: new Set(["structure_tree"]),
   workflows: new Set(["columns_config"]),
   chat_messages: new Set(["content", "files", "annotations", "workflow"]),
-  tabular_reviews: new Set(["columns_config", "shared_with"]),
+  tabular_reviews: new Set(["columns_config", "document_ids", "shared_with"]),
   tabular_cells: new Set(["citations"]),
   tabular_review_chat_messages: new Set(["content", "annotations"]),
+  user_mcp_connectors: new Set(["tool_policy"]),
+  user_mcp_connector_tools: new Set(["input_schema", "output_schema", "annotations"]),
 };
 
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL must be set");
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrl,
   ssl:
     process.env.PGSSLMODE === "disable" || process.env.NODE_ENV === "development"
       ? undefined
@@ -135,6 +142,11 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
     return this;
   }
 
+  gt(column: string, value: unknown) {
+    this.filters.push({ kind: "gt", column, value });
+    return this;
+  }
+
   in(column: string, value: unknown[]) {
     this.filters.push({ kind: "in", column, value });
     return this;
@@ -213,6 +225,10 @@ class QueryBuilder implements PromiseLike<DbResult<any>> {
       if (filter.kind === "neq") {
         values.push(this.prepareValue(filter.column, filter.value));
         return `${column} <> $${values.length}`;
+      }
+      if (filter.kind === "gt") {
+        values.push(this.prepareValue(filter.column, filter.value));
+        return `${column} > $${values.length}`;
       }
       if (filter.kind === "in") {
         const items = Array.isArray(filter.value) ? filter.value : [];

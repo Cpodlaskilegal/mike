@@ -15,18 +15,18 @@ import {
     deleteChat,
     listChats,
     renameChat,
-} from "@/app/lib/mikeApi";
-import type { MikeChat, MikeMessage } from "@/app/components/shared/types";
+} from "@/app/lib/docketApi";
+import type { DocketChat, DocketMessage } from "@/app/components/shared/types";
 
 interface ChatHistoryContextType {
-    chats: MikeChat[] | null;
+    chats: DocketChat[] | null;
     currentChatId: string | null;
     setCurrentChatId: (chatId: string | null) => void;
     loadChats: () => Promise<void>;
     saveChat: (projectId?: string) => Promise<string | null>;
     renameChat: (chatId: string, title: string) => Promise<void>;
-    newChatMessages: MikeMessage[] | null;
-    setNewChatMessages: (messages: MikeMessage[] | null) => void;
+    newChatMessages: DocketMessage[] | null;
+    setNewChatMessages: (messages: DocketMessage[] | null) => void;
     replaceChatId: (
         oldChatId: string,
         newChatId: string,
@@ -41,10 +41,10 @@ const ChatHistoryContext = createContext<ChatHistoryContextType | undefined>(
 
 export function ChatHistoryProvider({ children }: { children: ReactNode }) {
     const { user } = useAuth();
-    const [chats, setChats] = useState<MikeChat[] | null>(null);
+    const [chats, setChats] = useState<DocketChat[] | null>(null);
     const [currentChatId, setCurrentChatId] = useState<string | null>(null);
     const [newChatMessages, setNewChatMessages] = useState<
-        MikeMessage[] | null
+        DocketMessage[] | null
     >(null);
 
     const loadChats = useCallback(async () => {
@@ -106,7 +106,7 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
                     projectId ? { project_id: projectId } : undefined,
                 );
                 const now = new Date().toISOString();
-                const newChat: MikeChat = {
+                const newChat: DocketChat = {
                     id,
                     project_id: projectId ?? null,
                     user_id: user?.id ?? "",

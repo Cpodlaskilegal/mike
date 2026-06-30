@@ -25,6 +25,31 @@ function client(override?: string | null): Anthropic {
     return new Anthropic({ apiKey });
 }
 
+function thinkingOptions(
+    model: string,
+    enableThinking: boolean | undefined,
+): Record<string, unknown> {
+    if (!enableThinking) return {};
+
+    if (model === "claude-fable-5" || model === "claude-mythos-5") {
+        return { output_config: { effort: "high" } };
+    }
+
+    if (
+        model === "claude-opus-4-8" ||
+        model === "claude-opus-4-7" ||
+        model === "claude-opus-4-6" ||
+        model === "claude-sonnet-4-6"
+    ) {
+        return {
+            thinking: { type: "adaptive" },
+            output_config: { effort: "high" },
+        };
+    }
+
+    return {};
+}
+
 function toNativeMessages(
     messages: StreamChatParams["messages"],
 ): NativeMessage[] {
@@ -59,15 +84,7 @@ export async function streamClaude(
                 ? (claudeTools as unknown as Tool[])
                 : undefined,
             max_tokens: MAX_TOKENS,
-            // Claude 4.x models require `thinking.type: "adaptive"` and
-            // drive effort via `output_config.effort` rather than a fixed
-            // token budget. We only opt in when the caller requested it.
-            ...(enableThinking
-                ? ({
-                      thinking: { type: "adaptive" },
-                      output_config: { effort: "high" },
-                  } as unknown as Record<string, unknown>)
-                : {}),
+            ...thinkingOptions(model, enableThinking),
             // Extended thinking requires temperature to be default (omitted).
         });
 

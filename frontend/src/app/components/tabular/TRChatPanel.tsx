@@ -13,7 +13,7 @@ import {
     ChevronDown,
     Trash2,
 } from "lucide-react";
-import { MikeIcon } from "@/components/chat/mike-icon";
+import { DocketIcon } from "@/components/chat/docket-icon";
 import {
     streamTabularChat,
     getTabularChats,
@@ -22,11 +22,12 @@ import {
     mapTRMessages,
     type TRChat,
     type TRCitationAnnotation,
-} from "@/app/lib/mikeApi";
+} from "@/app/lib/docketApi";
+import { describeChatError } from "@/app/lib/chatErrors";
 import type {
     AssistantEvent,
     ColumnConfig,
-    MikeDocument,
+    DocketDocument,
 } from "../shared/types";
 import { ModelToggle, TABULAR_MODELS } from "../assistant/ModelToggle";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
@@ -37,7 +38,7 @@ import {
     isModelAvailable,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
-import type { ApiKeyState } from "@/app/lib/mikeApi";
+import type { ApiKeyState } from "@/app/lib/docketApi";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,7 +57,7 @@ interface Props {
     reviewTitle?: string | null;
     projectName?: string | null;
     columns: ColumnConfig[];
-    documents: MikeDocument[];
+    documents: DocketDocument[];
     onCitationClick: (colIdx: number, rowIdx: number) => void;
     onClose: () => void;
     initialChatId?: string | null;
@@ -213,10 +214,9 @@ function TRResponseStatus({ isActive }: { isActive: boolean }) {
 
     return (
         <div className="w-full h-9 flex items-center mb-2">
-            <MikeIcon
+            <DocketIcon
                 spin={isActive}
                 done={showDone && doneVisible}
-                mike={!(showDone && doneVisible)}
                 size={22}
             />
         </div>
@@ -700,6 +700,9 @@ export function TRChatPanel({
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const latestUserMessageRef = useRef<HTMLDivElement>(null);
     const abortRef = useRef<AbortController | null>(null);
+    const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(
+        null,
+    );
     const historyRef = useRef<HTMLDivElement>(null);
     const hasScrolledRef = useRef(false);
 
@@ -802,6 +805,25 @@ export function TRChatPanel({
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
     }, [historyOpen]);
+
+    // Without this, navigating away mid-stream leaves the SSE connection and
+    // 60Hz drip timer running. On Safari (single shared NetworkProcess) a
+    // handful of orphaned streams will eventually wedge the whole browser.
+    useEffect(() => {
+        return () => {
+            abortRef.current?.abort();
+            abortRef.current = null;
+            const r = readerRef.current;
+            readerRef.current = null;
+            if (r) {
+                r.cancel().catch(() => {});
+            }
+            if (dripIntervalRef.current !== null) {
+                clearInterval(dripIntervalRef.current);
+                dripIntervalRef.current = null;
+            }
+        };
+    }, []);
 
     // ---- drip ----
 
@@ -1061,6 +1083,7 @@ export function TRChatPanel({
             if (!response.body) throw new Error("No response body");
 
             const reader = response.body.getReader();
+            readerRef.current = reader;
             const decoder = new TextDecoder();
             let buffer = "";
 
@@ -1083,9 +1106,9 @@ export function TRChatPanel({
                             const streamError = new Error(
                                 typeof data.message === "string"
                                     ? data.message
-                                    : "Stream error",
+                                    : "The assistant failed before it could finish.",
                             );
-                            streamError.name = "MikeStreamError";
+                            streamError.name = "DocketStreamError";
                             throw streamError;
                         }
 
@@ -1292,7 +1315,7 @@ export function TRChatPanel({
                             continue;
                         }
                     } catch (err) {
-                        if (err instanceof Error && err.name === "MikeStreamError") {
+                        if (err instanceof Error && err.name === "DocketStreamError") {
                             throw err;
                         }
                         /* skip malformed */
@@ -1315,10 +1338,7 @@ export function TRChatPanel({
             });
         } catch (err: unknown) {
             const isAbort = err instanceof Error && err.name === "AbortError";
-            const errorMessage =
-                err instanceof Error && err.message
-                    ? err.message
-                    : "An error occurred. Please try again.";
+            const errorMessage = describeChatError(err);
             stopDrip();
             clearStreamingPlaceholders();
             setMessages((prev) => {
@@ -1354,6 +1374,15 @@ export function TRChatPanel({
                 return updated;
             });
         } finally {
+            const r = readerRef.current;
+            readerRef.current = null;
+            if (r) {
+                try {
+                    await r.cancel();
+                } catch {
+                    // reader may already be released or cancelled
+                }
+            }
             setIsLoading(false);
             abortRef.current = null;
         }
@@ -1386,7 +1415,7 @@ export function TRChatPanel({
             {/* Header */}
             <div className="flex items-center justify-between h-8 px-2 border-b border-gray-200 shrink-0">
                 <div className="flex items-center gap-1.5 px-2 min-w-0">
-                    <MikeIcon mike size={14} />
+                    <DocketIcon size={14} />
                     <div
                         onMouseEnter={(e) => {
                             const el = e.currentTarget;
@@ -1463,7 +1492,7 @@ export function TRChatPanel({
             >
                 {messages.length === 0 && !isLoadingMessages && (
                     <div className="flex flex-1 flex-col items-center justify-center gap-2">
-                        <MikeIcon size={24} />
+                        <DocketIcon size={24} />
                         <p className="text-sm text-gray-400 text-center">
                             Ask a question about this tabular review.
                         </p>

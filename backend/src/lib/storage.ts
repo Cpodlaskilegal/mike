@@ -1,5 +1,5 @@
 /**
- * Azure Blob Storage utilities for Mike document management.
+ * Azure Blob Storage utilities for Docket document management.
  */
 
 import {

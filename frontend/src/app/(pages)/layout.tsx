@@ -1,12 +1,12 @@
-import { MikeLayoutClient } from "./MikeLayoutClient";
+import { DocketLayoutClient } from "./DocketLayoutClient";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export default function MikeLayout({
+export default function DocketLayout({
     children,
 }: {
     children: React.ReactNode;
 }) {
-    return <MikeLayoutClient>{children}</MikeLayoutClient>;
+    return <DocketLayoutClient>{children}</DocketLayoutClient>;
 }

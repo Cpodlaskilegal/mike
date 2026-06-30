@@ -11,7 +11,7 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
-import type { ApiKeyState } from "@/app/lib/mikeApi";
+import type { ApiKeyState } from "@/app/lib/docketApi";
 
 export interface ModelOption {
     id: string;
@@ -24,6 +24,9 @@ export const MODELS: ModelOption[] = [
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
     { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", group: "OpenAI" },
+    { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
+    { id: "claude-mythos-5", label: "Claude Mythos 5", group: "Anthropic" },
+    { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
     { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
@@ -35,6 +38,7 @@ export const TABULAR_MODELS: ModelOption[] = [
     { id: "gpt-5.4-nano", label: "GPT-5.4 Nano", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Anthropic" },
     { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Anthropic" },
     { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
     {
@@ -93,6 +97,7 @@ export function ModelToggle({ value, onChange, apiKeys, models = MODELS }: Props
                 <button
                     type="button"
                     disabled={!!pendingId}
+                    data-tour="docket-model-picker"
                     className={`flex items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors cursor-pointer text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait disabled:opacity-70 ${isOpen ? "bg-gray-100 text-gray-700" : ""}`}
                     title={
                         error

@@ -7,12 +7,12 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { Copy, Check, ChevronDown, Download, Loader2 } from "lucide-react";
-import { MikeIcon } from "@/components/chat/mike-icon";
+import { DocketIcon } from "@/components/chat/docket-icon";
 import { displayCitationQuote, formatCitationPage } from "../shared/types";
 import type {
     AssistantEvent,
-    MikeCitationAnnotation,
-    MikeEditAnnotation,
+    DocketCitationAnnotation,
+    DocketEditAnnotation,
 } from "../shared/types";
 import { EditCard, applyOptimisticResolution } from "./EditCard";
 import { PreResponseWrapper } from "../shared/PreResponseWrapper";
@@ -28,7 +28,127 @@ function toolCallLabel(name: string): string {
     if (name === "read_workflow") return "Loading workflow...";
     if (name === "list_workflows") return "Loading workflows...";
     if (name === "list_documents") return "Loading documents...";
+    if (name.startsWith("courtlistener_")) return "Researching case law...";
     return name ? `Running ${name}...` : "Working...";
+}
+
+function CourtlistenerEventBlock({
+    event,
+    showConnector,
+}: {
+    event: Extract<
+        AssistantEvent,
+        {
+            type:
+                | "case_citation"
+                | "courtlistener_search_case_law"
+                | "courtlistener_get_cases"
+                | "courtlistener_find_in_case"
+                | "courtlistener_read_case"
+                | "courtlistener_verify_citations";
+        }
+    >;
+    showConnector: boolean;
+}) {
+    let label = "Researching case law";
+    if (event.type === "case_citation") {
+        label = event.case_name
+            ? `Found ${event.case_name}`
+            : "Found case citation";
+    } else if (event.type === "courtlistener_search_case_law") {
+        label = event.error
+            ? "Case-law search failed"
+            : `Searched case law (${event.result_count})`;
+    } else if (event.type === "courtlistener_get_cases") {
+        label = event.error
+            ? "Case fetch failed"
+            : `Fetched cases (${event.case_count})`;
+    } else if (event.type === "courtlistener_find_in_case") {
+        label = event.error
+            ? "Case search failed"
+            : `Searched case text (${event.total_matches})`;
+    } else if (event.type === "courtlistener_read_case") {
+        label = event.error
+            ? "Case read failed"
+            : `Read case opinion (${event.opinion_count})`;
+    } else if (event.type === "courtlistener_verify_citations") {
+        label = event.error
+            ? "Citation lookup failed"
+            : `Verified citations (${event.match_count})`;
+    }
+
+    const detail =
+        event.type === "case_citation"
+            ? event.citation
+            : event.type === "courtlistener_find_in_case"
+              ? event.query
+              : undefined;
+
+    return (
+        <div className="flex items-start text-sm font-serif text-gray-500 relative">
+            {showConnector && (
+                <div className="absolute bottom-0 w-[1px] bg-gray-300 top-[13px] left-[2.5px] h-[calc(100%+11px)]" />
+            )}
+            <div className="w-1.5 h-1.5 rounded-full bg-gray-400 mt-[7px] shrink-0" />
+            <div className="ml-2 min-w-0">
+                {event.type === "case_citation" && event.url ? (
+                    <a
+                        href={event.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-gray-700 hover:text-gray-900 underline underline-offset-2"
+                    >
+                        {label}
+                    </a>
+                ) : (
+                    <span className="font-medium">{label}</span>
+                )}
+                {detail && (
+                    <span className="ml-1 text-gray-400 truncate">
+                        {detail}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function McpEventBlock({
+    event,
+    showConnector,
+}: {
+    event: Extract<AssistantEvent, { type: "mcp_tool_call" }>;
+    showConnector: boolean;
+}) {
+    const label =
+        event.status === "ok"
+            ? `Ran ${event.connector_name || "connector"} tool`
+            : `Connector tool failed`;
+    const detail = event.tool_name || event.openai_tool_name;
+
+    return (
+        <div className="flex items-start text-sm font-serif text-gray-500 relative">
+            {showConnector && (
+                <div className="absolute bottom-0 w-[1px] bg-gray-300 top-[13px] left-[2.5px] h-[calc(100%+11px)]" />
+            )}
+            <div
+                className={`w-1.5 h-1.5 rounded-full mt-[7px] shrink-0 ${
+                    event.status === "ok" ? "bg-gray-400" : "bg-red-400"
+                }`}
+            />
+            <div className="ml-2 min-w-0">
+                <span className="font-medium">{label}</span>
+                {detail && (
+                    <span className="ml-1 text-gray-400 truncate">
+                        {detail}
+                    </span>
+                )}
+                {event.error && (
+                    <span className="ml-1 text-red-500">{event.error}</span>
+                )}
+            </div>
+        </div>
+    );
 }
 
 /**
@@ -51,11 +171,11 @@ function BulkEditActions({
     onError,
 }: {
     pending: {
-        annotation: MikeEditAnnotation;
+        annotation: DocketEditAnnotation;
         filename: string;
     }[];
     filenameByDocId: Map<string, string>;
-    onViewClick?: (ann: MikeEditAnnotation, filename: string) => void;
+    onViewClick?: (ann: DocketEditAnnotation, filename: string) => void;
     onResolveStart?: (args: {
         editId: string;
         documentId: string;
@@ -233,13 +353,13 @@ function EditCardsSection({
     onError,
 }: {
     pending: {
-        annotation: MikeEditAnnotation;
+        annotation: DocketEditAnnotation;
         filename: string;
     }[];
     filenameByDocId: Map<string, string>;
     cards: React.ReactNode[];
     resolvedCount: number;
-    onViewClick?: (ann: MikeEditAnnotation, filename: string) => void;
+    onViewClick?: (ann: DocketEditAnnotation, filename: string) => void;
     onResolveStart?: (args: {
         editId: string;
         documentId: string;
@@ -342,11 +462,10 @@ function ResponseStatus({ status }: { status: StatusState }) {
 
     return (
         <div className="w-full h-9 flex items-center mb-2">
-            <MikeIcon
+            <DocketIcon
                 spin={isActive}
                 done={showDone && doneVisible}
                 error={isError}
-                mike={!isError && !(showDone && doneVisible)}
                 size={22}
             />
         </div>
@@ -805,8 +924,8 @@ function DocEditedBlock({
 
 function preprocessCitations(
     text: string,
-    annotations: MikeCitationAnnotation[],
-    citationsList: MikeCitationAnnotation[],
+    annotations: DocketCitationAnnotation[],
+    citationsList: DocketCitationAnnotation[],
 ): string {
     // Replace [N] or [N, M, ...] inline markers with internal §idx§ tokens backed by annotations
     return text.replace(/\[(\d+(?:,\s*\d+)*)\]/g, (full, refsStr) => {
@@ -835,8 +954,8 @@ function MarkdownContent({
     divRef,
 }: {
     text: string;
-    citationsList: MikeCitationAnnotation[];
-    onCitationClick?: (c: MikeCitationAnnotation) => void;
+    citationsList: DocketCitationAnnotation[];
+    onCitationClick?: (c: DocketCitationAnnotation) => void;
     divRef?: React.RefObject<HTMLDivElement | null>;
 }) {
     return (
@@ -1011,13 +1130,13 @@ interface Props {
     events?: AssistantEvent[];
     isStreaming?: boolean;
     isError?: boolean;
-    /** Human-readable error text rendered alongside the red Mike icon. */
+    /** Human-readable error text rendered alongside the red Docket icon. */
     errorMessage?: string;
-    annotations?: MikeCitationAnnotation[];
-    onCitationClick?: (citation: MikeCitationAnnotation) => void;
+    annotations?: DocketCitationAnnotation[];
+    onCitationClick?: (citation: DocketCitationAnnotation) => void;
     minHeight?: string;
     onWorkflowClick?: (workflowId: string) => void;
-    onEditViewClick?: (ann: MikeEditAnnotation, filename: string) => void;
+    onEditViewClick?: (ann: DocketEditAnnotation, filename: string) => void;
     /**
      * Opens the editor panel for a document without auto-highlighting any
      * specific edit. Used by the download card click — opening a doc to
@@ -1123,7 +1242,7 @@ export function AssistantMessage({
     // Pre-process citations for all content events. Each [N] marker resolves
     // to exactly one annotation (models are instructed to use shared refs
     // only for cross-page continuations via the [[PAGE_BREAK]] sentinel).
-    const citationsList: MikeCitationAnnotation[] = [];
+    const citationsList: DocketCitationAnnotation[] = [];
     const processedTexts: string[] = [];
     if (events) {
         for (const event of events) {
@@ -1336,6 +1455,31 @@ export function AssistantMessage({
                 />
             );
         }
+        if (
+            event.type === "case_citation" ||
+            event.type === "courtlistener_search_case_law" ||
+            event.type === "courtlistener_get_cases" ||
+            event.type === "courtlistener_find_in_case" ||
+            event.type === "courtlistener_read_case" ||
+            event.type === "courtlistener_verify_citations"
+        ) {
+            return (
+                <CourtlistenerEventBlock
+                    key={globalIdx}
+                    event={event}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "mcp_tool_call") {
+            return (
+                <McpEventBlock
+                    key={globalIdx}
+                    event={event}
+                    showConnector={showConnector}
+                />
+            );
+        }
         if (event.type === "workflow_applied") {
             return (
                 <WorkflowAppliedBlock
@@ -1416,7 +1560,7 @@ export function AssistantMessage({
                                     { type: "doc_edited" }
                                 >[];
                                 const pending: {
-                                    annotation: MikeEditAnnotation;
+                                    annotation: DocketEditAnnotation;
                                     filename: string;
                                 }[] = [];
                                 const filenameByDocId = new Map<
@@ -1424,7 +1568,7 @@ export function AssistantMessage({
                                     string
                                 >();
                                 // Effective status = external override if any, else the annotation's DB status.
-                                const statusOf = (ann: MikeEditAnnotation) =>
+                                const statusOf = (ann: DocketEditAnnotation) =>
                                     resolvedEditStatuses?.[ann.edit_id] ??
                                     ann.status;
                                 for (const e of editedEvents) {

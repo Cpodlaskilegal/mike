@@ -13,11 +13,11 @@ import {
     regenerateTabularCell,
     streamTabularGeneration,
     updateTabularReview,
-} from "@/app/lib/mikeApi";
+} from "@/app/lib/docketApi";
 import type {
     ColumnConfig,
-    MikeDocument,
-    MikeProject,
+    DocketDocument,
+    DocketProject,
     TabularCell,
     TabularReview,
 } from "../shared/types";
@@ -50,9 +50,9 @@ interface Props {
 export function TRView({ reviewId, projectId }: Props) {
     const { setSidebarOpen } = useSidebar();
     const [review, setReview] = useState<TabularReview | null>(null);
-    const [project, setProject] = useState<MikeProject | null>(null);
+    const [project, setProject] = useState<DocketProject | null>(null);
     const [cells, setCells] = useState<TabularCell[]>([]);
-    const [documents, setDocuments] = useState<MikeDocument[]>([]);
+    const [documents, setDocuments] = useState<DocketDocument[]>([]);
     const [columns, setColumns] = useState<ColumnConfig[]>([]);
     const [loading, setLoading] = useState(true);
     const [generating, setGenerating] = useState(false);
@@ -85,6 +85,9 @@ export function TRView({ reviewId, projectId }: Props) {
         useState<ModelProvider | null>(null);
     const actionsRef = useRef<HTMLDivElement>(null);
     const tableRef = useRef<TRTableHandle>(null);
+    const generationReaderRef = useRef<
+        ReadableStreamDefaultReader<Uint8Array> | null
+    >(null);
     const router = useRouter();
     const { profile } = useUserProfile();
     const apiKeys = profile?.apiKeys;
@@ -101,6 +104,19 @@ export function TRView({ reviewId, projectId }: Props) {
         const newUrl = `${window.location.pathname}${query ? `?${query}` : ""}`;
         window.history.replaceState(null, "", newUrl);
     }, [chatOpen, selectedChatId]);
+
+    // Without this, navigating away mid-generation leaves the SSE connection
+    // open. On Safari (single shared NetworkProcess) a handful of orphaned
+    // streams will eventually wedge the whole browser.
+    useEffect(() => {
+        return () => {
+            const r = generationReaderRef.current;
+            generationReaderRef.current = null;
+            if (r) {
+                r.cancel().catch(() => {});
+            }
+        };
+    }, []);
 
     useEffect(() => {
         if (!actionsOpen) return;
@@ -155,7 +171,7 @@ export function TRView({ reviewId, projectId }: Props) {
         }
     }
 
-    async function handleAddDocuments(newDocs: MikeDocument[]) {
+    async function handleAddDocuments(newDocs: DocketDocument[]) {
         const toAdd = newDocs.filter(
             (d) => !documents.some((existing) => existing.id === d.id),
         );
@@ -287,6 +303,7 @@ export function TRView({ reviewId, projectId }: Props) {
             if (!response.body) throw new Error("No body");
 
             const reader = response.body.getReader();
+            generationReaderRef.current = reader;
             const decoder = new TextDecoder();
             let buffer = "";
 
@@ -309,7 +326,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                     ? data.message
                                     : "Generation failed",
                             );
-                            streamError.name = "MikeStreamError";
+                            streamError.name = "DocketStreamError";
                             throw streamError;
                         }
                         if (data.type === "cell_update") {
@@ -327,7 +344,7 @@ export function TRView({ reviewId, projectId }: Props) {
                             );
                         }
                     } catch (err) {
-                        if (err instanceof Error && err.name === "MikeStreamError") {
+                        if (err instanceof Error && err.name === "DocketStreamError") {
                             throw err;
                         }
                     }
@@ -343,6 +360,15 @@ export function TRView({ reviewId, projectId }: Props) {
                 ),
             );
         } finally {
+            const r = generationReaderRef.current;
+            generationReaderRef.current = null;
+            if (r) {
+                try {
+                    await r.cancel();
+                } catch {
+                    // reader may already be released or cancelled
+                }
+            }
             setGenerating(false);
         }
     }
@@ -446,19 +472,30 @@ export function TRView({ reviewId, projectId }: Props) {
     }
 
     async function handleDeleteDocuments() {
+        const idsToDelete = [...selectedDocIds];
+        if (idsToDelete.length === 0) return;
+        const previousDocuments = documents;
+        const previousCells = cells;
         const remaining = documents.filter(
-            (d) => !selectedDocIds.includes(d.id),
+            (d) => !idsToDelete.includes(d.id),
         );
         setDocuments(remaining);
         setCells((prev) =>
-            prev.filter((c) => !selectedDocIds.includes(c.document_id)),
+            prev.filter((c) => !idsToDelete.includes(c.document_id)),
         );
         setSelectedDocIds([]);
         setActionsOpen(false);
-        await updateTabularReview(reviewId, {
-            document_ids: remaining.map((d) => d.id),
-            columns_config: columns,
-        });
+        try {
+            await updateTabularReview(reviewId, {
+                document_ids: remaining.map((d) => d.id),
+                columns_config: columns,
+            });
+        } catch (err) {
+            setDocuments(previousDocuments);
+            setCells(previousCells);
+            setSelectedDocIds(idsToDelete);
+            console.error("Failed to delete tabular review documents", err);
+        }
     }
 
     async function handleClearResults() {
@@ -794,7 +831,7 @@ export function TRView({ reviewId, projectId }: Props) {
                 <AddProjectDocsModal
                     open={addDocsOpen}
                     onClose={() => setAddDocsOpen(false)}
-                    onSelect={(docs: MikeDocument[]) =>
+                    onSelect={(docs: DocketDocument[]) =>
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[
@@ -814,7 +851,7 @@ export function TRView({ reviewId, projectId }: Props) {
                 <AddDocumentsModal
                     open={addDocsOpen}
                     onClose={() => setAddDocsOpen(false)}
-                    onSelect={(docs: MikeDocument[]) =>
+                    onSelect={(docs: DocketDocument[]) =>
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[

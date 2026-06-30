@@ -37,7 +37,7 @@ async function ensureMsal() {
             if (result?.account) {
                 redirectResult = result;
                 msal.setActiveAccount(result.account);
-                window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
+                window.sessionStorage.removeItem("docketApiTokenRedirectStarted");
             }
         });
     });
@@ -57,7 +57,7 @@ function accountToUser(account: AccountInfo) {
     };
 }
 
-type MikeSession = {
+type DocketSession = {
     access_token: string;
     user: ReturnType<typeof accountToUser>;
 };
@@ -89,15 +89,15 @@ async function acquireToken(options?: {
             scopes: [apiScope],
             forceRefresh: options?.forceRefresh,
         });
-        window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
+        window.sessionStorage.removeItem("docketApiTokenRedirectStarted");
         return result;
     } catch (error) {
         if (error instanceof InteractionRequiredAuthError) {
             if (
                 options?.interactive &&
-                !window.sessionStorage.getItem("mikeApiTokenRedirectStarted")
+                !window.sessionStorage.getItem("docketApiTokenRedirectStarted")
             ) {
-                window.sessionStorage.setItem("mikeApiTokenRedirectStarted", "1");
+                window.sessionStorage.setItem("docketApiTokenRedirectStarted", "1");
                 await app.acquireTokenRedirect({
                     account,
                     scopes: [apiScope],
@@ -143,7 +143,7 @@ export const supabase = {
         },
         async signInWithPassword(_credentials?: unknown) {
             const app = await ensureMsal();
-            window.sessionStorage.removeItem("mikeApiTokenRedirectStarted");
+            window.sessionStorage.removeItem("docketApiTokenRedirectStarted");
             await app.loginRedirect({
                 scopes: apiScope ? [apiScope] : [],
                 prompt: "select_account",
@@ -159,7 +159,7 @@ export const supabase = {
             if (account) await app.logoutRedirect({ account });
         },
         onAuthStateChange(
-            callback: (_event: string, session: MikeSession | null) => void,
+            callback: (_event: string, session: DocketSession | null) => void,
         ) {
             // Only react to login/logout. Listening for ACQUIRE_TOKEN_SUCCESS
             // here is unsafe: the handler calls getSession(), which calls

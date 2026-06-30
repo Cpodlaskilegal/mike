@@ -21,7 +21,7 @@ export function ApiKeyMissingModal({ open, onClose, provider, message }: Props) 
     const body =
         message ??
         (provider === "openai"
-            ? "OpenAI models are not enabled on this Mike deployment. Ask an administrator to configure the server OpenAI key."
+            ? "OpenAI models are not enabled on this Docket deployment. Ask an administrator to configure the server OpenAI key."
             : `You haven't added a ${providerName} API key yet. Add one in your account settings to use this model.`);
     const canConfigureInAccount = provider !== "openai";
 

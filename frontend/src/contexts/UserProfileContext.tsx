@@ -16,7 +16,7 @@ import {
     getUserProfile,
     saveApiKey,
     updateUserProfile,
-} from "@/app/lib/mikeApi";
+} from "@/app/lib/docketApi";
 
 interface UserProfile {
     displayName: string | null;
@@ -26,6 +26,7 @@ interface UserProfile {
     creditsRemaining: number;
     tier: string;
     tabularModel: string;
+    legalResearchUs: boolean;
     apiKeys: ApiKeyState;
 }
 
@@ -38,6 +39,7 @@ interface UserProfileContextType {
         field: "tabularModel",
         value: string,
     ) => Promise<boolean>;
+    updateLegalResearchUs: (enabled: boolean) => Promise<boolean>;
     updateApiKey: (
         provider: ApiKeyProvider,
         value: string | null,
@@ -50,11 +52,17 @@ const UserProfileContext = createContext<UserProfileContextType | undefined>(
     undefined,
 );
 
-const API_KEY_PROVIDERS: ApiKeyProvider[] = ["claude", "gemini", "openai"];
+const API_KEY_PROVIDERS: ApiKeyProvider[] = [
+    "claude",
+    "courtlistener",
+    "gemini",
+    "openai",
+];
 
 function emptyApiKeys(): ApiKeyState {
     return {
         claude: { configured: false, source: null },
+        courtlistener: { configured: false, source: null },
         gemini: { configured: false, source: null },
         openai: { configured: false, source: null },
     };
@@ -75,6 +83,7 @@ function toProfile(data: ApiUserProfile): UserProfile {
     return {
         ...profile,
         tabularModel: profile.tabularModel || "gpt-5.4-mini",
+        legalResearchUs: profile.legalResearchUs !== false,
         apiKeys,
     };
 }
@@ -101,6 +110,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 creditsRemaining: 999999,
                 tier: "Free",
                 tabularModel: "gpt-5.4-mini",
+                legalResearchUs: true,
                 apiKeys: emptyApiKeys(),
             });
         } finally {
@@ -206,6 +216,28 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateLegalResearchUs = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchUs: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch (error) {
+                console.error(
+                    "[profile] failed to update legal research setting",
+                    error,
+                );
+                return false;
+            }
+        },
+        [user],
+    );
+
     const reloadProfile = useCallback(async () => {
         if (user) {
             await loadProfile();
@@ -225,6 +257,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateDisplayName,
                 updateOrganisation,
                 updateModelPreference,
+                updateLegalResearchUs,
                 updateApiKey,
                 reloadProfile,
                 incrementMessageCredits,

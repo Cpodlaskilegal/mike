@@ -38,6 +38,7 @@ export type StreamCallbacks = {
 
 export type UserApiKeys = {
     claude?: string | null;
+    courtlistener?: string | null;
     gemini?: string | null;
     openai?: string | null;
 };

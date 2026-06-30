@@ -16,3 +16,11 @@ next-env.d.ts
 .DS_Store
 .vercel
 coverage
+
+# Local agent/browser/editor state
+.pi/
+.playwright-mcp/
+.vscode/
+
+# Local/generated training video workspace
+docs/training-video/

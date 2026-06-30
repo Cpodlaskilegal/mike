@@ -1,8 +1,8 @@
-# Mike
+# Docket
 
-Mike is a legal document assistant with a Next.js frontend, an Express backend, Microsoft Entra authentication, Azure PostgreSQL, and Azure Blob Storage.
+Docket is a legal document assistant with a Next.js frontend, an Express backend, Microsoft Entra authentication, Azure PostgreSQL, and Azure Blob Storage.
 
-Website: [mikeoss.com](https://mikeoss.com)
+Website: [docket.podlaskilegal.com](https://docket.podlaskilegal.com)
 
 ## Contents
 
@@ -50,7 +50,7 @@ Create `backend/.env`:
 PORT=3001
 FRONTEND_URL=http://localhost:3000
 DOWNLOAD_SIGNING_SECRET=replace-with-a-random-32-byte-hex-string
-DATABASE_URL=postgres://mike:<password>@<server>.postgres.database.azure.com:5432/mike?sslmode=require
+DATABASE_URL=postgres://docket:<password>@<server>.postgres.database.azure.com:5432/docket?sslmode=require
 PGSSLMODE=require
 
 AZURE_TENANT_ID=your-azure-tenant-id
@@ -64,6 +64,20 @@ ANTHROPIC_API_KEY=your-anthropic-key
 OPENAI_API_KEY=your-openai-key
 RESEND_API_KEY=your-resend-key
 USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
+MCP_CONNECTORS_ENCRYPTION_SECRET=your-long-random-secret
+API_PUBLIC_URL=http://localhost:3001
+
+# Box is backend-managed by default via Box's hosted MCP server.
+# Create these in Box Admin Console Integration Credentials and register:
+# ${API_PUBLIC_URL}/user/mcp-connectors/oauth/callback
+BOX_MCP_SERVER_URL=https://mcp.box.com
+BOX_MCP_OAUTH_CLIENT_ID=your-box-mcp-oauth-client-id
+BOX_MCP_OAUTH_CLIENT_SECRET=your-box-mcp-oauth-client-secret
+# Defaults to root_readwrite. Add ai.readwrite/docgen.readwrite only if enabled
+# on the Box app.
+# BOX_MCP_OAUTH_SCOPE=root_readwrite
+# BOX_MCP_BACKEND_CONNECTOR_ID=
+# BOX_MCP_ENABLED=false
 ```
 
 Create `frontend/.env.local`:
@@ -78,6 +92,8 @@ NEXT_PUBLIC_AZURE_API_SCOPE=api://your-api-app-client-id/access_as_user
 Entra values come from the Microsoft Entra app registrations. The backend validates access tokens for `AZURE_API_CLIENT_ID`; the frontend requests `NEXT_PUBLIC_AZURE_API_SCOPE`.
 
 Provider keys are only needed for the models and email features you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
+
+MCP connector credentials and OAuth tokens are encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET`. PracticePanther is connected by default as a backend-managed MCP connector using `PRACTICEPANTHER_MCP_SERVER_URL` (default `https://wild-spark-qn7iy.run.mcp-use.com/mcp`). Box is also connected by default as a backend-managed MCP connector using Box's hosted endpoint at `https://mcp.box.com`. Authorize Box once from a managed Box connector; Docket reuses that shared backend OAuth token for all users instead of requiring each user to authorize Box.
 
 ## Install
 
@@ -109,10 +125,11 @@ Open `http://localhost:3000`.
 1. Sign in with a Microsoft work account that can access the Entra app.
 2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
 3. Create or open a project and start chatting with documents.
+4. To connect Box, configure the Box MCP OAuth env vars, open **Account > Connectors**, refresh the backend-managed Box connector, and complete the one-time Box OAuth. The resulting backend token is reused for all users.
 
 ## Troubleshooting
 
-**Sign-in fails before reaching Mike.** Confirm the frontend redirect URI is registered in the Entra SPA app and that the API scope/admin consent configuration matches `NEXT_PUBLIC_AZURE_API_SCOPE`.
+**Sign-in fails before reaching Docket.** Confirm the frontend redirect URI is registered in the Entra SPA app and that the API scope/admin consent configuration matches `NEXT_PUBLIC_AZURE_API_SCOPE`.
 
 **The model picker shows a missing-key warning.** Add a key for that provider in **Account > Models & API Keys**, or configure the provider key in `backend/.env` and restart the backend.
 

@@ -11,8 +11,9 @@ import {
     type ChatMessage,
 } from "../lib/chatTools";
 import { completeText } from "../lib/llm";
-import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
+import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
+import { chatStreamErrorLine } from "../lib/chatErrors";
 
 export const chatRouter = Router();
 
@@ -532,7 +533,17 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         db,
         docIndex,
     );
-    const apiMessages = buildMessages(enrichedMessages, docAvailability);
+    const {
+        api_keys: apiKeys,
+        legal_research_us: legalResearchUs,
+    } = await getUserModelSettings(userId, db);
+    const apiMessages = buildMessages(
+        enrichedMessages,
+        docAvailability,
+        undefined,
+        undefined,
+        legalResearchUs,
+    );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
@@ -550,8 +561,6 @@ chatRouter.post("/", requireAuth, async (req, res) => {
 
     const write = (line: string) => res.write(line);
 
-    const apiKeys = await getUserApiKeys(userId, db);
-
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
 
@@ -565,6 +574,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             workflowStore,
             model,
             apiKeys,
+            includeResearchTools: legalResearchUs,
             projectId: resolvedProjectId,
         });
 
@@ -590,9 +600,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[chat/stream] error:", err);
         try {
-            write(
-                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
-            );
+            write(chatStreamErrorLine(err));
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

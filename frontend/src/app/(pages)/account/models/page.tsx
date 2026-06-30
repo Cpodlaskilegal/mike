@@ -13,7 +13,7 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import type { ApiKeyState } from "@/app/lib/mikeApi";
+import type { ApiKeyState } from "@/app/lib/docketApi";
 import { TABULAR_MODELS } from "@/app/components/assistant/ModelToggle";
 import {
     isModelAvailable,
@@ -37,10 +37,20 @@ const API_KEY_FIELDS = [
         label: "OpenAI API Key",
         placeholder: "sk-...",
     },
+    {
+        provider: "courtlistener",
+        label: "CourtListener API Token",
+        placeholder: "Token...",
+    },
 ] as const;
 
 export default function ModelsAndApiKeysPage() {
-    const { profile, updateModelPreference, updateApiKey } = useUserProfile();
+    const {
+        profile,
+        updateModelPreference,
+        updateLegalResearchUs,
+        updateApiKey,
+    } = useUserProfile();
 
     return (
         <div className="space-y-4">
@@ -67,6 +77,35 @@ export default function ModelsAndApiKeysPage() {
                             }
                         />
                     </div>
+                </div>
+            </div>
+
+            <div className="py-6 border-t border-gray-100">
+                <div className="flex items-center gap-2 mb-2">
+                    <h2 className="text-2xl font-medium font-serif">
+                        Legal Research
+                    </h2>
+                </div>
+                <div className="max-w-xl rounded-md border border-gray-200 bg-white px-4 py-3">
+                    <label className="flex items-start gap-3">
+                        <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 rounded border-gray-300"
+                            checked={profile?.legalResearchUs !== false}
+                            onChange={(event) =>
+                                void updateLegalResearchUs(event.target.checked)
+                            }
+                        />
+                        <span>
+                            <span className="block text-sm text-gray-800">
+                                Enable US case-law research
+                            </span>
+                            <span className="block text-xs text-gray-500">
+                                Adds CourtListener search and citation tools to
+                                chat when a CourtListener token is configured.
+                            </span>
+                        </span>
+                    </label>
                 </div>
             </div>
 

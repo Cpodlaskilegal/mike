@@ -7,8 +7,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { ChatHistoryProvider } from "@/app/contexts/ChatHistoryContext";
 import { SidebarContext } from "@/app/contexts/SidebarContext";
 import { AppSidebar } from "@/app/components/shared/AppSidebar";
+import { DocketTutorial } from "@/app/components/tutorial/DocketTutorial";
 
-export function MikeLayoutClient({
+export function DocketLayoutClient({
     children,
 }: {
     children: React.ReactNode;
@@ -90,6 +91,7 @@ export function MikeLayoutClient({
                             isOpen={isSidebarOpen}
                             onToggle={handleSidebarToggle}
                         />
+                        <DocketTutorial />
                         <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
                             <div className="flex md:hidden items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
                                 <button

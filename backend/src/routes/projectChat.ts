@@ -11,8 +11,9 @@ import {
     PROJECT_EXTRA_TOOLS,
     type ChatMessage,
 } from "../lib/chatTools";
-import { getUserApiKeys } from "../lib/userSettings";
+import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
+import { chatStreamErrorLine } from "../lib/chatErrors";
 
 const PROJECT_SYSTEM_PROMPT_EXTRA = `PROJECT CONTEXT:
 You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available and fetch_documents / read_document to pull in any documents you need before answering.
@@ -136,10 +137,16 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         systemPromptExtra += `\n\nUSER-ATTACHED DOCUMENTS FOR THIS TURN:\nThe user has attached the following document(s) directly to their latest message. Treat these as the primary focus of the request unless their message clearly says otherwise.\n${lines.join("\n")}`;
     }
 
+    const {
+        api_keys: apiKeys,
+        legal_research_us: legalResearchUs,
+    } = await getUserModelSettings(userId, db);
     const apiMessages = buildMessages(
         messagesForLLM,
         docAvailability,
         systemPromptExtra,
+        undefined,
+        legalResearchUs,
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
@@ -151,8 +158,6 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     res.flushHeaders();
 
     const write = (line: string) => res.write(line);
-
-    const apiKeys = await getUserApiKeys(userId, db);
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
@@ -168,6 +173,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             workflowStore,
             model,
             apiKeys,
+            includeResearchTools: legalResearchUs,
             projectId,
         });
 
@@ -188,9 +194,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[project-chat/stream] error:", err);
         try {
-            write(
-                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
-            );
+            write(chatStreamErrorLine(err));
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

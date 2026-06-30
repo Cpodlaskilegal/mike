@@ -39,17 +39,18 @@ import {
     deleteProjectFolder,
     moveDocumentToFolder,
     moveSubfolderToFolder,
+    renameProjectDocument,
     listDocumentVersions,
     uploadDocumentVersion,
     renameDocumentVersion,
     getProjectPeople,
-    type MikeDocumentVersion,
-} from "@/app/lib/mikeApi";
+    type DocketDocumentVersion,
+} from "@/app/lib/docketApi";
 import type {
-    MikeDocument,
-    MikeFolder,
-    MikeProject,
-    MikeChat,
+    DocketDocument,
+    DocketFolder,
+    DocketProject,
+    DocketChat,
     TabularReview,
     ColumnConfig,
 } from "@/app/components/shared/types";
@@ -149,7 +150,7 @@ function DocVersionHistory({
     docId: string;
     filename: string;
     loading: boolean;
-    versions: MikeDocumentVersion[];
+    versions: DocketDocumentVersion[];
     depth?: number;
     onDownloadVersion: (
         docId: string,
@@ -303,9 +304,9 @@ function DocVersionHistory({
 }
 
 export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
-    const [project, setProject] = useState<MikeProject | null>(null);
-    const [folders, setFolders] = useState<MikeFolder[]>([]);
-    const [chats, setChats] = useState<MikeChat[]>([]);
+    const [project, setProject] = useState<DocketProject | null>(null);
+    const [folders, setFolders] = useState<DocketFolder[]>([]);
+    const [chats, setChats] = useState<DocketChat[]>([]);
     const [projectReviews, setProjectReviews] = useState<TabularReview[]>([]);
     const [loading, setLoading] = useState(true);
     const searchParams = useSearchParams();
@@ -319,8 +320,8 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const { user } = useAuth();
     const [uploadVersionDoc, setUploadVersionDoc] =
-        useState<MikeDocument | null>(null);
-    const [viewingDoc, setViewingDoc] = useState<MikeDocument | null>(null);
+        useState<DocketDocument | null>(null);
+    const [viewingDoc, setViewingDoc] = useState<DocketDocument | null>(null);
     const [viewingDocVersion, setViewingDocVersion] = useState<{
         id: string;
         label: string;
@@ -342,7 +343,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
         Set<string>
     >(() => new Set());
     const [versionsByDocId, setVersionsByDocId] = useState<
-        Map<string, MikeDocumentVersion[]>
+        Map<string, DocketDocumentVersion[]>
     >(() => new Map());
     const [loadingVersionDocIds, setLoadingVersionDocIds] = useState<
         Set<string>
@@ -405,12 +406,12 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
      * latest_version_number) and re-fetch the version list so the history
      * panel shows the new row.
      */
-    function handleUploadNewVersion(doc: MikeDocument) {
+    function handleUploadNewVersion(doc: DocketDocument) {
         setUploadVersionDoc(doc);
     }
 
     async function submitNewVersion(
-        doc: MikeDocument,
+        doc: DocketDocument,
         file: File,
         displayName: string,
     ) {
@@ -503,7 +504,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     useEffect(() => {
         Promise.all([
             getProject(projectId),
-            listProjectChats(projectId).catch(() => [] as MikeChat[]),
+            listProjectChats(projectId).catch(() => [] as DocketChat[]),
             listTabularReviews(projectId).catch(() => []),
         ])
             .then(([proj, projectChats, projectReviews]) => {
@@ -581,7 +582,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
         // Immediately hide the input and show an optimistic folder row
         setCreatingFolderIn(undefined);
         const tempId = `temp-${Date.now()}`;
-        const optimistic: MikeFolder = {
+        const optimistic: DocketFolder = {
             id: tempId,
             project_id: projectId,
             user_id: "",
@@ -636,7 +637,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
 
     // ── Doc/chat/review handlers ──────────────────────────────────────────────
 
-    function handleDocsSelected(newDocs: MikeDocument[]) {
+    function handleDocsSelected(newDocs: DocketDocument[]) {
         setProject((prev) =>
             prev ? {
                 ...prev,
@@ -656,6 +657,53 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
             ),
         } : prev);
         await moveDocumentToFolder(projectId, docId, null);
+    }
+
+    async function handleRenameDoc(doc: DocketDocument) {
+        const nextFilename = window.prompt("Rename document", doc.filename);
+        if (nextFilename === null) return;
+        const trimmed = nextFilename.trim();
+        if (!trimmed || trimmed === doc.filename) return;
+        const previousDoc = doc;
+        setProject((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      documents: (prev.documents ?? []).map((d) =>
+                          d.id === doc.id ? { ...d, filename: trimmed } : d,
+                      ),
+                  }
+                : prev,
+        );
+        try {
+            const updated = await renameProjectDocument(
+                projectId,
+                doc.id,
+                trimmed,
+            );
+            setProject((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          documents: (prev.documents ?? []).map((d) =>
+                              d.id === doc.id ? { ...d, ...updated } : d,
+                          ),
+                      }
+                    : prev,
+            );
+        } catch (e) {
+            setProject((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          documents: (prev.documents ?? []).map((d) =>
+                              d.id === doc.id ? previousDoc : d,
+                          ),
+                      }
+                    : prev,
+            );
+            console.error("renameProjectDocument failed", e);
+        }
     }
 
     async function handleRemoveDoc(docId: string) {
@@ -841,7 +889,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
 
     function wouldCreateCycle(movingId: string, targetId: string): boolean {
         // Returns true if targetId is movingId or a descendant of it
-        let cur: MikeFolder | undefined = folders.find((f) => f.id === targetId);
+        let cur: DocketFolder | undefined = folders.find((f) => f.id === targetId);
         while (cur) {
             if (cur.id === movingId) return true;
             if (!cur.parent_folder_id) break;
@@ -851,8 +899,8 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     }
 
     async function handleDropOnFolder(targetFolderId: string | null, dt: DataTransfer) {
-        const docId = dt.getData("application/mike-doc");
-        const subFolderId = dt.getData("application/mike-folder");
+        const docId = dt.getData("application/docket-doc");
+        const subFolderId = dt.getData("application/docket-folder");
         if (docId) {
             const doc = (project?.documents ?? []).find((d) => d.id === docId);
             if (!doc || (doc.folder_id ?? null) === targetFolderId) return;
@@ -941,7 +989,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                             <div
                                 draggable
                                 onDragStart={(e) => {
-                                    e.dataTransfer.setData("application/mike-doc", doc.id);
+                                    e.dataTransfer.setData("application/docket-doc", doc.id);
                                     e.dataTransfer.effectAllowed = "move";
                                 }}
                                 onClick={() => {
@@ -1032,8 +1080,12 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                 </div>
                                 <div className="w-8 shrink-0 flex justify-end">
                                     {!isProcessing && (
-                                        <RowActions
-                                            onDownload={() => downloadDoc(doc.id)}
+                                            <RowActions
+                                                onRename={() =>
+                                                    void handleRenameDoc(doc)
+                                                }
+                                                renameLabel="Rename document"
+                                                onDownload={() => downloadDoc(doc.id)}
                                             onShowAllVersions={
                                                 hasVersions && !isVersionsOpen
                                                     ? () => void toggleVersions(doc.id)
@@ -1081,7 +1133,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                             <div
                                 draggable
                                 onDragStart={(e) => {
-                                    e.dataTransfer.setData("application/mike-folder", folder.id);
+                                    e.dataTransfer.setData("application/docket-folder", folder.id);
                                     e.dataTransfer.effectAllowed = "move";
                                     e.stopPropagation();
                                 }}
@@ -1280,6 +1332,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                     </button>
                     <button
                         onClick={() => setAddDocsOpen(true)}
+                        data-tour="docket-add-documents"
                         className="flex items-center gap-1 text-xs px-3 font-medium text-gray-500 hover:text-gray-700 transition-colors"
                     >
                         <Upload className="h-3.5 w-3.5" />
@@ -1339,6 +1392,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                     <div className="relative group">
                         <button
                             onClick={() => !creatingChat && handleNewChat()}
+                            data-tour="docket-project-chat"
                             className={`flex h-8 items-center justify-center gap-1.5 px-3 text-sm transition-colors ${
                                 !creatingChat ? "text-gray-500 hover:text-gray-900 cursor-pointer" : "text-gray-300 cursor-default"
                             }`}
@@ -1525,6 +1579,10 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                                     <div className="w-8 shrink-0 flex justify-end">
                                                         {!isProcessing && (
                                                             <RowActions
+                                                                onRename={() =>
+                                                                    void handleRenameDoc(doc)
+                                                                }
+                                                                renameLabel="Rename document"
                                                                 onDownload={() => downloadDoc(doc.id)}
                                                                 onShowAllVersions={
                                                                     hasVersions && !isVersionsOpen
@@ -1590,6 +1648,10 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                             <RowActionMenuItems
                                                 onClose={() => setContextMenu(null)}
                                                 onDownload={() => downloadDoc(menuDoc.id)}
+                                                onRename={() =>
+                                                    void handleRenameDoc(menuDoc)
+                                                }
+                                                renameLabel="Rename document"
                                                 onShowAllVersions={
                                                     menuDocHasVersions && !menuDocVersionsOpen
                                                         ? () => void toggleVersions(menuDoc.id)
@@ -1700,7 +1762,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                 <MessageSquare className="h-8 w-8 text-gray-300 mb-4" />
                                 <p className="text-2xl font-medium font-serif text-gray-900">Assistant</p>
                                 <p className="mt-1 text-xs text-gray-400 max-w-xs">Ask questions and get answers grounded in the documents in this project.</p>
-                                <button onClick={() => handleNewChat()} className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md">
+                                <button onClick={() => handleNewChat()} data-tour="docket-project-chat" className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md">
                                     + Create New
                                 </button>
                             </div>

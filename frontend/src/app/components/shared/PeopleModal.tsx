@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, User, UserPlus, Loader2, Plus } from "lucide-react";
-import type { ProjectPeople } from "@/app/lib/mikeApi";
+import type { ProjectPeople } from "@/app/lib/docketApi";
 
 /**
  * Any resource the modal can manage members for — projects today, tabular
@@ -45,7 +45,7 @@ type RosterRow = {
 };
 
 /**
- * Roster of every Mike member with access to the project, with controls to
+ * Roster of every Docket member with access to the project, with controls to
  * add/remove members. Mirrors AddDocumentsModal's frame.
  */
 export function PeopleModal({
@@ -141,8 +141,17 @@ export function PeopleModal({
     const alreadyShared = sharedLower.includes(trimmedNewEmail);
     const isOwnerEmail =
         !!ownerEmail && trimmedNewEmail === ownerEmail.toLowerCase();
+    const normalizedCurrentUserEmail =
+        currentUserEmail?.trim().toLowerCase() ?? null;
+    const isSelfEmail =
+        !!normalizedCurrentUserEmail &&
+        trimmedNewEmail === normalizedCurrentUserEmail;
     const canAdd =
-        isValidEmail && !alreadyShared && !isOwnerEmail && busy === null;
+        isValidEmail &&
+        !alreadyShared &&
+        !isOwnerEmail &&
+        !isSelfEmail &&
+        busy === null;
 
     async function handleAdd() {
         if (!canAdd || !onSharedWithChange) return;
@@ -249,10 +258,16 @@ export function PeopleModal({
                                 {trimmedNewEmail} is the owner.
                             </p>
                         )}
+                        {isSelfEmail && !isOwnerEmail && trimmedNewEmail && (
+                            <p className="mt-1.5 text-xs text-gray-400">
+                                You cannot share this with yourself.
+                            </p>
+                        )}
                         {trimmedNewEmail &&
                             !isValidEmail &&
                             !alreadyShared &&
-                            !isOwnerEmail && (
+                            !isOwnerEmail &&
+                            !isSelfEmail && (
                                 <p className="mt-1.5 text-xs text-gray-400">
                                     Enter a valid email.
                                 </p>

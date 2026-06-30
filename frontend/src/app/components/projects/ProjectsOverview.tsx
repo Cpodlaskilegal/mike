@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, FolderOpen, ChevronDown } from "lucide-react";
 import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
-import { listProjects, updateProject, deleteProject } from "@/app/lib/mikeApi";
+import { listProjects, updateProject, deleteProject } from "@/app/lib/docketApi";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { useAuth } from "@/contexts/AuthContext";
-import type { MikeProject } from "@/app/components/shared/types";
+import type { DocketProject } from "@/app/components/shared/types";
 import { NewProjectModal } from "./NewProjectModal";
 import { ToolbarTabs } from "@/app/components/shared/ToolbarTabs";
 import { RowActions } from "@/app/components/shared/RowActions";
@@ -26,7 +26,7 @@ const CHECK_W = "w-8 shrink-0";
 const NAME_COL_W = "w-[300px] shrink-0";
 
 export function ProjectsOverview() {
-    const [projects, setProjects] = useState<MikeProject[]>([]);
+    const [projects, setProjects] = useState<DocketProject[]>([]);
     const [loading, setLoading] = useState(true);
     const [modalOpen, setModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>("all");
@@ -174,7 +174,10 @@ export function ProjectsOverview() {
     );
 
     return (
-        <div className="flex-1 overflow-y-auto bg-white">
+        <div
+            className="flex-1 overflow-y-auto bg-white"
+            data-tour="docket-projects-page"
+        >
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4">
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
@@ -188,6 +191,7 @@ export function ProjectsOverview() {
                     />
                     <button
                         onClick={() => setModalOpen(true)}
+                        data-tour="docket-new-project"
                         className="flex items-center justify-center p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
                     >
                         <Plus className="h-4 w-4" />
@@ -278,6 +282,7 @@ export function ProjectsOverview() {
                                 </p>
                                 <button
                                     onClick={() => setModalOpen(true)}
+                                    data-tour="docket-new-project"
                                     className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md"
                                 >
                                     + Create New

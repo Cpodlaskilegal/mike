@@ -10,15 +10,17 @@ import {
     User,
     ChevronsUpDown,
     ChevronDown,
+    CircleHelp,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { MikeIcon } from "@/components/chat/mike-icon";
+import { DocketIcon } from "@/components/chat/docket-icon";
 import { SidebarChatItem } from "@/app/components/shared/SidebarChatItem";
-import { listProjects } from "@/app/lib/mikeApi";
+import { listProjects } from "@/app/lib/docketApi";
+import { startDocketTutorial } from "@/app/components/tutorial/DocketTutorial";
 
 const NAV_ITEMS = [
     { href: "/assistant", label: "Assistant", icon: MessageSquare },
@@ -154,13 +156,13 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                             href="/assistant"
                             className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
                         >
-                            <MikeIcon size={22} />
+                            <DocketIcon size={22} />
                             <span
                                 className={`text-2xl font-light font-serif ${
                                     shouldAnimate ? "sidebar-fade-in" : ""
                                 }`}
                             >
-                                Mike
+                                Docket
                             </span>
                         </Link>
                     </div>
@@ -183,6 +185,11 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                         <button
                             onClick={() => router.push(href)}
                             title={!isOpen ? label : ""}
+                            data-tour={
+                                href === "/projects"
+                                    ? "docket-projects-nav"
+                                    : undefined
+                            }
                             className={`w-full h-9 flex items-center gap-3 px-2.5 py-2 rounded-md transition-colors text-left ${
                                 isActive
                                     ? "bg-gray-100 text-gray-900"
@@ -281,6 +288,20 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
 
             {/* User Profile */}
             <div className="mt-auto">
+                {isOpen && (
+                    <div className="px-2.5 pb-2">
+                        <button
+                            type="button"
+                            onClick={startDocketTutorial}
+                            className="w-full h-9 flex items-center gap-3 px-2.5 py-2 rounded-md text-left text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+                        >
+                            <CircleHelp className="h-4 w-4 flex-shrink-0 text-gray-500" />
+                            <span className="text-sm font-medium">
+                                Tutorial
+                            </span>
+                        </button>
+                    </div>
+                )}
                 {user && (
                     <div className="relative">
                         <button
