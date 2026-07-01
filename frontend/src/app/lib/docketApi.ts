@@ -120,6 +120,13 @@ async function apiRequest<T>(path: string, init?: DocketRequestInit): Promise<T>
         detail = response.statusText || `API error: ${response.status}`;
       }
     }
+    if (
+      code === "oauth_required" &&
+      typeof window !== "undefined" &&
+      !path.includes("/oauth/")
+    ) {
+      window.dispatchEvent(new Event("docket:box-auth-required"));
+    }
     throw new DocketApiError(
       detail || `API error: ${response.status}`,
       response.status,
@@ -245,6 +252,17 @@ export async function saveApiKey(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: apiKey }),
   });
+}
+
+export interface BoxAuthStatus {
+  required: boolean;
+  configured: boolean;
+  connected: boolean;
+  connectorId: string | null;
+}
+
+export async function getBoxAuthStatus(): Promise<BoxAuthStatus> {
+  return apiRequest<BoxAuthStatus>("/user/box-auth-status");
 }
 
 export interface McpToolSummary {

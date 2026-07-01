@@ -562,6 +562,49 @@ userRouter.get("/mcp-connectors", requireAuth, async (_req, res) => {
   }
 });
 
+// GET /user/box-auth-status
+userRouter.get("/box-auth-status", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerSupabase();
+  const boxConfigured =
+    process.env.BOX_MCP_ENABLED !== "false" &&
+    !!(process.env.BOX_MCP_OAUTH_CLIENT_ID || process.env.MCP_OAUTH_CLIENT_ID) &&
+    !!(
+      process.env.BOX_MCP_OAUTH_CLIENT_SECRET ||
+      process.env.MCP_OAUTH_CLIENT_SECRET
+    );
+  if (!boxConfigured) {
+    return void res.json({
+      required: false,
+      configured: false,
+      connected: false,
+      connectorId: null,
+    });
+  }
+
+  try {
+    const connectors = await listUserMcpConnectors(userId, db, {
+      includeTools: false,
+    });
+    const boxConnector = connectors.find(
+      (connector) => connector.managedBy === "box",
+    );
+    res.json({
+      required: true,
+      configured: true,
+      connected: !!boxConnector?.oauthConnected,
+      connectorId: boxConnector?.id ?? null,
+    });
+  } catch (err) {
+    const detail = errorMessage(err);
+    console.error("[user/box-auth-status] check failed", {
+      userId,
+      error: detail,
+    });
+    res.status(500).json({ detail });
+  }
+});
+
 // GET /user/mcp-connector-presets
 userRouter.get("/mcp-connector-presets", requireAuth, async (_req, res) => {
   res.json(listUserMcpConnectorPresets());

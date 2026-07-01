@@ -130,7 +130,7 @@ Open `http://localhost:3000`.
 1. Sign in with a Microsoft work account that can access the Entra app.
 2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
 3. Create or open a project and start chatting with documents.
-4. To connect Box, configure the Box MCP OAuth env vars, open **Account > Connectors**, refresh the backend-managed Box connector, and complete Box OAuth while signed in as the Box user whose permissions Docket should use.
+4. To connect Box, configure the Box MCP OAuth env vars, open **Account > Connectors**, refresh the backend-managed Box connector, and complete Box OAuth while signed in as the Box user whose permissions Docket should use. When Box OAuth is configured and enabled, authenticated users must connect Box before using the rest of the app.
 
 ## Troubleshooting
 
