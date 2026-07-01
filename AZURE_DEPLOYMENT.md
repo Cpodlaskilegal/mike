@@ -111,8 +111,8 @@ connectors.
   the connector for authenticated users and keeps existing read/status tool
   cache behavior while disabling obvious mutating tools such as
   create/update/delete plus `pp_api_request` pending a human-confirmation path.
-- Current deployed MCP backend image tag: `202606301419-chat-errors`.
-- Current deployed frontend image tag: `202606301419-chat-errors`.
+- Current deployed MCP backend image tag: `202607011550-a76b28c`.
+- Current deployed frontend image tag: `202607011550-a76b28c`.
 - The database schema for a clean Azure PostgreSQL install is
   `backend/migrations/azure_postgres_schema.sql`.
 - Existing Azure PostgreSQL deployments must apply incremental migrations from
