@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { X, Check } from "lucide-react";
+import { Check } from "lucide-react";
 
 interface DeleteChatsModalProps {
     isOpen: boolean;

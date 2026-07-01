@@ -35,6 +35,9 @@ The schema file is based on `supabase-migration.sql` and folds in the later file
 
 For an existing database, do not run the full schema file over production data. Apply the incremental files in `backend/migrations/` instead.
 
+No separate seed command is required for the application to start. Managed MCP
+connectors are provisioned lazily for each authenticated user by the backend.
+
 ## Environment
 
 Create local env files:
@@ -43,6 +46,9 @@ Create local env files:
 touch backend/.env
 touch frontend/.env.local
 ```
+
+The checked-in examples, `backend/.env.example` and
+`frontend/.env.local.example`, list the required local environment variables.
 
 Create `backend/.env`:
 

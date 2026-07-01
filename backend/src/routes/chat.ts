@@ -67,8 +67,11 @@ function parseChatMessages(value: unknown):
             return { ok: false, detail: "messages must contain objects" };
         }
         const row = message as Record<string, unknown>;
-        if (typeof row.role !== "string") {
-            return { ok: false, detail: "message.role must be a string" };
+        if (row.role !== "user" && row.role !== "assistant") {
+            return {
+                ok: false,
+                detail: "message.role must be either user or assistant",
+            };
         }
         if (row.content !== null && typeof row.content !== "string") {
             return {

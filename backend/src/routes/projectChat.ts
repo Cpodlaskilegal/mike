@@ -25,19 +25,155 @@ When the user wants to use an existing project document as a starting point for 
 
 export const projectChatRouter = Router({ mergeParams: true });
 
+function parseChatMessages(value: unknown):
+    | { ok: true; messages: ChatMessage[] }
+    | { ok: false; detail: string } {
+    if (!Array.isArray(value) || value.length === 0) {
+        return { ok: false, detail: "messages must be a non-empty array" };
+    }
+
+    for (const message of value) {
+        if (!message || typeof message !== "object" || Array.isArray(message)) {
+            return { ok: false, detail: "messages must contain objects" };
+        }
+        const row = message as Record<string, unknown>;
+        if (row.role !== "user" && row.role !== "assistant") {
+            return {
+                ok: false,
+                detail: "message.role must be either user or assistant",
+            };
+        }
+        if (row.content !== null && typeof row.content !== "string") {
+            return {
+                ok: false,
+                detail: "message.content must be a string or null",
+            };
+        }
+    }
+
+    return { ok: true, messages: value as ChatMessage[] };
+}
+
+function parseOptionalChatId(value: unknown):
+    | { ok: true; chatId: string | null }
+    | { ok: false; detail: string } {
+    if (value === undefined || value === null) return { ok: true, chatId: null };
+    if (typeof value !== "string" || !value.trim()) {
+        return { ok: false, detail: "chat_id must be a non-empty string" };
+    }
+    return { ok: true, chatId: value.trim() };
+}
+
+function parseOptionalModel(value: unknown):
+    | { ok: true; model: string | undefined }
+    | { ok: false; detail: string } {
+    if (value === undefined) return { ok: true, model: undefined };
+    if (typeof value !== "string" || !value.trim()) {
+        return { ok: false, detail: "model must be a non-empty string" };
+    }
+    return { ok: true, model: value.trim() };
+}
+
+type RequestDocumentRef = { filename: string; document_id: string };
+
+function parseOptionalDocumentRef(
+    value: unknown,
+    fieldName: string,
+): { ok: true; value: RequestDocumentRef | undefined } | { ok: false; detail: string } {
+    if (value === undefined || value === null) {
+        return { ok: true, value: undefined };
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return { ok: false, detail: `${fieldName} must be an object` };
+    }
+    const row = value as Record<string, unknown>;
+    if (typeof row.filename !== "string" || !row.filename.trim()) {
+        return {
+            ok: false,
+            detail: `${fieldName}.filename must be a non-empty string`,
+        };
+    }
+    if (typeof row.document_id !== "string" || !row.document_id.trim()) {
+        return {
+            ok: false,
+            detail: `${fieldName}.document_id must be a non-empty string`,
+        };
+    }
+    return {
+        ok: true,
+        value: {
+            filename: row.filename.trim(),
+            document_id: row.document_id.trim(),
+        },
+    };
+}
+
+function parseOptionalDocumentRefs(value: unknown):
+    | { ok: true; value: RequestDocumentRef[] | undefined }
+    | { ok: false; detail: string } {
+    if (value === undefined || value === null) {
+        return { ok: true, value: undefined };
+    }
+    if (!Array.isArray(value)) {
+        return {
+            ok: false,
+            detail: "attached_documents must be an array",
+        };
+    }
+    const docs: RequestDocumentRef[] = [];
+    for (let i = 0; i < value.length; i++) {
+        const parsed = parseOptionalDocumentRef(
+            value[i],
+            `attached_documents[${i}]`,
+        );
+        if (!parsed.ok) return parsed;
+        if (parsed.value) docs.push(parsed.value);
+    }
+    return { ok: true, value: docs };
+}
+
 // POST /projects/:projectId/chat — streaming
 projectChatRouter.post("/", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { projectId } = req.params;
-    const { messages, chat_id, model, displayed_doc, attached_documents } =
-        req.body as {
-            messages: ChatMessage[];
-            chat_id?: string;
-            model?: string;
-            displayed_doc?: { filename: string; document_id: string };
-            attached_documents?: { filename: string; document_id: string }[];
-        };
+    const body =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+            ? (req.body as Record<string, unknown>)
+            : {};
+    const parsedMessages = parseChatMessages(body.messages);
+    if (!parsedMessages.ok) {
+        return void res.status(400).json({ detail: parsedMessages.detail });
+    }
+    const parsedChatId = parseOptionalChatId(body.chat_id);
+    if (!parsedChatId.ok) {
+        return void res.status(400).json({ detail: parsedChatId.detail });
+    }
+    const parsedModel = parseOptionalModel(body.model);
+    if (!parsedModel.ok) {
+        return void res.status(400).json({ detail: parsedModel.detail });
+    }
+    const parsedDisplayedDoc = parseOptionalDocumentRef(
+        body.displayed_doc,
+        "displayed_doc",
+    );
+    if (!parsedDisplayedDoc.ok) {
+        return void res.status(400).json({ detail: parsedDisplayedDoc.detail });
+    }
+    const parsedAttachedDocuments = parseOptionalDocumentRefs(
+        body.attached_documents,
+    );
+    if (!parsedAttachedDocuments.ok) {
+        return void res
+            .status(400)
+            .json({ detail: parsedAttachedDocuments.detail });
+    }
+
+    const messages = parsedMessages.messages;
+    const chat_id = parsedChatId.chatId;
+    const model = parsedModel.model;
+    const displayed_doc = parsedDisplayedDoc.value;
+    const attached_documents = parsedAttachedDocuments.value;
 
     const db = createServerSupabase();
 

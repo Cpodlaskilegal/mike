@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
@@ -30,6 +30,14 @@ function toolCallLabel(name: string): string {
     if (name === "list_documents") return "Loading documents...";
     if (name.startsWith("courtlistener_")) return "Researching case law...";
     return name ? `Running ${name}...` : "Working...";
+}
+
+function withoutMarkdownNode<T extends { node?: unknown }>(
+    props: T,
+): Omit<T, "node"> {
+    const { node, ...rest } = props;
+    void node;
+    return rest;
 }
 
 function CourtlistenerEventBlock({
@@ -164,7 +172,6 @@ function McpEventBlock({
  */
 function BulkEditActions({
     pending,
-    filenameByDocId,
     onViewClick,
     onResolveStart,
     onResolved,
@@ -174,7 +181,6 @@ function BulkEditActions({
         annotation: DocketEditAnnotation;
         filename: string;
     }[];
-    filenameByDocId: Map<string, string>;
     onViewClick?: (ann: DocketEditAnnotation, filename: string) => void;
     onResolveStart?: (args: {
         editId: string;
@@ -414,7 +420,6 @@ function EditCardsSection({
                 <div className="px-3 pt-3">
                     <BulkEditActions
                         pending={pending}
-                        filenameByDocId={filenameByDocId}
                         onViewClick={onViewClick}
                         onResolveStart={onResolveStart}
                         onResolved={onResolved}
@@ -537,10 +542,10 @@ function ReasoningBlock({
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
-                            code: ({ node, ...props }) => (
+                            code: (props) => (
                                 <code
                                     className="font-serif text-gray-600"
-                                    {...props}
+                                    {...withoutMarkdownNode(props)}
                                 />
                             ),
                         }}
@@ -970,58 +975,61 @@ function MarkdownContent({
                 ]}
                 rehypePlugins={[rehypeKatex]}
                 components={{
-                    table: ({ node, ...props }) => (
+                    table: (props) => (
                         <div className="overflow-x-auto my-4">
                             <table
                                 className="min-w-full divide-y divide-gray-300 border border-gray-200 rounded-lg overflow-hidden"
-                                {...props}
+                                {...withoutMarkdownNode(props)}
                             />
                         </div>
                     ),
-                    thead: ({ node, ...props }) => (
-                        <thead className="bg-gray-50" {...props} />
+                    thead: (props) => (
+                        <thead
+                            className="bg-gray-50"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    tbody: ({ node, ...props }) => (
+                    tbody: (props) => (
                         <tbody
                             className="divide-y divide-gray-200 bg-white"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    tr: ({ node, ...props }) => <tr {...props} />,
-                    th: ({ node, ...props }) => (
+                    tr: (props) => <tr {...withoutMarkdownNode(props)} />,
+                    th: (props) => (
                         <th
                             className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    td: ({ node, ...props }) => (
+                    td: (props) => (
                         <td
                             className="whitespace-normal px-3 py-4 text-sm text-gray-900"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    h1: ({ node, ...props }) => (
+                    h1: (props) => (
                         <h1
                             className="mt-6 mb-4 text-3xl font-serif font-semibold"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    h2: ({ node, ...props }) => (
+                    h2: (props) => (
                         <h2
                             className="mt-5 mb-3 text-2xl font-serif font-semibold"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    h3: ({ node, ...props }) => (
+                    h3: (props) => (
                         <h3
                             className="text-xl font-semibold mt-4 mb-2"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    h4: ({ node, ...props }) => (
+                    h4: (props) => (
                         <h4
                             className="text-lg font-semibold mt-4 mb-2"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
                     p: ({ node, ...props }) => {
@@ -1038,28 +1046,39 @@ function MarkdownContent({
                         }
                         return <p className="mb-4 leading-7" {...props} />;
                     },
-                    ul: ({ node, ...props }) => (
+                    ul: (props) => (
                         <ul
                             className="list-disc list-outside mb-4 pl-6"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    ol: ({ node, ...props }) => (
+                    ol: (props) => (
                         <ol
                             className="list-decimal list-outside mb-4 pl-6"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    li: ({ node, ...props }) => (
-                        <li className="mb-2 leading-7" {...props} />
+                    li: (props) => (
+                        <li
+                            className="mb-2 leading-7"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    strong: ({ node, ...props }) => (
-                        <strong className="font-semibold" {...props} />
+                    strong: (props) => (
+                        <strong
+                            className="font-semibold"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    em: ({ node, ...props }) => (
-                        <em className="italic" {...props} />
+                    em: (props) => (
+                        <em
+                            className="italic"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    code: ({ node, children, ...props }) => {
+                    code: (markdownProps) => {
+                        const { children, ...props } =
+                            withoutMarkdownNode(markdownProps);
                         const text = String(children);
                         const citMatch = text.match(/^§(\d+)§$/);
                         if (citMatch) {
@@ -1093,25 +1112,32 @@ function MarkdownContent({
                             </code>
                         );
                     },
-                    blockquote: ({ node, ...props }) => (
+                    blockquote: (props) => (
                         <blockquote
                             className="border-l-4 border-gray-300 pl-4 italic my-4"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    a: ({ node, href, children, ...props }) => (
-                        <a
-                            href={href}
-                            className="text-blue-600 hover:text-blue-700 underline"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            {...props}
-                        >
-                            {children}
-                        </a>
-                    ),
-                    hr: ({ node, ...props }) => (
-                        <hr className="my-6 border-gray-200" {...props} />
+                    a: (markdownProps) => {
+                        const { href, children, ...props } =
+                            withoutMarkdownNode(markdownProps);
+                        return (
+                            <a
+                                href={href}
+                                className="text-blue-600 hover:text-blue-700 underline"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                {...props}
+                            >
+                                {children}
+                            </a>
+                        );
+                    },
+                    hr: (props) => (
+                        <hr
+                            className="my-6 border-gray-200"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
                 }}
             >
@@ -1189,7 +1215,6 @@ interface Props {
 }
 
 export function AssistantMessage({
-    content: _content,
     events,
     isStreaming = false,
     isError = false,
@@ -1207,7 +1232,6 @@ export function AssistantMessage({
     isEditReloading,
     resolvedEditStatuses,
 }: Props) {
-    const messageKey = useId();
     const contentDivRef = useRef<HTMLDivElement | null>(null);
     const [isCopied, setIsCopied] = useState(false);
     // Per-document override of the download URL, set as Accept/Reject resolves

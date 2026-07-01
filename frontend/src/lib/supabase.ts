@@ -141,7 +141,7 @@ export const supabase = {
                 error: null,
             };
         },
-        async signInWithPassword(_credentials?: unknown) {
+        async signInWithPassword() {
             const app = await ensureMsal();
             window.sessionStorage.removeItem("docketApiTokenRedirectStarted");
             await app.loginRedirect({
@@ -150,7 +150,7 @@ export const supabase = {
             });
             return { data: { session: null }, error: null };
         },
-        async signUp(_credentials?: unknown) {
+        async signUp() {
             return this.signInWithPassword();
         },
         async signOut() {

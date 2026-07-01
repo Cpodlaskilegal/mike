@@ -489,7 +489,7 @@ export function DocView({
             }
         }, 150);
         return () => clearTimeout(timer);
-    }, [containerWidth, renderPDF]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [containerWidth, renderPDF]);
 
     // Re-highlight when quotes change without full re-render
     useEffect(() => {

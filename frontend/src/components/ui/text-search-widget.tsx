@@ -1,5 +1,5 @@
 import { Input } from "@/components/ui/input";
-import { ArrowUp, ArrowDown, X } from "lucide-react";
+import { ArrowUp, ArrowDown } from "lucide-react";
 import { useRef } from "react";
 
 interface TextSearchWidgetProps {

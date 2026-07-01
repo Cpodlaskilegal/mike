@@ -22,6 +22,14 @@ const FLAG_STYLES = {
     red: "bg-red-500",
 } as const;
 
+function withoutMarkdownNode<T extends { node?: unknown }>(
+    props: T,
+): Omit<T, "node"> {
+    const { node, ...rest } = props;
+    void node;
+    return rest;
+}
+
 // Replace citations and pills with inline-code tokens so ReactMarkdown passes
 // them through its `code` component, where we render the final UI.
 function preprocessCellMarkdown(text: string): {
@@ -61,35 +69,55 @@ function CellMarkdown({
         <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-                p: ({ node, ...props }) =>
+                p: (props) =>
                     inline ? (
-                        <span {...props} />
+                        <span {...withoutMarkdownNode(props)} />
                     ) : (
-                        <p className="mb-1 last:mb-0 leading-relaxed" {...props} />
+                        <p
+                            className="mb-1 last:mb-0 leading-relaxed"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                ul: ({ node, ...props }) => (
-                    <ul className="list-disc pl-4 space-y-0.5" {...props} />
+                ul: (props) => (
+                    <ul
+                        className="list-disc pl-4 space-y-0.5"
+                        {...withoutMarkdownNode(props)}
+                    />
                 ),
-                ol: ({ node, ...props }) => (
-                    <ol className="list-decimal pl-4 space-y-0.5" {...props} />
+                ol: (props) => (
+                    <ol
+                        className="list-decimal pl-4 space-y-0.5"
+                        {...withoutMarkdownNode(props)}
+                    />
                 ),
-                li: ({ node, ...props }) => <li {...props} />,
-                strong: ({ node, ...props }) => (
-                    <strong className="font-semibold" {...props} />
+                li: (props) => <li {...withoutMarkdownNode(props)} />,
+                strong: (props) => (
+                    <strong
+                        className="font-semibold"
+                        {...withoutMarkdownNode(props)}
+                    />
                 ),
-                em: ({ node, ...props }) => <em className="italic" {...props} />,
-                a: ({ node, href, children, ...props }) => (
-                    <a
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700 underline"
-                        {...props}
-                    >
-                        {children}
-                    </a>
+                em: (props) => (
+                    <em className="italic" {...withoutMarkdownNode(props)} />
                 ),
-                code: ({ node, children, ...props }) => {
+                a: (markdownProps) => {
+                    const { href, children, ...props } =
+                        withoutMarkdownNode(markdownProps);
+                    return (
+                        <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-700 underline"
+                            {...props}
+                        >
+                            {children}
+                        </a>
+                    );
+                },
+                code: (markdownProps) => {
+                    const { children, ...props } =
+                        withoutMarkdownNode(markdownProps);
                     const t = String(children);
                     const citMatch = t.match(/^§c(\d+)§$/);
                     if (citMatch) {

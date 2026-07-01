@@ -1,9 +1,15 @@
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
+const appRoot = dirname(fileURLToPath(import.meta.url));
+
 const nextConfig: NextConfig = {
-    /* config options here */
     output: "standalone",
     reactCompiler: true,
+    turbopack: {
+        root: appRoot,
+    },
     async rewrites() {
         return [
             {

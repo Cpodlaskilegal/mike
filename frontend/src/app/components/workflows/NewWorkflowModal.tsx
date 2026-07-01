@@ -42,7 +42,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
             }
             setError("");
         }
-    }, [open, editWorkflow?.id]);
+    }, [open, editWorkflow]);
 
     useEffect(() => {
         if (isOthers) {

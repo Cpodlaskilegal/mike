@@ -1,4 +1,3 @@
-import { X } from "lucide-react";
 import { createPortal } from "react-dom";
 
 interface CreditsExhaustedModalProps {

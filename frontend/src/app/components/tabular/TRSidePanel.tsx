@@ -51,6 +51,14 @@ const FLAG_BADGE: Record<string, string> = {
     red: "bg-red-600 backdrop-blur-md border border-red-300/20 text-white shadow-md",
 };
 
+function withoutMarkdownNode<T extends { node?: unknown }>(
+    props: T,
+): Omit<T, "node"> {
+    const { node, ...rest } = props;
+    void node;
+    return rest;
+}
+
 // ---------------------------------------------------------------------------
 // TRSidePanel
 // ---------------------------------------------------------------------------
@@ -372,46 +380,55 @@ function MarkdownContent({
         <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-                p: ({ node, ...props }) =>
+                p: (props) =>
                     inline ? (
-                        <span {...props} />
+                        <span {...withoutMarkdownNode(props)} />
                     ) : (
                         <p
                             className="mb-1.5 last:mb-0 leading-relaxed"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                ul: ({ node, ...props }) => (
+                ul: (props) => (
                     <ul
                         className="list-disc pl-4 space-y-0.5 mb-1.5 last:mb-0"
-                        {...props}
+                        {...withoutMarkdownNode(props)}
                     />
                 ),
-                ol: ({ node, ...props }) => (
+                ol: (props) => (
                     <ol
                         className="list-decimal pl-4 space-y-0.5 mb-1.5 last:mb-0"
-                        {...props}
+                        {...withoutMarkdownNode(props)}
                     />
                 ),
-                li: ({ node, ...props }) => <li {...props} />,
-                strong: ({ node, ...props }) => (
-                    <strong className="font-semibold" {...props} />
+                li: (props) => <li {...withoutMarkdownNode(props)} />,
+                strong: (props) => (
+                    <strong
+                        className="font-semibold"
+                        {...withoutMarkdownNode(props)}
+                    />
                 ),
-                em: ({ node, ...props }) => (
-                    <em className="italic" {...props} />
+                em: (props) => (
+                    <em className="italic" {...withoutMarkdownNode(props)} />
                 ),
-                a: ({ node, href, children, ...props }) => (
-                    <a
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700 underline"
-                        {...props}
-                    >
-                        {children}
-                    </a>
-                ),
-                code: ({ node, children: codeChildren, ...props }) => {
+                a: (markdownProps) => {
+                    const { href, children, ...props } =
+                        withoutMarkdownNode(markdownProps);
+                    return (
+                        <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-700 underline"
+                            {...props}
+                        >
+                            {children}
+                        </a>
+                    );
+                },
+                code: (markdownProps) => {
+                    const { children: codeChildren, ...props } =
+                        withoutMarkdownNode(markdownProps);
                     const t = String(codeChildren);
                     const citMatch = t.match(/^§c(\d+)§$/);
                     if (citMatch) {

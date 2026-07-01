@@ -75,6 +75,14 @@ const THINKING_PHRASES = [
     "Reasoning...",
 ];
 
+function withoutMarkdownNode<T extends { node?: unknown }>(
+    props: T,
+): Omit<T, "node"> {
+    const { node, ...rest } = props;
+    void node;
+    return rest;
+}
+
 function ReasoningBlock({
     text,
     isStreaming,
@@ -325,26 +333,35 @@ function TRAssistantMessage({
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                    p: ({ node, ...props }) => (
-                        <p className="mb-2 leading-6" {...props} />
+                    p: (props) => (
+                        <p
+                            className="mb-2 leading-6"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    ul: ({ node, ...props }) => (
+                    ul: (props) => (
                         <ul
                             className="list-disc list-outside mb-2 pl-4"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    ol: ({ node, ...props }) => (
+                    ol: (props) => (
                         <ol
                             className="list-decimal list-outside mb-2 pl-4"
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                         />
                     ),
-                    li: ({ node, ...props }) => (
-                        <li className="mb-0.5 leading-6" {...props} />
+                    li: (props) => (
+                        <li
+                            className="mb-0.5 leading-6"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
-                    strong: ({ node, ...props }) => (
-                        <strong className="font-semibold" {...props} />
+                    strong: (props) => (
+                        <strong
+                            className="font-semibold"
+                            {...withoutMarkdownNode(props)}
+                        />
                     ),
                     code: ({ children }) => {
                         const codeText = String(children);
@@ -646,8 +663,6 @@ export function TRChatPanel({
     reviewId,
     reviewTitle,
     projectName,
-    columns: _columns,
-    documents: _documents,
     onCitationClick,
     onClose,
     initialChatId,
@@ -777,7 +792,7 @@ export function TRChatPanel({
                 setMessagesVisible(true);
             }
         }
-    }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [messages]);
 
     useEffect(() => {
         const userEl = latestUserMessageRef.current;

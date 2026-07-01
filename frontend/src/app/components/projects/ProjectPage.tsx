@@ -569,7 +569,11 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     function toggleFolder(id: string) {
         setExpandedFolderIds((prev) => {
             const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
+            if (next.has(id)) {
+                next.delete(id);
+            } else {
+                next.add(id);
+            }
             return next;
         });
     }

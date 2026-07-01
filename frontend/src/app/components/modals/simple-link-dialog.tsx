@@ -23,7 +23,7 @@ export function SimpleLinkDialog({
             await navigator.clipboard.writeText(shareUrl);
             setLinkCopied(true);
             setTimeout(() => setLinkCopied(false), 2000);
-        } catch (err) {}
+        } catch {}
     };
 
     return createPortal(

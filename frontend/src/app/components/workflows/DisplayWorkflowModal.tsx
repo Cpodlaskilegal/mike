@@ -315,13 +315,13 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
         } else {
             setSelected(null);
         }
-    }, [workflow?.id]);
+    }, [workflow]);
 
     useEffect(() => {
         if (selected && selectedRowRef.current) {
             selectedRowRef.current.scrollIntoView({ block: "nearest" });
         }
-    }, [selected?.id]);
+    }, [selected]);
 
     // Reset configure state on back
     useEffect(() => {

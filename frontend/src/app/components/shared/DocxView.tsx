@@ -183,6 +183,14 @@ async function tagWIdsOnRenderedDom(
             el.setAttribute("data-w-id", info.w_id);
             tagged++;
         }
+        if (mismatched > 0) {
+            console.warn("[DocxView] tracked-change id tag mismatch", {
+                tagged,
+                mismatched,
+                renderedChanges: domEls.length,
+                ids: ids.length,
+            });
+        }
     } catch (e) {
         console.warn("[DocxView] tagWIdsOnRenderedDom failed", e);
     }
@@ -424,7 +432,7 @@ export function DocxView({
         return () => {
             cancelled = true;
         };
-    }, [bytes]);
+    }, [bytes, documentId, refetchKey, versionId]);
 
     // Re-scroll/highlight if the target edit changes without a re-render
     // (e.g. same doc, different edit clicked).
@@ -447,7 +455,7 @@ export function DocxView({
             scrollRef.current,
             quotesRef.current,
         );
-    }, [quoteKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [quoteKey]);
 
     // Fire onScrollChange (rAF-throttled) so parents can persist scroll
     // per-tab. We still maintain lastScrollTopRef locally for same-mount
