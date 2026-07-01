@@ -709,6 +709,7 @@ export function buildMessages(
             });
             content = `[The user attached the following document(s) to this message:\n${lines.join("\n")}]\n\n${content}`;
         }
+        if (msg.role === "assistant" && !content.trim()) continue;
         formatted.push({ role: msg.role, content });
     }
     return formatted;

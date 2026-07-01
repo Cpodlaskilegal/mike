@@ -220,6 +220,8 @@ export interface DocketMessage {
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
+  /** True when the backend has created the assistant row but is still streaming. */
+  pending?: boolean;
 }
 
 export interface CitationQuote {

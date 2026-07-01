@@ -4,6 +4,7 @@
 create table if not exists public.app_users (
   id text primary key,
   email text not null default '',
+  role text not null default 'user' check (role in ('user', 'admin')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

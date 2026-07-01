@@ -82,7 +82,6 @@ BOX_MCP_OAUTH_CLIENT_SECRET=your-box-mcp-oauth-client-secret
 # Defaults to root_readwrite. Add ai.readwrite/docgen.readwrite only if enabled
 # on the Box app.
 # BOX_MCP_OAUTH_SCOPE=root_readwrite
-# BOX_MCP_BACKEND_CONNECTOR_ID=
 # BOX_MCP_ENABLED=false
 ```
 
@@ -99,7 +98,7 @@ Entra values come from the Microsoft Entra app registrations. The backend valida
 
 Provider keys are only needed for the models and email features you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
 
-MCP connector credentials and OAuth tokens are encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET`. PracticePanther is connected by default as a backend-managed MCP connector using `PRACTICEPANTHER_MCP_SERVER_URL` (default `https://wild-spark-qn7iy.run.mcp-use.com/mcp`). Box is also connected by default as a backend-managed MCP connector using Box's hosted endpoint at `https://mcp.box.com`. Authorize Box once from a managed Box connector; Docket reuses that shared backend OAuth token for all users instead of requiring each user to authorize Box.
+MCP connector credentials and OAuth tokens are encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET`. PracticePanther is connected by default as a backend-managed MCP connector using `PRACTICEPANTHER_MCP_SERVER_URL` (default `https://wild-spark-qn7iy.run.mcp-use.com/mcp`). Box is also connected by default as a backend-managed MCP connector using Box's hosted endpoint at `https://mcp.box.com`. Each Docket user authorizes Box separately, and Docket can access whatever that logged-in user can access in Box.
 
 ## Install
 
@@ -131,7 +130,7 @@ Open `http://localhost:3000`.
 1. Sign in with a Microsoft work account that can access the Entra app.
 2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
 3. Create or open a project and start chatting with documents.
-4. To connect Box, configure the Box MCP OAuth env vars, open **Account > Connectors**, refresh the backend-managed Box connector, and complete the one-time Box OAuth. The resulting backend token is reused for all users.
+4. To connect Box, configure the Box MCP OAuth env vars, open **Account > Connectors**, refresh the backend-managed Box connector, and complete Box OAuth while signed in as the Box user whose permissions Docket should use.
 
 ## Troubleshooting
 

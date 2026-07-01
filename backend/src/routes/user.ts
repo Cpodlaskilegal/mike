@@ -24,6 +24,12 @@ import {
   startUserMcpConnectorOAuth,
   updateUserMcpConnector,
 } from "../lib/mcpConnectors";
+import {
+  getUserRole,
+  isAdminUser,
+  normalizeUserRole,
+  type AppUserRole,
+} from "../lib/userRoles";
 
 export const userRouter = Router();
 
@@ -153,7 +159,11 @@ type UserProfileRow = {
   legal_research_us?: boolean | null;
 };
 
-function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
+function serializeProfile(
+  row: UserProfileRow,
+  role: AppUserRole,
+  apiKeyStatus?: ApiKeyStatus,
+) {
   const creditsUsed = row.message_credits_used ?? 0;
   return {
     displayName: row.display_name,
@@ -164,6 +174,7 @@ function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
     tier: row.tier || "Free",
     tabularModel: resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL),
     legalResearchUs: row.legal_research_us !== false,
+    role,
     ...(apiKeyStatus ? { apiKeyStatus } : {}),
   };
 }
@@ -343,7 +354,15 @@ async function loadProfile(
     row = resetData as UserProfileRow;
   }
 
-  return { data: serializeProfile(row), error: null };
+  const role = await getUserRole(db, userId);
+  return { data: serializeProfile(row, role), error: null };
+}
+
+async function requireAdmin(
+  db: ReturnType<typeof createServerSupabase>,
+  userId: string,
+) {
+  return isAdminUser(db, userId);
 }
 
 // POST /user/profile
@@ -427,6 +446,105 @@ userRouter.put("/api-keys/:provider", requireAuth, async (req, res) => {
     res.status(500).json({ detail: "Failed to save API key" });
   }
 });
+
+// GET /user/admin/users
+userRouter.get("/admin/users", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerSupabase();
+  if (!(await requireAdmin(db, userId))) {
+    return void res.status(403).json({ detail: "Admin access required" });
+  }
+
+  const { data: users, error: usersError } = await db
+    .from("app_users")
+    .select("id, email, role, created_at, updated_at")
+    .order("created_at", { ascending: true });
+  if (usersError)
+    return void res.status(500).json({ detail: usersError.message });
+
+  const ids = ((users ?? []) as { id: string }[]).map((u) => u.id);
+  const profilesById = new Map<
+    string,
+    { display_name: string | null; organisation: string | null }
+  >();
+  if (ids.length) {
+    const { data: profiles, error: profilesError } = await db
+      .from("user_profiles")
+      .select("user_id, display_name, organisation")
+      .in("user_id", ids);
+    if (profilesError)
+      return void res.status(500).json({ detail: profilesError.message });
+    for (const profile of profiles ?? []) {
+      profilesById.set(profile.user_id as string, {
+        display_name: (profile.display_name as string | null) ?? null,
+        organisation: (profile.organisation as string | null) ?? null,
+      });
+    }
+  }
+
+  res.json(
+    ((users ?? []) as Record<string, unknown>[]).map((user) => ({
+      id: user.id,
+      email: user.email,
+      role: normalizeUserRole(user.role) ?? "user",
+      displayName: profilesById.get(String(user.id))?.display_name ?? null,
+      organisation: profilesById.get(String(user.id))?.organisation ?? null,
+      createdAt: user.created_at,
+      updatedAt: user.updated_at,
+      isCurrentUser: user.id === userId,
+    })),
+  );
+});
+
+// PATCH /user/admin/users/:targetUserId/role
+userRouter.patch(
+  "/admin/users/:targetUserId/role",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const { targetUserId } = req.params;
+    const role = normalizeUserRole(req.body?.role);
+    if (!role) return void res.status(400).json({ detail: "Invalid role" });
+
+    const db = createServerSupabase();
+    if (!(await requireAdmin(db, userId))) {
+      return void res.status(403).json({ detail: "Admin access required" });
+    }
+
+    if (role === "user") {
+      const { data: admins, error: adminError } = await db
+        .from("app_users")
+        .select("id")
+        .eq("role", "admin");
+      if (adminError)
+        return void res.status(500).json({ detail: adminError.message });
+      const adminIds = ((admins ?? []) as { id: string }[]).map((u) => u.id);
+      if (adminIds.length <= 1 && adminIds.includes(targetUserId)) {
+        return void res
+          .status(400)
+          .json({ detail: "At least one admin is required." });
+      }
+    }
+
+    const { data, error } = await db
+      .from("app_users")
+      .update({ role, updated_at: new Date().toISOString() })
+      .eq("id", targetUserId)
+      .select("id, email, role, created_at, updated_at")
+      .maybeSingle();
+    if (error) return void res.status(500).json({ detail: error.message });
+    if (!data) return void res.status(404).json({ detail: "User not found" });
+
+    res.json({
+      id: data.id,
+      email: data.email,
+      role: normalizeUserRole(data.role) ?? "user",
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+      isCurrentUser: data.id === userId,
+    });
+  },
+);
 
 // GET /user/mcp-connectors
 userRouter.get("/mcp-connectors", requireAuth, async (_req, res) => {

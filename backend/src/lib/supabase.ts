@@ -433,7 +433,7 @@ export function createServerSupabase() {
       admin: {
         async listUsers(..._args: any[]) {
           const { rows } = await pool.query(
-            'select id, email from "app_users" order by "created_at" asc',
+            'select id, email, role from "app_users" order by "created_at" asc',
           );
           return { data: { users: rows }, error: null };
         },
@@ -452,6 +452,15 @@ export async function ensureAppUser(user: { id: string; email: string }) {
      values ($1, $2)
      on conflict ("id") do update set "email" = excluded."email", "updated_at" = now()`,
     [user.id, user.email],
+  );
+  await pool.query(
+    `update "app_users"
+     set "role" = 'admin', "updated_at" = now()
+     where "id" = $1
+       and not exists (
+         select 1 from "app_users" where "role" = 'admin'
+       )`,
+    [user.id],
   );
   await pool.query(
     `insert into "user_profiles" ("user_id")

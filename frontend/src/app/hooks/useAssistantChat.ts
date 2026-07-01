@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat, streamProjectChat } from "@/app/lib/docketApi";
+import { getChat, streamChat, streamProjectChat } from "@/app/lib/docketApi";
 import { describeChatError } from "@/app/lib/chatErrors";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
@@ -23,6 +23,28 @@ function findLastContentIndex(events: AssistantEvent[]): number {
         if (events[i].type === "content") return i;
     }
     return -1;
+}
+
+function replaceBrowserUrlForChat(chatId: string, projectId?: string) {
+    if (typeof window === "undefined") return;
+    const chatBasePath = projectId
+        ? `/projects/${projectId}/assistant/chat`
+        : `/assistant/chat`;
+    const nextPath = `${chatBasePath}/${chatId}`;
+    if (window.location.pathname === nextPath) return;
+    window.history.replaceState(null, "", nextPath);
+}
+
+function assistantMessageText(message: DocketMessage): string {
+    if (message.role !== "assistant") return message.content;
+    const content = message.content?.trim();
+    if (content) return message.content;
+    return (
+        message.events
+            ?.filter((event) => event.type === "content")
+            .map((event) => event.text)
+            .join("") ?? ""
+    );
 }
 
 export function useAssistantChat({
@@ -218,6 +240,46 @@ export function useAssistantChat({
         return () => stopDrip();
     }, []);
 
+    const pendingAssistantCount = messages.filter(
+        (message) => message.role === "assistant" && message.pending,
+    ).length;
+
+    useEffect(() => {
+        if (!chatId || pendingAssistantCount === 0) return;
+
+        let cancelled = false;
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+
+        const poll = async () => {
+            try {
+                const { messages: loaded } = await getChat(chatId);
+                if (cancelled) return;
+                setMessages(loaded);
+                const stillPending = loaded.some(
+                    (message) =>
+                        message.role === "assistant" && message.pending,
+                );
+                if (stillPending) {
+                    timeout = setTimeout(poll, 2000);
+                    return;
+                }
+                setIsResponseLoading(false);
+                setIsLoadingCitations(false);
+                void loadChats();
+            } catch {
+                if (!cancelled) timeout = setTimeout(poll, 4000);
+            }
+        };
+
+        setIsResponseLoading(true);
+        timeout = setTimeout(poll, 1500);
+
+        return () => {
+            cancelled = true;
+            if (timeout) clearTimeout(timeout);
+        };
+    }, [chatId, pendingAssistantCount, loadChats]);
+
     const cancel = () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
@@ -350,12 +412,21 @@ export function useAssistantChat({
             const controller = new AbortController();
             abortControllerRef.current = controller;
 
-            const apiMessages = newMessages.map((currentMessage) => ({
-                role: currentMessage.role,
-                content: currentMessage.content,
-                files: currentMessage.files,
-                workflow: currentMessage.workflow,
-            }));
+            const apiMessages = newMessages
+                .map((currentMessage) => ({
+                    role: currentMessage.role,
+                    content:
+                        currentMessage.role === "assistant"
+                            ? assistantMessageText(currentMessage)
+                            : currentMessage.content,
+                    files: currentMessage.files,
+                    workflow: currentMessage.workflow,
+                }))
+                .filter(
+                    (currentMessage) =>
+                        currentMessage.role !== "assistant" ||
+                        currentMessage.content.trim().length > 0,
+                );
 
             const model = message.model;
 
@@ -440,6 +511,7 @@ export function useAssistantChat({
                             streamedChatId = data.chatId;
                             setChatId(data.chatId);
                             setCurrentChatId(data.chatId);
+                            replaceBrowserUrlForChat(data.chatId, projectId);
                             continue;
                         }
 
@@ -918,7 +990,13 @@ export function useAssistantChat({
                 const chatBasePath = projectId
                     ? `/projects/${projectId}/assistant/chat`
                     : `/assistant/chat`;
-                router.replace(`${chatBasePath}/${finalChatId}`);
+                const nextPath = `${chatBasePath}/${finalChatId}`;
+                if (
+                    typeof window === "undefined" ||
+                    window.location.pathname !== nextPath
+                ) {
+                    router.replace(nextPath);
+                }
             }
 
             await loadChats();

@@ -27,6 +27,7 @@ interface UserProfile {
     tier: string;
     tabularModel: string;
     legalResearchUs: boolean;
+    role: "user" | "admin";
     apiKeys: ApiKeyState;
 }
 
@@ -84,6 +85,7 @@ function toProfile(data: ApiUserProfile): UserProfile {
         ...profile,
         tabularModel: profile.tabularModel || "gpt-5.4-mini",
         legalResearchUs: profile.legalResearchUs !== false,
+        role: profile.role === "admin" ? "admin" : "user",
         apiKeys,
     };
 }
@@ -111,6 +113,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tier: "Free",
                 tabularModel: "gpt-5.4-mini",
                 legalResearchUs: true,
+                role: "user",
                 apiKeys: emptyApiKeys(),
             });
         } finally {

@@ -29,7 +29,6 @@ import {
   type OAuthStateConfig,
   type OAuthTokenRow,
 } from "./types";
-import { backendManagedBy, boxMcpServerUrl } from "./defaults";
 
 export class McpOAuthRequiredError extends Error {
   code = "oauth_required";
@@ -249,59 +248,11 @@ export async function loadOAuthToken(connectorId: string, db: Db) {
   return (data as OAuthTokenRow | null) ?? null;
 }
 
-function configuredBoxMcpServerUrl(connector: Pick<ConnectorRow, "server_url">) {
-  return boxMcpServerUrl() ?? connector.server_url;
-}
-
-function isBackendManagedBoxConnector(
-  connector: Pick<ConnectorRow, "server_url"> &
-    Partial<Pick<ConnectorRow, "tool_policy">>,
-) {
-  return backendManagedBy(connector) === "box";
-}
-
-async function resolveSharedBoxOAuthConnectorId(
-  connector: ConnectorRow,
-  db: Db,
-) {
-  if (!isBackendManagedBoxConnector(connector)) return connector.id;
-
-  const explicitConnectorId = process.env.BOX_MCP_BACKEND_CONNECTOR_ID?.trim();
-  if (explicitConnectorId) return explicitConnectorId;
-
-  const currentToken = await loadOAuthToken(connector.id, db);
-  if (currentToken?.encrypted_access_token) return connector.id;
-
-  const serverUrl = configuredBoxMcpServerUrl(connector);
-  const { data: connectors, error: connectorsError } = await db
-    .from("user_mcp_connectors")
-    .select("id")
-    .eq("server_url", serverUrl)
-    .contains("tool_policy", { managedConnector: "box" });
-  if (connectorsError) throw connectorsError;
-
-  const connectorIds = ((connectors ?? []) as Array<{ id: string }>).map(
-    (row) => row.id,
-  );
-  if (!connectorIds.length) return connector.id;
-
-  const { data: token, error: tokenError } = await db
-    .from("user_mcp_oauth_tokens")
-    .select("*")
-    .in("connector_id", connectorIds)
-    .not("encrypted_access_token", "is", null)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (tokenError) throw tokenError;
-  return token ? String((token as OAuthTokenRow).connector_id) : connector.id;
-}
-
 export async function loadMcpConnectorOAuthToken(
   connector: ConnectorRow,
   db: Db,
 ) {
-  return loadOAuthToken(await resolveSharedBoxOAuthConnectorId(connector, db), db);
+  return loadOAuthToken(connector.id, db);
 }
 
 function tokenSecretPatch(prefix: string, value?: string | null) {
@@ -487,7 +438,7 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
   }
 
   private async tokenConnectorId() {
-    return resolveSharedBoxOAuthConnectorId(this.connector, this.db);
+    return this.connector.id;
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {

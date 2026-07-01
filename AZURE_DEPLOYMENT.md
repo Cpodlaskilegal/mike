@@ -99,13 +99,12 @@ connectors.
   `API_PUBLIC_URL=https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io`
   for OAuth callbacks.
 - Box is connected by default as a backend-managed MCP connector using
-  `https://mcp.box.com`. To enable the shared backend OAuth in production, add
+  `https://mcp.box.com`. To enable Box OAuth in production, add
   Box Admin Integration Credentials as `BOX_MCP_OAUTH_CLIENT_ID` and
   `BOX_MCP_OAUTH_CLIENT_SECRET` on `mike-api`, with callback
   `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/user/mcp-connectors/oauth/callback`.
-  After the first Box OAuth succeeds, every user's managed Box connector reuses
-  that shared backend token. Optionally set `BOX_MCP_BACKEND_CONNECTOR_ID` to
-  pin the shared token to one connector row.
+  Each Docket user must authorize their own managed Box connector; Box MCP calls
+  run with that user's Box permissions.
 - PracticePanther is connected by default as a backend-managed MCP connector
   using `PRACTICEPANTHER_MCP_SERVER_URL`, which currently points at
   `https://wild-spark-qn7iy.run.mcp-use.com/mcp`. The backend auto-provisions
@@ -116,5 +115,11 @@ connectors.
 - Current deployed frontend image tag: `202606301419-chat-errors`.
 - The database schema for a clean Azure PostgreSQL install is
   `backend/migrations/azure_postgres_schema.sql`.
+- Existing Azure PostgreSQL deployments must apply incremental migrations from
+  `backend/migrations/` before deploying backend images that depend on them. For
+  the user/admin roles rollout, apply
+  `backend/migrations/20260701_user_roles_and_per_user_box_oauth.sql` before
+  updating `mike-api`; it adds `app_users.role` and promotes the earliest
+  existing user if no admin exists.
 - Azure CLI has a stale local default group on this machine, so use
   `--resource-group mike-prod-rg` explicitly for Azure commands.

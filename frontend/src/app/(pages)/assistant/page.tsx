@@ -1,19 +1,16 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { InitialView } from "@/app/components/assistant/InitialView";
 import { ChatView } from "@/app/components/assistant/ChatView";
 import type { DocketMessage } from "@/app/components/shared/types";
 
 export default function AssistantPage() {
-    const router = useRouter();
-    const { messages, isResponseLoading, handleChat, handleNewChat, cancel } =
+    const { messages, isResponseLoading, handleChat, cancel } =
         useAssistantChat();
 
     async function handleInitialSubmit(message: DocketMessage) {
-        const chatId = await handleNewChat(message);
-        if (chatId) router.push(`/assistant/chat/${chatId}`);
+        await handleChat(message);
     }
 
     if (messages.length === 0) {

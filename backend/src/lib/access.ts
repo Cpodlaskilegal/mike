@@ -12,6 +12,7 @@
  */
 
 import type { createServerSupabase } from "./supabase";
+import { isAdminUser } from "./userRoles";
 
 type Db = ReturnType<typeof createServerSupabase>;
 
@@ -32,6 +33,7 @@ export async function checkProjectAccess(
     userId: string,
     userEmail: string | null | undefined,
     db: Db,
+    options: { allowAdmin?: boolean } = {},
 ): Promise<ProjectAccess> {
     const { data: project } = await db
         .from("projects")
@@ -46,6 +48,9 @@ export async function checkProjectAccess(
     };
     if (proj.user_id === userId) {
         return { ok: true, isOwner: true, project: proj };
+    }
+    if (options.allowAdmin && (await isAdminUser(db, userId))) {
+        return { ok: true, isOwner: false, project: proj };
     }
     const sharedWith = Array.isArray(proj.shared_with) ? proj.shared_with : [];
     const email = (userEmail ?? "").toLowerCase();

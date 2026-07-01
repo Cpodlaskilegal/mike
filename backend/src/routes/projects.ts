@@ -9,6 +9,7 @@ import { downloadFile, uploadFile, storageKey } from "../lib/storage";
 import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import { isAdminUser } from "../lib/userRoles";
 
 export const projectsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -27,15 +28,17 @@ projectsRouter.get("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string;
   const db = createServerSupabase();
+  const isAdmin = await isAdminUser(db, userId);
 
-  const { data: ownProjects, error: ownError } = await db
+  const ownProjectsQuery = db
     .from("projects")
     .select("*")
-    .eq("user_id", userId)
     .order("created_at", { ascending: false });
+  if (!isAdmin) ownProjectsQuery.eq("user_id", userId);
+  const { data: ownProjects, error: ownError } = await ownProjectsQuery;
   if (ownError) return void res.status(500).json({ detail: ownError.message });
 
-  const { data: sharedProjects, error: sharedError } = userEmail
+  const { data: sharedProjects, error: sharedError } = !isAdmin && userEmail
     ? await db
         .from("projects")
         .select("*")
@@ -140,6 +143,7 @@ projectsRouter.get("/:projectId", requireAuth, async (req, res) => {
 
   const canAccess =
     project.user_id === userId ||
+    (await isAdminUser(db, userId)) ||
     (userEmail &&
       Array.isArray(project.shared_with) &&
       project.shared_with.includes(userEmail));
@@ -183,13 +187,14 @@ projectsRouter.get("/:projectId/people", requireAuth, async (req, res) => {
     return void res.status(404).json({ detail: "Project not found" });
 
   const isOwner = project.user_id === userId;
+  const isAdmin = await isAdminUser(db, userId);
   const sharedWith = (Array.isArray(project.shared_with)
     ? (project.shared_with as string[])
     : []
   ).map((e) => e.toLowerCase());
   const isShared =
     !!userEmail && sharedWith.includes(userEmail.toLowerCase());
-  if (!isOwner && !isShared)
+  if (!isOwner && !isShared && !isAdmin)
     return void res.status(404).json({ detail: "Project not found" });
 
   // Pull every auth user (matching the lookup endpoint's pattern). For
@@ -324,7 +329,9 @@ projectsRouter.get("/:projectId/documents", requireAuth, async (req, res) => {
   const { projectId } = req.params;
   const db = createServerSupabase();
 
-  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  const access = await checkProjectAccess(projectId, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Project not found" });
 
@@ -545,7 +552,9 @@ projectsRouter.get("/:projectId/chats", requireAuth, async (req, res) => {
   const { projectId } = req.params;
   const db = createServerSupabase();
 
-  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  const access = await checkProjectAccess(projectId, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Project not found" });
 

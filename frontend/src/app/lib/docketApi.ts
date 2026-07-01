@@ -170,6 +170,7 @@ export interface UserProfile {
   tier: string;
   tabularModel: string;
   legalResearchUs: boolean;
+  role: "user" | "admin";
   apiKeyStatus: ApiKeyStatus;
 }
 
@@ -188,6 +189,32 @@ export async function updateUserProfile(payload: {
     authInteractive: true,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: "user" | "admin";
+  displayName: string | null;
+  organisation: string | null;
+  createdAt: string;
+  updatedAt: string;
+  isCurrentUser: boolean;
+}
+
+export async function listAdminUsers(): Promise<AdminUser[]> {
+  return apiRequest<AdminUser[]>("/user/admin/users");
+}
+
+export async function updateAdminUserRole(
+  userId: string,
+  role: "user" | "admin",
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/user/admin/users/${userId}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
   });
 }
 
@@ -649,6 +676,7 @@ export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
     const events = Array.isArray(m.content)
       ? (m.content as AssistantEvent[])
       : undefined;
+    const pending = m.content == null;
     return {
       role: "assistant",
       content:
@@ -657,7 +685,10 @@ export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
           .map((e) => (e as { type: "content"; text: string }).text)
           .join("") ?? "",
       annotations: m.annotations ?? undefined,
-      events,
+      events:
+        events ??
+        (pending ? [{ type: "thinking" as const, isStreaming: true }] : undefined),
+      pending,
     };
   });
   return { chat: raw.chat, messages };

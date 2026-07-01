@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import {
@@ -14,6 +14,7 @@ import { completeText } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine } from "../lib/chatErrors";
+import { isAdminUser } from "../lib/userRoles";
 
 export const chatRouter = Router();
 
@@ -29,6 +30,17 @@ type AccessibleChat = {
     user_id: string;
     project_id: string | null;
 } & Record<string, unknown>;
+
+function createSafeStreamWriter(res: Response) {
+    return (line: string) => {
+        if (res.destroyed || res.writableEnded) return;
+        try {
+            res.write(line);
+        } catch (err) {
+            devLog("[chat/stream] client write skipped", err);
+        }
+    };
+}
 
 function parseOptionalProjectId(value: unknown):
     | { ok: true; provided: boolean; projectId: string | null }
@@ -101,7 +113,9 @@ async function validateAccessibleProjectId(
     db: Db,
 ): Promise<{ ok: true } | { ok: false; status: number; detail: string }> {
     if (!projectId) return { ok: true };
-    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    const access = await checkProjectAccess(projectId, userId, userEmail, db, {
+        allowAdmin: true,
+    });
     if (!access.ok)
         return { ok: false, status: 404, detail: "Project not found" };
     return { ok: true };
@@ -112,6 +126,7 @@ async function getAccessibleChat(
     userId: string,
     userEmail: string | null | undefined,
     db: Db,
+    options: { allowAdmin?: boolean } = {},
 ): Promise<AccessibleChat | null> {
     const { data: chat, error } = await db
         .from("chats")
@@ -122,6 +137,7 @@ async function getAccessibleChat(
 
     const row = chat as AccessibleChat;
     if (row.user_id === userId) return row;
+    if (options.allowAdmin && (await isAdminUser(db, userId))) return row;
 
     if (row.project_id) {
         const access = await checkProjectAccess(
@@ -145,6 +161,14 @@ async function getAccessibleChat(
 chatRouter.get("/", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
+    if (await isAdminUser(db, userId)) {
+        const { data, error } = await db
+            .from("chats")
+            .select("*")
+            .order("created_at", { ascending: false });
+        if (error) return void res.status(500).json({ detail: error.message });
+        return void res.json(data ?? []);
+    }
 
     const { data: ownProjects, error: projErr } = await db
         .from("projects")
@@ -207,7 +231,9 @@ chatRouter.get("/:chatId", requireAuth, async (req, res) => {
     const { chatId } = req.params;
     const db = createServerSupabase();
 
-    const chat = await getAccessibleChat(chatId, userId, userEmail, db);
+    const chat = await getAccessibleChat(chatId, userId, userEmail, db, {
+        allowAdmin: true,
+    });
     if (!chat)
         return void res.status(404).json({ detail: "Chat not found" });
 
@@ -461,7 +487,9 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     let resolvedProjectId: string | null = parsedProjectId.projectId;
 
     if (chatId) {
-        const existing = await getAccessibleChat(chatId, userId, userEmail, db);
+        const existing = await getAccessibleChat(chatId, userId, userEmail, db, {
+            allowAdmin: true,
+        });
         if (!existing)
             return void res.status(404).json({ detail: "Chat not found" });
 
@@ -520,41 +548,18 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         });
     }
 
-    const { docIndex, docStore } = await buildDocContext(
-        messages,
-        userId,
-        db,
-        chatId,
-    );
-    const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
-        doc_id,
-        filename: info.filename,
-    }));
-    const enrichedMessages = await enrichWithPriorEvents(
-        messages,
-        chatId,
-        db,
-        docIndex,
-    );
-    const {
-        api_keys: apiKeys,
-        legal_research_us: legalResearchUs,
-    } = await getUserModelSettings(userId, db);
-    const apiMessages = buildMessages(
-        enrichedMessages,
-        docAvailability,
-        undefined,
-        undefined,
-        legalResearchUs,
-    );
-
-    const workflowStore = await buildWorkflowStore(userId, userEmail, db);
-
-    devLog("[chat/stream] starting LLM stream", {
-        apiMessageCount: apiMessages.length,
-        docCount: Object.keys(docIndex).length,
-        workflowCount: Object.keys(workflowStore).length,
-    });
+    const { data: assistantPlaceholder } = await db
+        .from("chat_messages")
+        .insert({
+            chat_id: chatId,
+            role: "assistant",
+            content: null,
+            annotations: null,
+        })
+        .select("id")
+        .maybeSingle();
+    const assistantMessageId =
+        (assistantPlaceholder as { id?: string } | null)?.id ?? null;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -562,10 +567,48 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    const write = (line: string) => res.write(line);
+    const write = createSafeStreamWriter(res);
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
+
+        const { docIndex, docStore } = await buildDocContext(
+            messages,
+            userId,
+            db,
+            chatId,
+        );
+        const docAvailability = Object.entries(docIndex).map(
+            ([doc_id, info]) => ({
+                doc_id,
+                filename: info.filename,
+            }),
+        );
+        const enrichedMessages = await enrichWithPriorEvents(
+            messages,
+            chatId,
+            db,
+            docIndex,
+        );
+        const {
+            api_keys: apiKeys,
+            legal_research_us: legalResearchUs,
+        } = await getUserModelSettings(userId, db);
+        const apiMessages = buildMessages(
+            enrichedMessages,
+            docAvailability,
+            undefined,
+            undefined,
+            legalResearchUs,
+        );
+
+        const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+
+        devLog("[chat/stream] starting LLM stream", {
+            apiMessageCount: apiMessages.length,
+            docCount: Object.keys(docIndex).length,
+            workflowCount: Object.keys(workflowStore).length,
+        });
 
         const { fullText, events } = await runLLMStream({
             apiMessages,
@@ -587,12 +630,22 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         });
 
         const annotations = extractAnnotations(fullText, docIndex, events);
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "assistant",
+        const assistantPayload = {
             content: events.length ? events : null,
             annotations: annotations.length ? annotations : null,
-        });
+        };
+        if (assistantMessageId) {
+            await db
+                .from("chat_messages")
+                .update(assistantPayload)
+                .eq("id", assistantMessageId);
+        } else {
+            await db.from("chat_messages").insert({
+                chat_id: chatId,
+                role: "assistant",
+                ...assistantPayload,
+            });
+        }
 
         if (!chatTitle && lastUser?.content) {
             await db
@@ -602,6 +655,20 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         }
     } catch (err) {
         console.error("[chat/stream] error:", err);
+        if (assistantMessageId) {
+            await db
+                .from("chat_messages")
+                .update({
+                    content: [
+                        {
+                            type: "content",
+                            text: "The assistant failed before it could finish.",
+                        },
+                    ],
+                    annotations: null,
+                })
+                .eq("id", assistantMessageId);
+        }
         try {
             write(chatStreamErrorLine(err));
             write("data: [DONE]\n\n");

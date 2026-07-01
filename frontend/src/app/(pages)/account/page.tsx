@@ -1,18 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LogOut, Check } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { deleteAccount } from "@/app/lib/docketApi";
+import {
+    type AdminUser,
+    deleteAccount,
+    listAdminUsers,
+    updateAdminUserRole,
+} from "@/app/lib/docketApi";
 
 export default function AccountPage() {
     const router = useRouter();
     const { user, signOut } = useAuth();
-    const { profile, updateDisplayName, updateOrganisation } = useUserProfile();
+    const {
+        profile,
+        updateDisplayName,
+        updateOrganisation,
+        reloadProfile,
+    } = useUserProfile();
     const [displayName, setDisplayName] = useState("");
     const [isSavingName, setIsSavingName] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -21,6 +31,10 @@ export default function AccountPage() {
     const [orgSaved, setOrgSaved] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+    const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
+    const [adminUsersError, setAdminUsersError] = useState<string | null>(null);
+    const [savingRoleFor, setSavingRoleFor] = useState<string | null>(null);
 
     useEffect(() => {
         if (profile?.displayName) {
@@ -30,6 +44,27 @@ export default function AccountPage() {
             setOrganisation(profile.organisation);
         }
     }, [profile]);
+
+    const loadAdminUsers = useCallback(async () => {
+        if (profile?.role !== "admin") return;
+        setIsLoadingAdminUsers(true);
+        setAdminUsersError(null);
+        try {
+            setAdminUsers(await listAdminUsers());
+        } catch (error) {
+            setAdminUsersError(
+                error instanceof Error
+                    ? error.message
+                    : "Failed to load users.",
+            );
+        } finally {
+            setIsLoadingAdminUsers(false);
+        }
+    }, [profile?.role]);
+
+    useEffect(() => {
+        void loadAdminUsers();
+    }, [loadAdminUsers]);
 
     const handleLogout = async () => {
         await signOut();
@@ -72,6 +107,33 @@ export default function AccountPage() {
             setTimeout(() => setOrgSaved(false), 2000);
         } else {
             alert("Failed to update organisation. Please try again.");
+        }
+    };
+
+    const handleRoleChange = async (
+        targetUserId: string,
+        role: "user" | "admin",
+    ) => {
+        setSavingRoleFor(targetUserId);
+        setAdminUsersError(null);
+        try {
+            const updated = await updateAdminUserRole(targetUserId, role);
+            setAdminUsers((prev) =>
+                prev.map((adminUser) =>
+                    adminUser.id === targetUserId
+                        ? { ...adminUser, ...updated }
+                        : adminUser,
+                ),
+            );
+            if (updated.isCurrentUser) await reloadProfile();
+        } catch (error) {
+            setAdminUsersError(
+                error instanceof Error
+                    ? error.message
+                    : "Failed to update user role.",
+            );
+        } finally {
+            setSavingRoleFor(null);
         }
     };
 
@@ -176,6 +238,107 @@ export default function AccountPage() {
                     </p>
                 </div>
             </div>
+
+            {profile?.role === "admin" && (
+                <div className="py-6">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                        <h2 className="text-2xl font-medium font-serif">
+                            Users
+                        </h2>
+                        <Button
+                            variant="outline"
+                            onClick={loadAdminUsers}
+                            disabled={isLoadingAdminUsers}
+                            className="h-9"
+                        >
+                            {isLoadingAdminUsers ? "Loading..." : "Refresh"}
+                        </Button>
+                    </div>
+                    {adminUsersError && (
+                        <p className="mb-3 text-sm text-red-600">
+                            {adminUsersError}
+                        </p>
+                    )}
+                    <div className="overflow-x-auto rounded-lg border border-gray-200">
+                        <table className="w-full min-w-[620px] text-left text-sm">
+                            <thead className="border-b border-gray-200 bg-gray-50 text-xs uppercase text-gray-500">
+                                <tr>
+                                    <th className="px-3 py-2 font-medium">
+                                        User
+                                    </th>
+                                    <th className="px-3 py-2 font-medium">
+                                        Organisation
+                                    </th>
+                                    <th className="px-3 py-2 font-medium">
+                                        Role
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {adminUsers.map((adminUser) => (
+                                    <tr
+                                        key={adminUser.id}
+                                        className="border-b border-gray-100 last:border-b-0"
+                                    >
+                                        <td className="px-3 py-3 align-middle">
+                                            <div className="font-medium text-gray-900">
+                                                {adminUser.displayName ||
+                                                    adminUser.email ||
+                                                    "Unnamed user"}
+                                                {adminUser.isCurrentUser
+                                                    ? " (you)"
+                                                    : ""}
+                                            </div>
+                                            <div className="text-xs text-gray-500">
+                                                {adminUser.email}
+                                            </div>
+                                        </td>
+                                        <td className="px-3 py-3 align-middle text-gray-600">
+                                            {adminUser.organisation || "-"}
+                                        </td>
+                                        <td className="px-3 py-3 align-middle">
+                                            <select
+                                                value={adminUser.role}
+                                                disabled={
+                                                    savingRoleFor ===
+                                                    adminUser.id
+                                                }
+                                                onChange={(event) =>
+                                                    void handleRoleChange(
+                                                        adminUser.id,
+                                                        event.target.value as
+                                                            | "user"
+                                                            | "admin",
+                                                    )
+                                                }
+                                                className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
+                                            >
+                                                <option value="user">
+                                                    User
+                                                </option>
+                                                <option value="admin">
+                                                    Admin
+                                                </option>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {!isLoadingAdminUsers &&
+                                    adminUsers.length === 0 && (
+                                        <tr>
+                                            <td
+                                                colSpan={3}
+                                                className="px-3 py-6 text-center text-gray-500"
+                                            >
+                                                No users found.
+                                            </td>
+                                        </tr>
+                                    )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
 
             {/* Actions */}
             <div className="py-6">
