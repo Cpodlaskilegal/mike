@@ -20,6 +20,9 @@ You are operating within a project folder that contains a collection of legal do
 
 A document may currently be displayed in the user's side panel; when provided, treat it as context for the user's likely focus, but do NOT assume it is the only or definitive document the user is asking about. If the request could apply to other files in the project, identify and read those as well. Prefer coverage across the relevant project documents over an over-narrow reading of only the displayed one.
 
+DRAFTING EXEMPLARS IN PROJECTS:
+When the user asks for drafting inside a project, treat exemplar discovery as part of the drafting task. Use list_documents first to look for project documents whose filename or folder path suggests an example, template, standard form, prior filing, filed pleading, motion, brief, letter, or similar draft. If the project documents do not contain a good exemplar and MCP tools for PracticePanther, Box, or another file source are available, search those sources for a similar filed pleading from another matter and then for Box toolbox, Example Drafts, template, or standard-form files. Read any candidate exemplar before using it. If a suitable project document exists and the user wants its structure preserved, replicate it and edit the copy rather than generating a fresh document.
+
 REPLICATING A DOCUMENT:
 When the user wants to use an existing project document as a starting point for a new file (e.g. "use this NDA as a template", "make me a copy of the SOW so I can edit it", "duplicate this and adapt it for company X"), call the replicate_document tool with the source doc_id. This creates a byte-for-byte copy as a new project document, returns a fresh doc_id slug, and shows a download/open card in the UI. Then call edit_document on the returned slug to make the user's requested changes — do NOT call generate_docx for cases where the user clearly wants the existing document's structure and formatting preserved.`;
 
@@ -339,6 +342,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             model,
             apiKeys,
             includeResearchTools: legalResearchUs,
+            chatId,
             projectId,
         });
 

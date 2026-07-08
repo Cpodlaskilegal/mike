@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { randomUUID } from "crypto";
 import type {
     Response,
     ResponseFunctionToolCall,
@@ -16,8 +17,15 @@ import type {
     StreamChatResult,
     TextVerbosity,
 } from "./types";
+import { captureAiGeneration } from "../posthog";
 
 const MAX_OUTPUT_TOKENS = 16384;
+
+type OpenAIResponseResult = {
+    response: Response;
+    latencySeconds: number;
+    timeToFirstTokenSeconds?: number;
+};
 
 function client(apiKeyOverride?: string | null): OpenAI {
     const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY?.trim();
@@ -46,7 +54,7 @@ function defaultReasoningEffort(
         if (model.endsWith("-mini") || model.endsWith("-nano")) return "low";
         return "medium";
     }
-    if (model.endsWith("-nano")) return "minimal";
+    if (model.endsWith("-nano")) return "none";
     return "low";
 }
 
@@ -80,10 +88,10 @@ function textConfig(
 }
 
 function toInput(messages: StreamChatParams["messages"]): ResponseInput {
-    return messages.map((m) => ({
+    return messages.map((m): ResponseInputItem => ({
         type: "message",
         role: m.role,
-        content: [{ type: "input_text", text: m.content }],
+        content: m.content,
     }));
 }
 
@@ -120,6 +128,25 @@ function outputText(response: Response): string {
     return response.output_text ?? "";
 }
 
+function elapsedSeconds(startedAt: number): number {
+    return (Date.now() - startedAt) / 1000;
+}
+
+function aiInputMessages(
+    systemPrompt: string | undefined,
+    messages: StreamChatParams["messages"] | string,
+) {
+    const input =
+        typeof messages === "string"
+            ? [{ role: "user", content: messages }]
+            : messages.map((message) => ({
+                  role: message.role,
+                  content: message.content,
+              }));
+    if (!systemPrompt) return input;
+    return [{ role: "system", content: systemPrompt }, ...input];
+}
+
 async function createStreamingResponse(
     openai: OpenAI,
     params: {
@@ -136,7 +163,8 @@ async function createStreamingResponse(
         onReasoningDelta?: (delta: string) => void;
         onReasoningBlockEnd?: () => void;
     },
-): Promise<Response> {
+): Promise<OpenAIResponseResult> {
+    const startedAt = Date.now();
     const stream = await openai.responses.create({
         model: params.model,
         instructions: params.systemPrompt,
@@ -156,8 +184,10 @@ async function createStreamingResponse(
 
     let final: Response | null = null;
     let reasoningOpen = false;
+    let timeToFirstTokenSeconds: number | undefined;
     for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
         if (event.type === "response.output_text.delta") {
+            timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
             params.onDelta?.(event.delta);
         } else if (
             params.enableThinking &&
@@ -189,7 +219,11 @@ async function createStreamingResponse(
         }
     }
     if (!final) throw new Error("OpenAI stream ended without a completed response");
-    return final;
+    return {
+        response: final,
+        latencySeconds: elapsedSeconds(startedAt),
+        timeToFirstTokenSeconds,
+    };
 }
 
 async function createNonStreamingResponse(
@@ -206,7 +240,8 @@ async function createNonStreamingResponse(
         textVerbosity?: TextVerbosity;
         textFormat?: JsonSchemaTextFormat;
     },
-): Promise<Response> {
+): Promise<OpenAIResponseResult> {
+    const startedAt = Date.now();
     const response = await openai.responses.create({
         model: params.model,
         instructions: params.systemPrompt,
@@ -231,7 +266,10 @@ async function createNonStreamingResponse(
             response.incomplete_details?.reason ?? "OpenAI response incomplete",
         );
     }
-    return response;
+    return {
+        response,
+        latencySeconds: elapsedSeconds(startedAt),
+    };
 }
 
 export async function streamOpenAI(
@@ -249,48 +287,114 @@ export async function streamOpenAI(
     const openaiTools = toOpenAITools(tools);
     let input = toInput(params.messages);
     let fullText = "";
+    const traceId = params.aiObservability?.traceId || randomUUID();
+    const parentId = traceId;
 
     for (let iter = 0; iter < maxIter; iter++) {
         const beforeLength = fullText.length;
-        const response = isProModel(model)
-            ? await createNonStreamingResponse(openai, {
-                  model,
-                  systemPrompt,
-                  input,
-                  tools: openaiTools,
-                  enableThinking: params.enableThinking,
-                  reasoningEffort: params.reasoningEffort,
-                  textVerbosity: params.textVerbosity,
-                  textFormat: params.textFormat,
-              })
-            : await createStreamingResponse(openai, {
-                  model,
-                  systemPrompt,
-                  input,
-                  tools: openaiTools,
-                  enableThinking: params.enableThinking,
-                  reasoningEffort: params.reasoningEffort,
-                  textVerbosity: params.textVerbosity,
-                  textFormat: params.textFormat,
-                  onDelta: (delta) => {
-                      fullText += delta;
-                      callbacks.onContentDelta?.(delta);
-                  },
-                  onReasoningDelta: callbacks.onReasoningDelta,
-                  onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
-              });
+        const generationId = randomUUID();
+        const requestStartedAt = Date.now();
+        let iterationText = "";
+        let result: OpenAIResponseResult;
+        try {
+            result = isProModel(model)
+                ? await createNonStreamingResponse(openai, {
+                      model,
+                      systemPrompt,
+                      input,
+                      tools: openaiTools,
+                      enableThinking: params.enableThinking,
+                      reasoningEffort: params.reasoningEffort,
+                      textVerbosity: params.textVerbosity,
+                      textFormat: params.textFormat,
+                  })
+                : await createStreamingResponse(openai, {
+                      model,
+                      systemPrompt,
+                      input,
+                      tools: openaiTools,
+                      enableThinking: params.enableThinking,
+                      reasoningEffort: params.reasoningEffort,
+                      textVerbosity: params.textVerbosity,
+                      textFormat: params.textFormat,
+                      onDelta: (delta) => {
+                          iterationText += delta;
+                          fullText += delta;
+                          callbacks.onContentDelta?.(delta);
+                      },
+                      onReasoningDelta: callbacks.onReasoningDelta,
+                      onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
+                  });
+        } catch (error) {
+            await captureAiGeneration({
+                distinctId: params.aiObservability?.distinctId,
+                traceId,
+                generationId,
+                parentId,
+                sessionId: params.aiObservability?.sessionId,
+                spanName: params.aiObservability?.spanName || "Chat completion",
+                route: params.aiObservability?.route,
+                chatId: params.aiObservability?.chatId,
+                projectId: params.aiObservability?.projectId,
+                model,
+                provider: "openai",
+                stream: !isProModel(model),
+                latencySeconds: elapsedSeconds(requestStartedAt),
+                input: aiInputMessages(systemPrompt, params.messages),
+                output: "",
+                error: error instanceof Error ? error.message : String(error),
+                metadata: {
+                    iteration: iter + 1,
+                    tool_count: openaiTools.length,
+                    ...params.aiObservability?.metadata,
+                },
+            });
+            throw error;
+        }
+
+        const { response } = result;
 
         if (isProModel(model)) {
             const text = outputText(response);
+            iterationText += text;
             fullText += text;
             callbacks.onContentDelta?.(text);
         } else if (fullText.length === beforeLength) {
             const text = outputText(response);
             if (text) {
+                iterationText += text;
                 fullText += text;
                 callbacks.onContentDelta?.(text);
             }
         }
+
+        await captureAiGeneration({
+            distinctId: params.aiObservability?.distinctId,
+            traceId,
+            generationId,
+            parentId,
+            sessionId: params.aiObservability?.sessionId,
+            spanName: params.aiObservability?.spanName || "Chat completion",
+            route: params.aiObservability?.route,
+            chatId: params.aiObservability?.chatId,
+            projectId: params.aiObservability?.projectId,
+            model,
+            provider: "openai",
+            stream: !isProModel(model),
+            latencySeconds: result.latencySeconds,
+            timeToFirstTokenSeconds: result.timeToFirstTokenSeconds,
+            input: aiInputMessages(systemPrompt, params.messages),
+            output: iterationText || outputText(response),
+            inputTokens: response.usage?.input_tokens,
+            outputTokens: response.usage?.output_tokens,
+            totalTokens: response.usage?.total_tokens,
+            metadata: {
+                iteration: iter + 1,
+                tool_count: openaiTools.length,
+                function_call_count: extractFunctionCalls(response).length,
+                ...params.aiObservability?.metadata,
+            },
+        });
 
         const calls = extractFunctionCalls(response);
         if (!calls.length || !runTools) break;
@@ -326,16 +430,65 @@ export async function completeOpenAIText(params: {
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
+    aiObservability?: StreamChatParams["aiObservability"];
 }): Promise<string> {
     const openai = client(params.apiKeys?.openai);
-    const response = await createNonStreamingResponse(openai, {
-        model: params.model,
-        systemPrompt: params.systemPrompt,
-        input: params.user,
-        maxTokens: params.maxTokens ?? 512,
-        reasoningEffort: params.reasoningEffort,
-        textVerbosity: params.textVerbosity,
-        textFormat: params.textFormat,
-    });
-    return outputText(response);
+    const traceId = params.aiObservability?.traceId || randomUUID();
+    const generationId = randomUUID();
+    const requestStartedAt = Date.now();
+    try {
+        const result = await createNonStreamingResponse(openai, {
+            model: params.model,
+            systemPrompt: params.systemPrompt,
+            input: params.user,
+            maxTokens: params.maxTokens ?? 512,
+            reasoningEffort: params.reasoningEffort,
+            textVerbosity: params.textVerbosity,
+            textFormat: params.textFormat,
+        });
+        const text = outputText(result.response);
+        await captureAiGeneration({
+            distinctId: params.aiObservability?.distinctId,
+            traceId,
+            generationId,
+            parentId: traceId,
+            sessionId: params.aiObservability?.sessionId,
+            spanName: params.aiObservability?.spanName || "Text completion",
+            route: params.aiObservability?.route,
+            chatId: params.aiObservability?.chatId,
+            projectId: params.aiObservability?.projectId,
+            model: params.model,
+            provider: "openai",
+            stream: false,
+            latencySeconds: result.latencySeconds,
+            input: aiInputMessages(params.systemPrompt, params.user),
+            output: text,
+            inputTokens: result.response.usage?.input_tokens,
+            outputTokens: result.response.usage?.output_tokens,
+            totalTokens: result.response.usage?.total_tokens,
+            metadata: params.aiObservability?.metadata,
+        });
+        return text;
+    } catch (error) {
+        await captureAiGeneration({
+            distinctId: params.aiObservability?.distinctId,
+            traceId,
+            generationId,
+            parentId: traceId,
+            sessionId: params.aiObservability?.sessionId,
+            spanName: params.aiObservability?.spanName || "Text completion",
+            route: params.aiObservability?.route,
+            chatId: params.aiObservability?.chatId,
+            projectId: params.aiObservability?.projectId,
+            model: params.model,
+            provider: "openai",
+            stream: false,
+            latencySeconds: elapsedSeconds(requestStartedAt),
+            input: aiInputMessages(params.systemPrompt, params.user),
+            output: "",
+            error: error instanceof Error ? error.message : String(error),
+            metadata: params.aiObservability?.metadata,
+        });
+        throw error;
+    }
 }

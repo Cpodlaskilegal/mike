@@ -5,6 +5,7 @@ import { ZoomIn, ZoomOut } from "lucide-react";
 import { DocketIcon } from "@/components/chat/docket-icon";
 import { useFetchSingleDoc } from "@/app/hooks/useFetchSingleDoc";
 import { DocxView } from "./DocxView";
+import { SpreadsheetView } from "./SpreadsheetView";
 import type { CitationQuote } from "./types";
 import {
     clearHighlights,
@@ -83,6 +84,7 @@ export function DocView({
     // rendition, so fall back to docx-preview (still applies citation
     // highlighting via the same `quotes` API).
     const fallbackToDocx = result?.type === "docx";
+    const fallbackToSpreadsheet = result?.type === "spreadsheet";
 
     // Track container width via ResizeObserver so re-renders fire on resize
     useEffect(() => {
@@ -535,7 +537,19 @@ export function DocView({
         return (
             <DocxView
                 documentId={doc.document_id}
+                versionId={doc.version_id ?? undefined}
                 quotes={quotes}
+            />
+        );
+    }
+
+    if (fallbackToSpreadsheet && doc?.document_id) {
+        return (
+            <SpreadsheetView
+                documentId={doc.document_id}
+                versionId={doc.version_id ?? undefined}
+                rounded={rounded}
+                bordered={bordered}
             />
         );
     }

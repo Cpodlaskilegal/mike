@@ -56,9 +56,9 @@ export function DocketTutorial() {
             {
                 target: "body",
                 placement: "center",
-                title: "Add a strong example",
+                title: "Use a strong example",
                 content:
-                    "For drafting, upload a good filing, letter, contract, or other client-ready document from another matter if you want Docket to match the firm's style and format.",
+                    "For drafting, Docket will try to find a similar filed pleading or Box toolbox form. Upload a specific example if you want that source used.",
             },
             {
                 target: "body",

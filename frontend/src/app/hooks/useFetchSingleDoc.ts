@@ -4,15 +4,22 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 /**
- * /display returns either PDF bytes (when the active version has a PDF
- * rendition) or raw DOCX bytes otherwise. Reporting the type lets the
- * caller swap between DocView (PDF.js) and DocxView (docx-preview)
- * accordingly.
+ * /display returns PDF bytes when a PDF rendition exists, raw spreadsheet bytes
+ * for Excel files, or raw DOCX bytes otherwise. Reporting the type lets callers
+ * swap between PDF, spreadsheet, and DOCX renderers.
  */
 export type DocResult =
     | { type: "pdf"; buffer: ArrayBuffer }
+    | { type: "spreadsheet"; buffer: ArrayBuffer }
     | { type: "docx" }
     | null;
+
+function isSpreadsheetContentType(contentType: string): boolean {
+    return (
+        contentType.includes("spreadsheetml") ||
+        contentType.includes("ms-excel")
+    );
+}
 
 export function useFetchSingleDoc(
     documentId: string | null | undefined,
@@ -65,6 +72,9 @@ export function useFetchSingleDoc(
                 if (contentType.includes("application/pdf")) {
                     const buffer = await response.arrayBuffer();
                     if (!cancelled) setResult({ type: "pdf", buffer });
+                } else if (isSpreadsheetContentType(contentType)) {
+                    const buffer = await response.arrayBuffer();
+                    if (!cancelled) setResult({ type: "spreadsheet", buffer });
                 } else {
                     // Drain the body so the connection is reusable, but the
                     // bytes are useless to the PDF viewer — the caller will

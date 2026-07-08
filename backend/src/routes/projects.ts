@@ -10,9 +10,14 @@ import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { isAdminUser } from "../lib/userRoles";
+import {
+  ALLOWED_DOCUMENT_TYPES,
+  ALLOWED_DOCUMENT_TYPES_LABEL,
+  contentTypeForDocumentType,
+  shouldConvertToPdf,
+} from "../lib/documentTypes";
 
 export const projectsRouter = Router();
-const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 
 function normalizeDocumentFilename(nextName: unknown, currentName: string) {
   if (typeof nextName !== "string") return null;
@@ -427,16 +432,14 @@ projectsRouter.post(
               .json({ detail: "Failed to read source document bytes" });
           }
           const newKey = storageKey(userId, copy.id as string, doc.filename);
-          const contentType =
-            doc.file_type === "pdf"
-              ? "application/pdf"
-              : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+          const contentType = contentTypeForDocumentType(
+            doc.file_type as string,
+          );
           await uploadFile(newKey, srcBytes, contentType);
 
-          // PDFs share one object for source + display rendition. DOCX
-          // store the converted PDF at a separate `converted-pdfs/` key —
-          // copy that too if it exists so the copy renders without going
-          // back through libreoffice.
+          // PDFs share one object for source + display rendition. Convertible
+          // Office files store the PDF at a separate key; copy that too when
+          // present so the copy renders without going back through LibreOffice.
           let newPdfPath: string | null = null;
           if (srcV.pdf_storage_path) {
             if (srcV.pdf_storage_path === srcV.storage_path) {
@@ -709,11 +712,11 @@ export async function handleDocumentUpload(
   const suffix = filename.includes(".")
     ? filename.split(".").pop()!.toLowerCase()
     : "";
-  if (!ALLOWED_TYPES.has(suffix))
+  if (!ALLOWED_DOCUMENT_TYPES.has(suffix))
     return void res
       .status(400)
       .json({
-        detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
+        detail: `Unsupported file type: ${suffix}. Allowed: ${ALLOWED_DOCUMENT_TYPES_LABEL}`,
       });
 
   const content = file.buffer;
@@ -738,10 +741,7 @@ export async function handleDocumentUpload(
   try {
     const docId = doc.id as string;
     const key = storageKey(userId, docId, filename);
-    const contentType =
-      suffix === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const contentType = contentTypeForDocumentType(suffix);
     await uploadFile(
       key,
       content.buffer.slice(
@@ -758,9 +758,9 @@ export async function handleDocumentUpload(
     const tree = await extractStructureTree(rawBuf, suffix, filename);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
-    // Convert DOCX/DOC → PDF for display. PDFs are their own rendition.
+    // Convert Word/presentation files to PDF for display. Spreadsheets render from raw bytes.
     let pdfStoragePath: string | null = null;
-    if (suffix === "docx" || suffix === "doc") {
+    if (shouldConvertToPdf(suffix)) {
       try {
         const pdfBuf = await docxToPdf(content);
         const pdfKey = convertedPdfKey(userId, docId);
@@ -775,7 +775,7 @@ export async function handleDocumentUpload(
         pdfStoragePath = pdfKey;
       } catch (err) {
         console.error(
-          `[upload] DOCX→PDF conversion failed for ${filename}:`,
+          `[upload] Office to PDF conversion failed for ${filename}:`,
           err,
         );
       }

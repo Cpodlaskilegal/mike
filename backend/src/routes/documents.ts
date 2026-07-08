@@ -23,9 +23,14 @@ import {
 } from "../lib/documentVersions";
 import { ensureDocAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import {
+  ALLOWED_DOCUMENT_TYPES,
+  ALLOWED_DOCUMENT_TYPES_LABEL,
+  contentTypeForDocumentType,
+  shouldConvertToPdf,
+} from "../lib/documentTypes";
 
 export const documentsRouter = Router();
-const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 
 // GET /single-documents
 documentsRouter.get("/", requireAuth, async (req, res) => {
@@ -118,11 +123,11 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     return void res.status(404).json({ detail: "No file available" });
 
   const fileType = (doc.file_type as string) ?? "";
-  const isDocx = fileType === "docx" || fileType === "doc";
+  const isConvertibleOffice = shouldConvertToPdf(fileType);
 
-  // For DOCX, prefer the per-version PDF rendition if one exists.
+  // For convertible Office files, prefer the per-version PDF rendition if one exists.
   const servePath =
-    isDocx && active.pdf_storage_path
+    isConvertibleOffice && active.pdf_storage_path
       ? active.pdf_storage_path
       : active.storage_path;
   const raw = await downloadFile(servePath);
@@ -131,7 +136,7 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
       .status(404)
       .json({ detail: "Document not found in storage" });
 
-  if (fileType === "pdf" || (isDocx && active.pdf_storage_path)) {
+  if (fileType === "pdf" || (isConvertibleOffice && active.pdf_storage_path)) {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
@@ -139,11 +144,8 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     );
     res.send(Buffer.from(raw));
   } else {
-    // Fallback: serve raw DOCX (mammoth will handle it client-side)
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    );
+    // Fallback: serve raw Office bytes when no PDF rendition is available.
+    res.setHeader("Content-Type", contentTypeForDocumentType(fileType));
     res.setHeader(
       "Content-Disposition",
       buildContentDisposition("inline", doc.filename as string),
@@ -406,6 +408,11 @@ documentsRouter.post(
     const suffix = file.originalname.includes(".")
       ? file.originalname.split(".").pop()!.toLowerCase()
       : "";
+    if (!ALLOWED_DOCUMENT_TYPES.has(suffix)) {
+      return void res.status(400).json({
+        detail: `Unsupported file type: ${suffix}. Allowed: ${ALLOWED_DOCUMENT_TYPES_LABEL}`,
+      });
+    }
     if (doc.file_type && suffix && doc.file_type !== suffix) {
       return void res.status(400).json({
         detail: `Uploaded file type (${suffix}) does not match document type (${doc.file_type}).`,
@@ -421,10 +428,7 @@ documentsRouter.post(
       versionSlug,
       file.originalname,
     );
-    const contentType =
-      suffix === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const contentType = contentTypeForDocumentType(suffix);
     try {
       await uploadFile(
         key,
@@ -445,7 +449,7 @@ documentsRouter.post(
     // historical versions without on-demand conversion. Same logic as the
     // initial-upload pipeline; failures don't block the version row.
     let pdfStoragePath: string | null = null;
-    if (suffix === "docx" || suffix === "doc") {
+    if (shouldConvertToPdf(suffix)) {
       try {
         const pdfBuf = await docxToPdf(file.buffer);
         const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
@@ -460,7 +464,7 @@ documentsRouter.post(
         pdfStoragePath = pdfKey;
       } catch (err) {
         console.error(
-          `[versions/upload] DOCX→PDF conversion failed for ${file.originalname}:`,
+          `[versions/upload] Office to PDF conversion failed for ${file.originalname}:`,
           err,
         );
       }
@@ -844,11 +848,11 @@ async function handleDocumentUpload(
   const suffix = filename.includes(".")
     ? filename.split(".").pop()!.toLowerCase()
     : "";
-  if (!ALLOWED_TYPES.has(suffix))
+  if (!ALLOWED_DOCUMENT_TYPES.has(suffix))
     return void res
       .status(400)
       .json({
-        detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
+        detail: `Unsupported file type: ${suffix}. Allowed: ${ALLOWED_DOCUMENT_TYPES_LABEL}`,
       });
 
   const content = file.buffer;
@@ -872,10 +876,7 @@ async function handleDocumentUpload(
   try {
     const docId = doc.id as string;
     const key = storageKey(userId, docId, filename);
-    const contentType =
-      suffix === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const contentType = contentTypeForDocumentType(suffix);
     await uploadFile(
       key,
       content.buffer.slice(
@@ -892,9 +893,9 @@ async function handleDocumentUpload(
     const tree = await extractStructureTree(rawBuf, suffix, filename);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
-    // Convert DOCX/DOC → PDF for display. PDFs are their own rendition.
+    // Convert Word/presentation files to PDF for display. Spreadsheets render from raw bytes.
     let pdfStoragePath: string | null = null;
-    if (suffix === "docx" || suffix === "doc") {
+    if (shouldConvertToPdf(suffix)) {
       try {
         const pdfBuf = await docxToPdf(content);
         const pdfKey = convertedPdfKey(userId, docId);
@@ -909,7 +910,7 @@ async function handleDocumentUpload(
         pdfStoragePath = pdfKey;
       } catch (err) {
         console.error(
-          `[upload] DOCX→PDF conversion failed for ${filename}:`,
+          `[upload] Office to PDF conversion failed for ${filename}:`,
           err,
         );
       }

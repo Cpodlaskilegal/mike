@@ -5,6 +5,12 @@ import { downloadFile } from "../lib/storage";
 import { loadActiveVersion } from "../lib/documentVersions";
 import { normalizeDocxZipPaths } from "../lib/convert";
 import {
+    isPresentationDocumentType,
+    isSpreadsheetDocumentType,
+} from "../lib/documentTypes";
+import { extractPresentationText } from "../lib/officeText";
+import { spreadsheetToLLMText } from "../lib/spreadsheet";
+import {
     runLLMStream,
     TABULAR_TOOLS,
     type ChatMessage,
@@ -317,7 +323,7 @@ tabularRouter.post("/prompt", requireAuth, async (req, res) => {
             user: userMessage,
             maxTokens: 512,
             apiKeys: api_keys,
-            reasoningEffort: "minimal",
+            reasoningEffort: "none",
             textVerbosity: "low",
             textFormat: {
                 type: "json_schema",
@@ -779,10 +785,10 @@ tabularRouter.post(
             const buf = await downloadFile(docActive.storage_path);
             if (buf) {
                 try {
-                    markdown =
-                        (doc.file_type as string) === "pdf"
-                            ? await extractPdfMarkdown(buf)
-                            : await extractDocxMarkdown(buf);
+                    markdown = await extractDocumentMarkdown(
+                        buf,
+                        doc.file_type as string,
+                    );
                 } catch (err) {
                     console.error(
                         `[regenerate-cell] extraction error doc=${document_id}`,
@@ -908,10 +914,10 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                     const buf = await downloadFile(active.storage_path);
                     if (buf) {
                         try {
-                            markdown =
-                                (doc.file_type as string) === "pdf"
-                                    ? await extractPdfMarkdown(buf)
-                                    : await extractDocxMarkdown(buf);
+                            markdown = await extractDocumentMarkdown(
+                                buf,
+                                doc.file_type as string,
+                            );
                         } catch (err) {
                             console.error(
                                 `[tabular/generate] extraction error doc=${docId}`,
@@ -1349,6 +1355,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             buildCitations: (text) =>
                 extractTabularAnnotations(text, tabularStore),
             apiKeys,
+            chatId,
         });
 
         const annotations = extractTabularAnnotations(fullText, tabularStore);
@@ -1535,7 +1542,7 @@ async function generateChatTitle(
             user: `${contextBlock}Generate a short title (4-6 words) for a chat that starts with the message below. The title should reflect the user's specific question, not the review or project name. Return only the title, no punctuation, no quotes:\n\n${firstUserMessage}`,
             maxTokens: 64,
             apiKeys,
-            reasoningEffort: "minimal",
+            reasoningEffort: "none",
             textVerbosity: "low",
         });
         return raw.trim().slice(0, 80) || null;
@@ -1837,4 +1844,18 @@ async function extractDocxMarkdown(buf: ArrayBuffer): Promise<string> {
     } catch {
         return "";
     }
+}
+
+async function extractDocumentMarkdown(
+    buf: ArrayBuffer,
+    fileType: string,
+): Promise<string> {
+    if (fileType === "pdf") return extractPdfMarkdown(buf);
+    if (isSpreadsheetDocumentType(fileType)) {
+        return spreadsheetToLLMText(Buffer.from(buf));
+    }
+    if (isPresentationDocumentType(fileType)) {
+        return extractPresentationText(Buffer.from(buf));
+    }
+    return extractDocxMarkdown(buf);
 }

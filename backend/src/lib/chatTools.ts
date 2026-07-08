@@ -6,6 +6,13 @@ import {
     uploadFile,
 } from "./storage";
 import { convertedPdfKey } from "./convert";
+import {
+    contentTypeForDocumentType,
+    isPresentationDocumentType,
+    isSpreadsheetDocumentType,
+} from "./documentTypes";
+import { extractPresentationText } from "./officeText";
+import { spreadsheetToLLMText } from "./spreadsheet";
 import { createServerSupabase } from "./supabase";
 import {
     applyTrackedEdits,
@@ -136,6 +143,15 @@ Never duplicate the numbering prefix in heading text. The heading's own numberin
 Do not repeat the document title as the first section heading. The document generator already renders the title as a centered title paragraph. Put any opening preamble text directly in the first section's content, without a duplicate heading such as "Agreement", "Contract", "Mutual Non-Disclosure Agreement", or another shortened form of the title.
 Contracts: when generating a contract or agreement, always include a signatures block at the very end of the document on its own page. Set pageBreak: true on that final section so it starts on a fresh page, and include a signature line for each party — typically the party name followed by lines for "By:", "Name:", "Title:", and "Date:". The entire signature block must be plain unnumbered text: do NOT number the signatures heading, do NOT number or letter the introductory signature sentence, party names, "By:", "Name:", "Title:", or "Date:" lines, and do NOT place the signature block inside a numbered clause. Put the signature block in the section's content rather than as a numbered heading.
 Contract preambles: the preamble of a contract (the opening recitals, parties block, "WHEREAS" clauses, and any introductory narrative before the first operative clause) must NOT be numbered. Render these as unnumbered content (plain paragraphs or an unnumbered heading), and begin numbering only at the first operative clause/section.
+
+DRAFTING EXEMPLAR SEARCH:
+Before drafting any pleading, motion, brief, court filing, legal letter, or other formal legal document from scratch, try to locate a useful exemplar or standard form that matches the document type, forum, jurisdiction, posture, or subject matter.
+- First use documents already available in the chat or project, including filings from other matters, templates, examples, or prior generated drafts.
+- If connected MCP tools expose PracticePanther, Box, or similar matter/file-search tools, use them to look for a similar filed pleading from another matter and for firm standard forms in Box toolbox, Example Drafts, template, or standard-form folders.
+- Prefer a filed pleading from a similar matter over a generic form when both are available. If no similar filed pleading is available, use the most relevant Box toolbox or standard-form file.
+- If an exemplar or toolbox file is found, read it before drafting and adapt its structure, caption conventions, headings, style, and formatting to the user's matter without copying irrelevant facts.
+- Do not invent that an exemplar exists. If the search cannot be performed because tools are unavailable, not connected, or return no useful match, say that in the final response and proceed using available matter documents and legal knowledge.
+- After drafting, identify the exemplar/toolbox source used by filename or source location when available, or state that no exemplar/toolbox source was available.
 
 DOCUMENT EDITING:
 When using edit_document, any edit that adds, removes, or reorders a numbered clause, section, sub-clause, schedule, exhibit, or list item shifts every downstream number. You MUST update all affected numbering AND every cross-reference to those numbers in the same edit_document call:
@@ -1598,6 +1614,16 @@ async function readDocumentContent(
             console.log(
                 `[read_document] pdf extracted length=${text.length} for filename="${docInfo.filename}"`,
             );
+        } else if (isSpreadsheetDocumentType(docInfo.file_type)) {
+            text = spreadsheetToLLMText(Buffer.from(raw));
+            console.log(
+                `[read_document] spreadsheet extracted length=${text.length} for filename="${docInfo.filename}"`,
+            );
+        } else if (isPresentationDocumentType(docInfo.file_type)) {
+            text = await extractPresentationText(Buffer.from(raw));
+            console.log(
+                `[read_document] presentation extracted length=${text.length} for filename="${docInfo.filename}"`,
+            );
         } else if (docInfo.file_type === "docx") {
             // Use the same flattening as the edit_document matcher so the
             // LLM sees exactly the characters it can anchor against.
@@ -2697,10 +2723,9 @@ export async function runToolCalls(
                                 id: string;
                                 filename: string;
                             }[];
-                            const contentType =
-                                sourceInfo.file_type === "pdf"
-                                    ? "application/pdf"
-                                    : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                            const contentType = contentTypeForDocumentType(
+                                sourceInfo.file_type,
+                            );
 
                             // Parallel uploads: the doc bytes (and PDF
                             // rendition if any) for every new copy.
@@ -3638,6 +3663,7 @@ export async function runLLMStream(params: {
     model?: string;
     apiKeys?: import("./llm").UserApiKeys;
     includeResearchTools?: boolean;
+    chatId?: string | null;
     /**
      * If set, generate_docx will attach created docs to this project so
      * they appear in the project sidebar. Leave null for general chats —
@@ -3659,6 +3685,7 @@ export async function runLLMStream(params: {
         model,
         apiKeys,
         includeResearchTools = false,
+        chatId,
         projectId,
     } = params;
     const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
@@ -3762,6 +3789,19 @@ export async function runLLMStream(params: {
         maxIterations: 10,
         apiKeys,
         enableThinking: true,
+        aiObservability: {
+            distinctId: userId,
+            sessionId: chatId,
+            spanName: projectId ? "Project chat" : "Assistant chat",
+            route: projectId ? "project_chat" : "chat",
+            chatId,
+            projectId,
+            metadata: {
+                tool_count: activeTools.length,
+                message_count: chatMessages.length,
+                legal_research_enabled: includeResearchTools,
+            },
+        },
         callbacks: {
             onContentDelta: (delta) => {
                 iterText += delta;

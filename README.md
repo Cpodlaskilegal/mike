@@ -68,6 +68,9 @@ AZURE_STORAGE_CONTAINER=documents
 GEMINI_API_KEY=your-gemini-key
 ANTHROPIC_API_KEY=your-anthropic-key
 OPENAI_API_KEY=your-openai-key
+POSTHOG_KEY=phc_your_posthog_project_api_key
+POSTHOG_HOST=https://us.i.posthog.com
+POSTHOG_AI_CAPTURE_CONTENT=false
 RESEND_API_KEY=your-resend-key
 USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
 MCP_CONNECTORS_ENCRYPTION_SECRET=your-long-random-secret
@@ -92,9 +95,20 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 NEXT_PUBLIC_AZURE_TENANT_ID=your-azure-tenant-id
 NEXT_PUBLIC_AZURE_CLIENT_ID=your-spa-app-client-id
 NEXT_PUBLIC_AZURE_API_SCOPE=api://your-api-app-client-id/access_as_user
+NEXT_PUBLIC_POSTHOG_KEY=phc_your_posthog_project_api_key
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
 ```
 
 Entra values come from the Microsoft Entra app registrations. The backend validates access tokens for `AZURE_API_CLIENT_ID`; the frontend requests `NEXT_PUBLIC_AZURE_API_SCOPE`.
+
+PostHog is optional. When `NEXT_PUBLIC_POSTHOG_KEY` is unset, the frontend does not initialize PostHog. Set `NEXT_PUBLIC_POSTHOG_HOST` to your PostHog region host, such as `https://us.i.posthog.com` or `https://eu.i.posthog.com`. The frontend starts session replay with inputs masked and supports `ph-no-capture` / `ph-mask` CSS classes for sensitive UI.
+
+Backend AI observability uses `POSTHOG_KEY` and `POSTHOG_HOST`. OpenAI calls are captured as PostHog `$ai_generation` events with model, latency, token counts, route, user, chat, and project metadata. Prompt and completion text are redacted by default; set `POSTHOG_AI_CAPTURE_CONTENT=true` only in an environment where full AI trace content is acceptable.
+
+For the Azure Container Apps frontend, `NEXT_PUBLIC_*` values are baked into
+the Next.js client bundle during the Docker build. To roll out PostHog to
+production, run `scripts/deploy-posthog-frontend.sh` with `POSTHOG_KEY` and
+`POSTHOG_HOST` set.
 
 Provider keys are only needed for the models and email features you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
 

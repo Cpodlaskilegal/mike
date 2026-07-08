@@ -4,6 +4,7 @@ import { streamOpenAI, completeOpenAIText } from "./openai";
 import { providerForModel } from "./models";
 import type {
     JsonSchemaTextFormat,
+    AiObservabilityContext,
     ReasoningEffort,
     StreamChatParams,
     StreamChatResult,
@@ -32,6 +33,7 @@ export async function completeText(params: {
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
+    aiObservability?: AiObservabilityContext;
 }): Promise<string> {
     const provider = providerForModel(params.model);
     if (provider === "claude") return completeClaudeText(params);

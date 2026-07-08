@@ -44,7 +44,7 @@ export function AddDocButton({ onSelectDoc, onBrowseAll, selectedDocIds = [] }: 
             <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt"
                 multiple
                 className="hidden"
                 onChange={handleUpload}

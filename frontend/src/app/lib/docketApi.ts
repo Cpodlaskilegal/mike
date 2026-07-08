@@ -1051,7 +1051,9 @@ export async function createWorkflow(payload: {
   type: "assistant" | "tabular";
   prompt_md?: string;
   columns_config?: { index: number; name: string; prompt: string }[];
+  language?: string | null;
   practice?: string | null;
+  jurisdictions?: string[] | null;
 }): Promise<DocketWorkflow> {
   return apiRequest<DocketWorkflow>("/workflows", {
     method: "POST",
@@ -1066,7 +1068,9 @@ export async function updateWorkflow(
     title?: string;
     prompt_md?: string;
     columns_config?: { index: number; name: string; prompt: string }[];
+    language?: string | null;
     practice?: string | null;
+    jurisdictions?: string[] | null;
   },
 ): Promise<DocketWorkflow> {
   return apiRequest<DocketWorkflow>(`/workflows/${workflowId}`, {

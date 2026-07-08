@@ -28,7 +28,9 @@
     "openai": "^6.35.0",
     "pdfjs-dist": "^4.10.38",
     "pg": "^8.20.0",
-    "resend": "^4.5.1"
+    "posthog-node": "^5.39.4",
+    "resend": "^4.5.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

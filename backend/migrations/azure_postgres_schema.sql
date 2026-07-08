@@ -240,7 +240,9 @@ create table if not exists public.workflows (
   type text not null,
   prompt_md text,
   columns_config jsonb,
-  practice text,
+  language text not null default 'English',
+  practice text default 'General Transactions',
+  jurisdictions text[] not null default array['General']::text[],
   is_system boolean not null default false,
   created_at timestamptz not null default now()
 );

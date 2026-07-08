@@ -53,6 +53,17 @@ export type ReasoningEffort =
 
 export type TextVerbosity = "low" | "medium" | "high";
 
+export type AiObservabilityContext = {
+    distinctId?: string;
+    traceId?: string;
+    sessionId?: string | null;
+    spanName?: string;
+    route?: string;
+    chatId?: string | null;
+    projectId?: string | null;
+    metadata?: Record<string, string | number | boolean | null | undefined>;
+};
+
 export type JsonSchemaTextFormat = {
     type: "json_schema";
     name: string;
@@ -85,6 +96,7 @@ export type StreamChatParams = {
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
+    aiObservability?: AiObservabilityContext;
 };
 
 export type StreamChatResult = {

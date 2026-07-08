@@ -76,9 +76,9 @@ User action:
 
 Prompting tip:
 
-"When asking for a draft, upload a strong example of a filing, letter, contract,
-or other client-ready document from another matter if you want Docket to match
-the firm's style, formatting, tone, and structure."
+"When asking for a draft, Docket will try to find a similar filed pleading or
+Box toolbox form before drafting from scratch. Upload a specific example if you
+want that source used."
 
 Safety note:
 
@@ -232,8 +232,8 @@ Use this as the concise tutorial text if space is limited:
 
 1. "Create a project for the matter you want to work on."
 2. "Upload the matter files Docket should use."
-3. "For drafts, upload a strong example from another matter if you want Docket
-   to match the firm's style and format."
+3. "For drafts, Docket will try to find a similar filed pleading or Box toolbox
+   form. Upload a specific example if you want that source used."
 4. "Open chat from the project so the conversation uses the right matter
    context."
 5. "Choose GPT-5.5 for most work. Choose GPT-5.5 Pro for harder tasks, but
@@ -305,16 +305,15 @@ Visual:
 Narration:
 
 "Next, upload the matter files Docket needs for the task. For a drafting
-request, include the key source documents. If you want Docket to match firm
-style or formatting, upload a strong example of a filing, letter, contract, or
-other client-ready document from another matter and tell Docket to use it as a
-style example."
+request, include the key source documents. Docket will try to find a similar
+filed pleading or Box toolbox form before drafting from scratch. Upload a
+specific example if you want that source used."
 
 On-screen text:
 
 - Upload only what is needed.
 - Include source documents.
-- Add a good example for drafting style.
+- Add a specific example if you want that source used.
 
 ### 1:55-2:45 - Open Chat and Choose a Model
 
@@ -434,8 +433,8 @@ On-screen text:
 
 - Create a project for the matter.
 - Upload the matter files needed for the task.
-- For drafting, upload a strong example from another matter if style or format
-  matters.
+- For drafting, Docket will try to find a similar filed pleading or Box toolbox
+  form. Upload a specific example if you want that source used.
 - Open chat from the project.
 - Use GPT-5.5 for most work.
 - Use GPT-5.5 Pro for harder tasks, with a longer wait.

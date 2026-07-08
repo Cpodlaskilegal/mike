@@ -485,7 +485,7 @@ export function AddNewTRModal({
                             <input
                                 ref={fileInputRef}
                                 type="file"
-                                accept=".pdf,.docx,.doc"
+                                accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt"
                                 multiple
                                 className="hidden"
                                 onChange={handleUpload}

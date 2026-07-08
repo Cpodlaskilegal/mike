@@ -351,7 +351,9 @@ export interface DocketWorkflow {
   columns_config: ColumnConfig[] | null;
   is_system: boolean;
   created_at: string;
+  language?: string | null;
   practice?: string | null;
+  jurisdictions?: string[] | null;
   shared_by_name?: string | null;
   allow_edit?: boolean;
   is_owner?: boolean;

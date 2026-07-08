@@ -111,8 +111,61 @@ connectors.
   the connector for authenticated users and keeps existing read/status tool
   cache behavior while disabling obvious mutating tools such as
   create/update/delete plus `pp_api_request` pending a human-confirmation path.
-- Current deployed MCP backend image tag: `202607011620-77be28f`.
+- Current deployed MCP backend image tag: `202607011640-second-turn-fix`.
 - Current deployed frontend image tag: `202607011620-77be28f`.
+- Frontend PostHog analytics are configured at build time through Docker build
+  args and Next.js public env vars:
+  `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`. The project token
+  starts with `phc_`; use `https://us.i.posthog.com` for PostHog Cloud US or
+  `https://eu.i.posthog.com` for PostHog Cloud EU. The frontend starts session
+  replay with inputs masked.
+  Example frontend rollout:
+
+  ```bash
+  TAG=YYYYMMDDHHMM-posthog
+  POSTHOG_KEY=phc_your_project_token
+  POSTHOG_HOST=https://us.i.posthog.com
+
+  az acr build \
+    --registry mikeacr9c6e79 \
+    --image mike-web:$TAG \
+    --file frontend/Dockerfile \
+    --build-arg NEXT_PUBLIC_API_BASE_URL=https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io \
+    --build-arg NEXT_PUBLIC_AZURE_TENANT_ID=93fa5a2e-4598-4c6e-86f9-6092f6b8c0c4 \
+    --build-arg NEXT_PUBLIC_AZURE_CLIENT_ID=81f68716-e421-45ee-a90e-e905caa18bfb \
+    --build-arg NEXT_PUBLIC_AZURE_API_SCOPE=api://f1642f2c-5548-48b7-8010-7c15a424e105/access_as_user \
+    --build-arg NEXT_PUBLIC_OPENAI_ENABLED=false \
+    --build-arg NEXT_PUBLIC_POSTHOG_KEY=$POSTHOG_KEY \
+    --build-arg NEXT_PUBLIC_POSTHOG_HOST=$POSTHOG_HOST \
+    frontend
+
+  az containerapp update \
+    --resource-group mike-prod-rg \
+    --name mike-web \
+    --image mikeacr9c6e79.azurecr.io/mike-web:$TAG \
+    --set-env-vars DEPLOY_VERSION=$TAG NEXT_PUBLIC_POSTHOG_HOST=$POSTHOG_HOST
+  ```
+
+  Or run the checked-in helper from the repo root:
+
+  ```bash
+  POSTHOG_KEY=phc_your_project_token \
+  POSTHOG_HOST=https://us.i.posthog.com \
+  scripts/deploy-posthog-frontend.sh
+  ```
+- Backend PostHog AI observability is configured at runtime through Container
+  Apps env vars: `POSTHOG_KEY`, `POSTHOG_HOST`, and
+  `POSTHOG_AI_CAPTURE_CONTENT`. Keep `POSTHOG_AI_CAPTURE_CONTENT=false` unless
+  full legal prompts and model output should be stored in PostHog traces.
+  Example backend rollout:
+
+  ```bash
+  TAG=YYYYMMDDHHMM-posthog-ai
+  POSTHOG_KEY=phc_your_project_token \
+  POSTHOG_HOST=https://us.i.posthog.com \
+  POSTHOG_AI_CAPTURE_CONTENT=false \
+  scripts/deploy-posthog-backend.sh
+  ```
 - The database schema for a clean Azure PostgreSQL install is
   `backend/migrations/azure_postgres_schema.sql`.
 - Existing Azure PostgreSQL deployments must apply incremental migrations from

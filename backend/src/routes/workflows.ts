@@ -21,6 +21,22 @@ type WorkflowAccess =
     }
   | null;
 
+function cleanText(value: unknown, fallback: string | null = null) {
+  return typeof value === "string" && value.trim()
+    ? value.trim()
+    : fallback;
+}
+
+function cleanJurisdictions(value: unknown) {
+  const raw = Array.isArray(value) ? value : [];
+  const jurisdictions = raw
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+  return jurisdictions.length ? jurisdictions : ["General"];
+}
+
 function withWorkflowAccess<T extends Record<string, unknown>>(
   workflow: T,
   access: { allowEdit: boolean; isOwner: boolean; sharedByName?: string | null },
@@ -131,12 +147,22 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
 // POST /workflows
 workflowsRouter.post("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
-  const { title, type, prompt_md, columns_config, practice } = req.body as {
+  const {
+    title,
+    type,
+    prompt_md,
+    columns_config,
+    language,
+    practice,
+    jurisdictions,
+  } = req.body as {
     title: string;
     type: string;
     prompt_md?: string;
     columns_config?: unknown;
+    language?: string | null;
     practice?: string | null;
+    jurisdictions?: string[] | null;
   };
   if (!title?.trim())
     return void res.status(400).json({ detail: "title is required" });
@@ -154,7 +180,9 @@ workflowsRouter.post("/", requireAuth, async (req, res) => {
       type,
       prompt_md: prompt_md ?? null,
       columns_config: columns_config ?? null,
-      practice: practice ?? null,
+      language: cleanText(language, "English"),
+      practice: cleanText(practice, "General Transactions"),
+      jurisdictions: cleanJurisdictions(jurisdictions),
       is_system: false,
     })
     .select("*")
@@ -172,7 +200,12 @@ async function handleWorkflowUpdate(req: import("express").Request, res: import(
   if (req.body.prompt_md != null) updates.prompt_md = req.body.prompt_md;
   if (req.body.columns_config != null)
     updates.columns_config = req.body.columns_config;
-  if ("practice" in req.body) updates.practice = req.body.practice ?? null;
+  if ("language" in req.body)
+    updates.language = cleanText(req.body.language, "English");
+  if ("practice" in req.body)
+    updates.practice = cleanText(req.body.practice, "General Transactions");
+  if ("jurisdictions" in req.body)
+    updates.jurisdictions = cleanJurisdictions(req.body.jurisdictions);
 
   const db = createServerSupabase();
   const access = await resolveWorkflowAccess(workflowId, userId, userEmail, db);
