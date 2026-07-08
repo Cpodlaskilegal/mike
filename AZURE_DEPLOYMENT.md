@@ -111,8 +111,16 @@ connectors.
   the connector for authenticated users and keeps existing read/status tool
   cache behavior while disabling obvious mutating tools such as
   create/update/delete plus `pp_api_request` pending a human-confirmation path.
-- Current deployed MCP backend image tag: `202607011640-second-turn-fix`.
-- Current deployed frontend image tag: `202607011620-77be28f`.
+- Current deployed MCP backend image tag:
+  `202607082239-office-workflow-a3f18df`.
+- Current deployed frontend image tag:
+  `202607082239-office-workflow-a3f18df`.
+- The 2026-07-08 Office document and workflow metadata rollout is live on
+  `mike-api--0000035` and `mike-web--0000035` with 100% traffic to latest
+  revision. The live health checks used:
+  `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/health`,
+  `https://mike-web.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/login`,
+  and `https://docket.podlaskilegal.com/login`.
 - Frontend PostHog analytics are configured at build time through Docker build
   args and Next.js public env vars:
   `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`. The project token
@@ -174,5 +182,9 @@ connectors.
   `backend/migrations/20260701_user_roles_and_per_user_box_oauth.sql` before
   updating `mike-api`; it adds `app_users.role` and promotes the earliest
   existing user if no admin exists.
+- The 2026-07-08 Office document and workflow metadata rollout applies
+  `backend/migrations/20260708_workflow_metadata_azure.sql`; it was applied
+  inside the production `mike-api` container before the `0000035` backend
+  revision was deployed.
 - Azure CLI has a stale local default group on this machine, so use
   `--resource-group mike-prod-rg` explicitly for Azure commands.
