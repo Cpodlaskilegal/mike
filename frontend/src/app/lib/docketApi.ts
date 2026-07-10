@@ -312,6 +312,48 @@ export async function updateAdminUserRole(
   });
 }
 
+export interface AdminSpendReport {
+  id: string;
+  milestoneNumber: number;
+  thresholdUsd: number;
+  totalUsd: number;
+  gptUsd: number;
+  claudeUsd: number;
+  deliveryStatus?: string;
+  createdAt: string;
+}
+
+export interface AdminSpendDashboard {
+  totalUsd: number;
+  gptUsd: number;
+  claudeUsd: number;
+  nextThresholdUsd: number;
+  reports: AdminSpendReport[];
+}
+
+export async function getAdminSpendDashboard(): Promise<AdminSpendDashboard> {
+  return apiRequest<AdminSpendDashboard>("/user/admin/spend-reports");
+}
+
+export interface AdminSpendReportDeliveryResult {
+  status: "pending" | "sent" | "not_configured" | "failed";
+  error: string | null;
+  deliveries: Array<{
+    recipientEmail: string;
+    status: "pending" | "sent" | "not_configured" | "failed";
+    deliveryError: string | null;
+  }>;
+}
+
+export async function retryAdminSpendReportDelivery(
+  reportId: string,
+): Promise<AdminSpendReportDeliveryResult> {
+  return apiRequest<AdminSpendReportDeliveryResult>(
+    `/user/admin/spend-reports/${encodeURIComponent(reportId)}/deliver`,
+    { method: "POST" },
+  );
+}
+
 export type ApiKeyProvider = "claude" | "courtlistener" | "gemini" | "openai";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyState = Record<

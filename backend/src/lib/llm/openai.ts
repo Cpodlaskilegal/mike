@@ -19,6 +19,13 @@ import type {
 } from "./types";
 import { throwIfAborted } from "./types";
 import { captureAiGeneration } from "../posthog";
+import {
+    calculateLlmCostNanos,
+    deliverSpendReport,
+    recordLlmUsage,
+    spendUsd,
+    type LlmCost,
+} from "../llmSpend";
 import { safeErrorMessage } from "../safeError";
 
 const MAX_OUTPUT_TOKENS = 16384;
@@ -147,6 +154,59 @@ function aiInputMessages(
               }));
     if (!systemPrompt) return input;
     return [{ role: "system", content: systemPrompt }, ...input];
+}
+
+type RecordedOpenAIUsage = {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: LlmCost;
+};
+
+async function recordOpenAIUsage(input: {
+    model: string;
+    response: Response;
+    params: Pick<StreamChatParams, "apiKeys" | "aiObservability">;
+}): Promise<RecordedOpenAIUsage> {
+    const inputTokens = input.response.usage?.input_tokens ?? 0;
+    const cachedInputTokens =
+        input.response.usage?.input_tokens_details?.cached_tokens ?? 0;
+    const outputTokens = input.response.usage?.output_tokens ?? 0;
+    const totalTokens = input.response.usage?.total_tokens ?? 0;
+    const costInput = {
+        provider: "openai" as const,
+        model: input.model,
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+    };
+    const fallbackCost = calculateLlmCostNanos(costInput);
+
+    try {
+        const recorded = await recordLlmUsage({
+            ...costInput,
+            providerResponseId: input.response.id,
+            billingSource: input.params.apiKeys?.sources?.openai ?? "account",
+            context: {
+                userId:
+                    input.params.apiKeys?.ownerUserId ??
+                    input.params.aiObservability?.distinctId,
+                route: input.params.aiObservability?.route,
+                chatId: input.params.aiObservability?.chatId,
+                projectId: input.params.aiObservability?.projectId,
+            },
+        });
+        await Promise.all(
+            recorded.newReports.map((report) => deliverSpendReport(report.id)),
+        );
+        return { inputTokens, outputTokens, totalTokens, cost: recorded.cost };
+    } catch (error) {
+        console.error(
+            "[llm-spend] failed to record OpenAI usage",
+            safeErrorMessage(error, "LLM usage accounting failed"),
+        );
+        return { inputTokens, outputTokens, totalTokens, cost: fallbackCost };
+    }
 }
 
 async function createStreamingResponse(
@@ -380,6 +440,12 @@ export async function streamOpenAI(
             }
         }
 
+        const usage = await recordOpenAIUsage({
+            model,
+            response,
+            params,
+        });
+
         await captureAiGeneration({
             distinctId: params.aiObservability?.distinctId,
             traceId,
@@ -397,9 +463,14 @@ export async function streamOpenAI(
             timeToFirstTokenSeconds: result.timeToFirstTokenSeconds,
             input: aiInputMessages(systemPrompt, params.messages),
             output: iterationText || outputText(response),
-            inputTokens: response.usage?.input_tokens,
-            outputTokens: response.usage?.output_tokens,
-            totalTokens: response.usage?.total_tokens,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            inputCostUsd: spendUsd(
+                usage.cost.inputCostNanos + usage.cost.cachedInputCostNanos,
+            ),
+            outputCostUsd: spendUsd(usage.cost.outputCostNanos),
+            totalCostUsd: spendUsd(usage.cost.totalCostNanos),
             metadata: {
                 iteration: iter + 1,
                 tool_count: openaiTools.length,
@@ -441,7 +512,7 @@ export async function completeOpenAIText(params: {
     user: string;
     maxTokens?: number;
     abortSignal?: AbortSignal;
-    apiKeys?: { openai?: string | null };
+    apiKeys?: StreamChatParams["apiKeys"];
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
@@ -463,6 +534,11 @@ export async function completeOpenAIText(params: {
             textFormat: params.textFormat,
         });
         const text = outputText(result.response);
+        const usage = await recordOpenAIUsage({
+            model: params.model,
+            response: result.response,
+            params,
+        });
         await captureAiGeneration({
             distinctId: params.aiObservability?.distinctId,
             traceId,
@@ -479,9 +555,14 @@ export async function completeOpenAIText(params: {
             latencySeconds: result.latencySeconds,
             input: aiInputMessages(params.systemPrompt, params.user),
             output: text,
-            inputTokens: result.response.usage?.input_tokens,
-            outputTokens: result.response.usage?.output_tokens,
-            totalTokens: result.response.usage?.total_tokens,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            inputCostUsd: spendUsd(
+                usage.cost.inputCostNanos + usage.cost.cachedInputCostNanos,
+            ),
+            outputCostUsd: spendUsd(usage.cost.outputCostNanos),
+            totalCostUsd: spendUsd(usage.cost.totalCostNanos),
             metadata: params.aiObservability?.metadata,
         });
         return text;

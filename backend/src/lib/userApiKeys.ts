@@ -146,6 +146,12 @@ export async function getUserApiKeys(
         courtlistener: envApiKey("courtlistener"),
         gemini: envApiKey("gemini"),
         openai: envApiKey("openai"),
+        ownerUserId: userId,
+        sources: {
+            ...(envApiKey("claude") ? { claude: "account" as const } : {}),
+            ...(envApiKey("gemini") ? { gemini: "account" as const } : {}),
+            ...(envApiKey("openai") ? { openai: "account" as const } : {}),
+        },
     };
 
     const { data, error } = await db
@@ -159,6 +165,15 @@ export async function getUserApiKeys(
         if (!provider) continue;
         if (apiKeys[provider]?.trim()) continue;
         apiKeys[provider] = decrypt(row);
+        if (
+            apiKeys[provider]?.trim() &&
+            (provider === "claude" || provider === "gemini" || provider === "openai")
+        ) {
+            apiKeys.sources = {
+                ...apiKeys.sources,
+                [provider]: "user_api_key",
+            };
+        }
     }
 
     return apiKeys;

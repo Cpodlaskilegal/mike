@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { requireAdmin } from "../middleware/requireAdmin";
 import { createServerSupabase } from "../lib/supabase";
 import { DEFAULT_TABULAR_MODEL, resolveModel } from "../lib/llm";
 import {
@@ -41,6 +42,11 @@ import {
   validateDeletionRequestBody,
   validateDeletionReviewBody,
 } from "../lib/userDataLifecycle";
+import {
+  deliverSpendReport,
+  getAdminSpendDashboard,
+  serializeAdminSpendDashboard,
+} from "../lib/llmSpend";
 import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
 
 export const userRouter = Router();
@@ -370,7 +376,7 @@ async function loadProfile(
   return { data: serializeProfile(row, role), error: null };
 }
 
-async function requireAdmin(
+async function isCurrentUserAdmin(
   db: ReturnType<typeof createServerSupabase>,
   userId: string,
 ) {
@@ -463,7 +469,7 @@ userRouter.put("/api-keys/:provider", requireAuth, async (req, res) => {
 userRouter.get("/admin/users", requireAuth, async (_req, res) => {
   const userId = res.locals.userId as string;
   const db = createServerSupabase();
-  if (!(await requireAdmin(db, userId))) {
+  if (!(await isCurrentUserAdmin(db, userId))) {
     return void res.status(403).json({ detail: "Admin access required" });
   }
 
@@ -508,6 +514,43 @@ userRouter.get("/admin/users", requireAuth, async (_req, res) => {
   );
 });
 
+// GET /user/admin/spend-reports
+// Financial totals cover Docket-managed GPT and Claude usage only.
+userRouter.get(
+  "/admin/spend-reports",
+  requireAuth,
+  requireAdmin,
+  async (_req, res) => {
+    try {
+      const dashboard = await getAdminSpendDashboard();
+      res.json(serializeAdminSpendDashboard(dashboard));
+    } catch (error) {
+      console.error("[user/admin/spend-reports] load failed", safeErrorLog(error));
+      res.status(500).json({ detail: "Unable to load account spend reports" });
+    }
+  },
+);
+
+// POST /user/admin/spend-reports/:reportId/deliver
+// Lets an administrator retry a persisted report after a mail configuration or
+// provider outage is resolved. The report itself remains idempotent by id.
+userRouter.post(
+  "/admin/spend-reports/:reportId/deliver",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const result = await deliverSpendReport(req.params.reportId);
+    if (result.status === "not_found") {
+      return void res.status(404).json({ detail: "Spend report not found" });
+    }
+    res.json({
+      status: result.status,
+      error: result.error,
+      deliveries: result.deliveries,
+    });
+  },
+);
+
 // PATCH /user/admin/users/:targetUserId/role
 userRouter.patch(
   "/admin/users/:targetUserId/role",
@@ -519,7 +562,7 @@ userRouter.patch(
     if (!role) return void res.status(400).json({ detail: "Invalid role" });
 
     const db = createServerSupabase();
-    if (!(await requireAdmin(db, userId))) {
+    if (!(await isCurrentUserAdmin(db, userId))) {
       return void res.status(403).json({ detail: "Admin access required" });
     }
 
@@ -910,7 +953,7 @@ userRouter.patch(
 
 // GET /user/data-export?scope=account|chats|tabular-reviews
 // This is intentionally a Docket-data export, not an Entra account export.
-userRouter.get("/data-export", requireAuth, async (req, res) => {
+userRouter.get("/data-export", requireAuth, requireAdmin, async (req, res) => {
   const parsedScope = parseDataExportScope(req.query.scope ?? "account");
   if (!parsedScope) {
     return void res.status(400).json({
@@ -934,7 +977,7 @@ userRouter.get("/data-export", requireAuth, async (req, res) => {
 });
 
 // GET /user/data-deletion-requests
-userRouter.get("/data-deletion-requests", requireAuth, async (_req, res) => {
+userRouter.get("/data-deletion-requests", requireAuth, requireAdmin, async (_req, res) => {
   try {
     const requests = await listOwnDataDeletionRequests(res.locals.userId as string);
     res.json(requests);
@@ -945,7 +988,7 @@ userRouter.get("/data-deletion-requests", requireAuth, async (_req, res) => {
 });
 
 // POST /user/data-deletion-requests
-userRouter.post("/data-deletion-requests", requireAuth, async (req, res) => {
+userRouter.post("/data-deletion-requests", requireAuth, requireAdmin, async (req, res) => {
   const parsed = validateDeletionRequestBody(req.body);
   if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
   try {
@@ -969,6 +1012,7 @@ userRouter.post("/data-deletion-requests", requireAuth, async (req, res) => {
 userRouter.delete(
   "/data-deletion-requests/:requestId",
   requireAuth,
+  requireAdmin,
   async (req, res) => {
     const db = createServerSupabase();
     const { data, error } = await db

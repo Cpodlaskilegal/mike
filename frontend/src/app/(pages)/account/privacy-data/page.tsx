@@ -1,14 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Download, Loader2, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
   cancelDataDeletionRequest,
   downloadUserDataExport,
+  getAdminSpendDashboard,
   listDataDeletionRequests,
   requestDocketDataDeletion,
+  retryAdminSpendReportDelivery,
+  type AdminSpendDashboard,
   type DataExportScope,
   type DocketDataDeletionRequest,
 } from "@/app/lib/docketApi";
@@ -38,9 +43,28 @@ function statusLabel(status: DocketDataDeletionRequest["status"]) {
   return status.replaceAll("_", " ");
 }
 
+const usdFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatUsd(value: number) {
+  return usdFormatter.format(Number.isFinite(value) ? value : 0);
+}
+
+function reportStatusLabel(status?: string) {
+  if (!status) return "Pending";
+  return status.replaceAll("_", " ");
+}
+
 export default function PrivacyDataPage() {
+  const router = useRouter();
+  const { profile, loading: profileLoading } = useUserProfile();
+  const isAdmin = profile?.role === "admin";
   const [requests, setRequests] = useState<DocketDataDeletionRequest[]>([]);
-  const [loadingRequests, setLoadingRequests] = useState(true);
+  const [loadingRequests, setLoadingRequests] = useState(false);
   const [exporting, setExporting] = useState<DataExportScope | null>(null);
   const [confirmation, setConfirmation] = useState("");
   const [reason, setReason] = useState("");
@@ -48,6 +72,13 @@ export default function PrivacyDataPage() {
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [spendDashboard, setSpendDashboard] =
+    useState<AdminSpendDashboard | null>(null);
+  const [loadingSpendDashboard, setLoadingSpendDashboard] = useState(false);
+  const [spendDashboardError, setSpendDashboardError] = useState<string | null>(
+    null,
+  );
+  const [retryingReportId, setRetryingReportId] = useState<string | null>(null);
 
   const loadRequests = useCallback(async () => {
     setLoadingRequests(true);
@@ -60,9 +91,32 @@ export default function PrivacyDataPage() {
     }
   }, []);
 
+  const loadSpendDashboard = useCallback(async () => {
+    setLoadingSpendDashboard(true);
+    setSpendDashboardError(null);
+    try {
+      setSpendDashboard(await getAdminSpendDashboard());
+    } catch (value) {
+      setSpendDashboardError(
+        value instanceof Error
+          ? value.message
+          : "Unable to load account spend reports.",
+      );
+    } finally {
+      setLoadingSpendDashboard(false);
+    }
+  }, []);
+
   useEffect(() => {
-    void loadRequests();
-  }, [loadRequests]);
+    if (!profileLoading && !isAdmin) {
+      router.replace("/account");
+    }
+  }, [isAdmin, profileLoading, router]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    void Promise.all([loadRequests(), loadSpendDashboard()]);
+  }, [isAdmin, loadRequests, loadSpendDashboard]);
 
   const handleExport = async (scope: DataExportScope) => {
     setError(null);
@@ -128,6 +182,40 @@ export default function PrivacyDataPage() {
     }
   };
 
+  const handleRetrySpendReportDelivery = async (reportId: string) => {
+    setSpendDashboardError(null);
+    setRetryingReportId(reportId);
+    try {
+      const result = await retryAdminSpendReportDelivery(reportId);
+      if (result.status === "sent") {
+        setNotice("The spend report was delivered to the current administrators.");
+      } else {
+        setSpendDashboardError(
+          result.error ?? "The spend report could not be delivered yet.",
+        );
+      }
+      await loadSpendDashboard();
+    } catch (value) {
+      setSpendDashboardError(
+        value instanceof Error
+          ? value.message
+          : "Unable to retry spend report delivery.",
+      );
+    } finally {
+      setRetryingReportId(null);
+    }
+  };
+
+  if (profileLoading) {
+    return (
+      <div className="flex min-h-48 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-gray-500" />
+      </div>
+    );
+  }
+
+  if (!isAdmin) return null;
+
   return (
     <div className="space-y-9">
       <section className="space-y-3">
@@ -136,8 +224,9 @@ export default function PrivacyDataPage() {
             Privacy & data
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-gray-600">
-            These controls apply to Docket application data. Your Microsoft Entra
-            identity is managed by your organization and is never deleted here.
+            These administrator controls apply to Docket application data. Microsoft
+            Entra identities are managed by your organization and are never deleted
+            here.
           </p>
         </div>
         {error && (
@@ -150,6 +239,144 @@ export default function PrivacyDataPage() {
             {notice}
           </p>
         )}
+      </section>
+
+      <section className="space-y-3" aria-labelledby="spend-reports-heading">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3
+              id="spend-reports-heading"
+              className="text-lg font-medium text-gray-900"
+            >
+              Account spend reports
+            </h3>
+            <p className="mt-1 max-w-2xl text-sm text-gray-600">
+              Docket-account GPT and Claude usage. A report is sent to admins for
+              every additional {formatUsd(100)} in tracked spend. Usage billed to
+              a user-provided API key is excluded.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void loadSpendDashboard()}
+            disabled={loadingSpendDashboard}
+          >
+            {loadingSpendDashboard ? "Loading…" : "Refresh"}
+          </Button>
+        </div>
+
+        {spendDashboardError && (
+          <p
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {spendDashboardError}
+          </p>
+        )}
+
+        {loadingSpendDashboard && !spendDashboard ? (
+          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading account spend…
+          </div>
+        ) : spendDashboard ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <p className="text-sm text-gray-600">Tracked total</p>
+                <p className="mt-1 text-2xl font-medium text-gray-900">
+                  {formatUsd(spendDashboard.totalUsd)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <p className="text-sm text-gray-600">GPT models</p>
+                <p className="mt-1 text-2xl font-medium text-gray-900">
+                  {formatUsd(spendDashboard.gptUsd)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <p className="text-sm text-gray-600">Claude models</p>
+                <p className="mt-1 text-2xl font-medium text-gray-900">
+                  {formatUsd(spendDashboard.claudeUsd)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <p className="text-sm text-gray-600">Next report at</p>
+                <p className="mt-1 text-2xl font-medium text-gray-900">
+                  {formatUsd(spendDashboard.nextThresholdUsd)}
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+              <table className="w-full min-w-[800px] text-left text-sm">
+                <thead className="border-b border-gray-200 bg-gray-50 text-xs uppercase text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Threshold</th>
+                    <th className="px-4 py-3 font-medium">Total</th>
+                    <th className="px-4 py-3 font-medium">GPT</th>
+                    <th className="px-4 py-3 font-medium">Claude</th>
+                    <th className="px-4 py-3 font-medium">Delivery</th>
+                    <th className="px-4 py-3 font-medium">Created</th>
+                    <th className="px-4 py-3 font-medium"><span className="sr-only">Delivery action</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {spendDashboard.reports.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-gray-600">
+                        No {formatUsd(100)} spend-report milestones have been reached.
+                      </td>
+                    </tr>
+                  ) : (
+                    spendDashboard.reports.map((report) => (
+                      <tr
+                        key={report.id}
+                        className="border-b border-gray-100 last:border-b-0"
+                      >
+                        <td className="px-4 py-3 text-gray-900">
+                          {formatUsd(report.thresholdUsd)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-900">
+                          {formatUsd(report.totalUsd)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {formatUsd(report.gptUsd)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {formatUsd(report.claudeUsd)}
+                        </td>
+                        <td className="px-4 py-3 capitalize text-gray-700">
+                          {reportStatusLabel(report.deliveryStatus)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {new Date(report.createdAt).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {report.deliveryStatus !== "sent" && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 px-2 text-xs"
+                              disabled={retryingReportId === report.id}
+                              onClick={() =>
+                                void handleRetrySpendReportDelivery(report.id)
+                              }
+                            >
+                              {retryingReportId === report.id
+                                ? "Retrying…"
+                                : "Retry delivery"}
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
       </section>
 
       <section className="space-y-3">

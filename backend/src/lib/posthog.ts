@@ -34,6 +34,9 @@ type AiGenerationCapture = {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+    inputCostUsd?: number;
+    outputCostUsd?: number;
+    totalCostUsd?: number;
     error?: string;
     metadata?: Record<string, string | number | boolean | null | undefined>;
 };
@@ -132,6 +135,9 @@ export async function captureAiGeneration(
                 $ai_input_tokens: event.inputTokens,
                 $ai_output_tokens: event.outputTokens,
                 $ai_total_tokens: event.totalTokens,
+                $ai_input_cost_usd: event.inputCostUsd,
+                $ai_output_cost_usd: event.outputCostUsd,
+                $ai_total_cost_usd: event.totalCostUsd,
                 $ai_latency: event.latencySeconds,
                 $ai_stream: event.stream,
                 $ai_time_to_first_token: event.timeToFirstTokenSeconds,

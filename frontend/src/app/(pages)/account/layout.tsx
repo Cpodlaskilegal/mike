@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUserProfile } from "@/contexts/UserProfileContext";
 
 interface TabDef {
     id: string;
@@ -26,6 +27,11 @@ export default function AccountLayout({
     const router = useRouter();
     const pathname = usePathname();
     const { isAuthenticated, authLoading } = useAuth();
+    const { profile } = useUserProfile();
+    const visibleTabs =
+        profile?.role === "admin"
+            ? TABS
+            : TABS.filter((tab) => tab.id !== "privacy-data");
 
     useEffect(() => {
         if (!authLoading && !isAuthenticated) {
@@ -62,7 +68,7 @@ export default function AccountLayout({
                         <div className="-m-1 min-w-0 p-1">
                             <div className="-m-1 min-w-0 overflow-x-auto overflow-y-hidden p-1">
                                 <ul className="mb-0 flex gap-1 md:flex-col">
-                                    {TABS.map((tab) => {
+                                    {visibleTabs.map((tab) => {
                                         const active =
                                             pathname === tab.href ||
                                             (tab.href !== "/account" &&
