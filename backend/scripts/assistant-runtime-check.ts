@@ -15,6 +15,12 @@ type StringArrayRead = {
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRepositoryRoot = resolve(scriptDirectory, "../..");
+const expectedOpenAiMainModels = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
+const expectedDefaultMainModel = "gpt-5.6-sol";
 
 function readSource(
   root: string,
@@ -398,6 +404,231 @@ function functionSource(source: string, name: string): string {
   if (start < 0) return "";
   const next = source.indexOf("export async function ", start + 1);
   return source.slice(start, next < 0 ? undefined : next);
+}
+
+function mainAssistantRouteResolutionProblems(
+  source: string,
+  routeName: string,
+): string[] {
+  const problems: string[] = [];
+  const parseMatch = source.match(
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*parseMainModelRequest\(\s*req\.body\s*\)/,
+  );
+  if (!parseMatch || parseMatch.index === undefined) {
+    return [`${routeName} route does not parse the raw request body`];
+  }
+
+  const parsedName = parseMatch[1];
+  const escapedParsedName = parsedName.replace(/[$]/g, "\\$");
+  const parseIndex = parseMatch.index;
+  const handlerStart = Math.max(
+    source.lastIndexOf('.post("/", requireAuth', parseIndex),
+    source.lastIndexOf(".post('/', requireAuth", parseIndex),
+    0,
+  );
+  const placeholderMatch = source
+    .slice(handlerStart)
+    .match(
+      /from\(\s*["']chat_messages["']\s*\)[\s\S]*?\.insert\(\s*\{[\s\S]*?role\s*:\s*["']assistant["']/,
+    );
+  const placeholderIndex =
+    placeholderMatch?.index === undefined
+      ? -1
+      : handlerStart + placeholderMatch.index;
+  const sseHeaderIndex = source.indexOf("res.setHeader", handlerStart);
+  const flushIndex = source.indexOf("res.flushHeaders()", handlerStart);
+
+  if (placeholderIndex < 0) {
+    problems.push(
+      `${routeName} route does not persist an assistant placeholder`,
+    );
+  } else if (parseIndex > placeholderIndex) {
+    problems.push(`${routeName} route parses after the assistant placeholder`);
+  }
+  if (sseHeaderIndex < 0 || flushIndex < 0) {
+    problems.push(
+      `${routeName} route does not configure and flush SSE headers`,
+    );
+  } else if (parseIndex > sseHeaderIndex || parseIndex > flushIndex) {
+    problems.push(`${routeName} route parses after SSE begins`);
+  }
+
+  const validationEndCandidates = [placeholderIndex, sseHeaderIndex, flushIndex]
+    .filter((index) => index > parseIndex)
+    .sort((left, right) => left - right);
+  const validationSource = source.slice(
+    parseIndex,
+    validationEndCandidates[0] ?? undefined,
+  );
+  const rejectsInvalidRequest = new RegExp(
+    `if\\s*\\(\\s*!${escapedParsedName}\\.ok\\s*\\)[\\s\\S]*?status\\(\\s*400\\s*\\)[\\s\\S]*?json\\(\\s*\\{\\s*detail\\s*:\\s*${escapedParsedName}\\.detail\\s*\\}\\s*\\)`,
+  );
+  if (!rejectsInvalidRequest.test(validationSource)) {
+    problems.push(
+      `${routeName} route does not return safe HTTP 400 JSON for an invalid main request`,
+    );
+  }
+
+  const resolvedMatch = validationSource.match(
+    new RegExp(
+      `const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${escapedParsedName}\\.value`,
+    ),
+  );
+  const runCallStart = source.indexOf("runLLMStream({", parseIndex);
+  const runCallEnd =
+    runCallStart < 0 ? -1 : source.indexOf("});", runCallStart);
+  if (!resolvedMatch || runCallStart < 0 || runCallEnd < 0) {
+    problems.push(
+      `${routeName} route does not pass the resolved request into runLLMStream`,
+    );
+    return problems;
+  }
+
+  const resolvedName = resolvedMatch[1];
+  const escapedResolvedName = resolvedName.replace(/[$]/g, "\\$");
+  const runCall = source.slice(runCallStart, runCallEnd + 3);
+  const requiredFields = [
+    ["provider model", `model\\s*:\\s*${escapedResolvedName}\\.providerModel`],
+    [
+      "reasoning effort",
+      `reasoningEffort\\s*:\\s*${escapedResolvedName}\\.reasoningEffort`,
+    ],
+    [
+      "reasoning mode",
+      `reasoningMode\\s*:\\s*${escapedResolvedName}\\.reasoningMode`,
+    ],
+    [
+      "resolution metadata",
+      `modelResolution\\s*:\\s*\\{[\\s\\S]*?requestedModel\\s*:\\s*${escapedResolvedName}\\.requestedModel[\\s\\S]*?resolvedModel\\s*:\\s*${escapedResolvedName}\\.providerModel[\\s\\S]*?status\\s*:\\s*${escapedResolvedName}\\.status[\\s\\S]*?\\}`,
+    ],
+  ] as const;
+  for (const [label, pattern] of requiredFields) {
+    if (!new RegExp(pattern).test(runCall)) {
+      problems.push(`${routeName} route omits ${label}`);
+    }
+  }
+  return problems;
+}
+
+function explicitAssistantRuntimeModelProblems(source: string): string[] {
+  const problems: string[] = [];
+  const runLlmStreamSource = functionSource(source, "runLLMStream");
+  if (!runLlmStreamSource) return ["runLLMStream was not found"];
+
+  if (
+    !/export\s+async\s+function\s+runLLMStream\s*\(\s*params\s*:\s*\{[\s\S]*?\n\s*model\s*:\s*string\s*;/.test(
+      runLlmStreamSource,
+    ) ||
+    /\n\s*model\s*\?\s*:\s*string\s*;/.test(runLlmStreamSource)
+  ) {
+    problems.push("runLLMStream does not require an explicit model");
+  }
+  if (/\bresolveModel\s*\(/.test(runLlmStreamSource)) {
+    problems.push("runLLMStream still calls resolveModel");
+  }
+  if (/\bDEFAULT_MAIN_MODEL\b/.test(runLlmStreamSource)) {
+    problems.push("runLLMStream still falls back to DEFAULT_MAIN_MODEL");
+  }
+  if (
+    !/streamChatWithTools\s*\(\s*\{[\s\S]*?\bmodel\s*(?:,|:\s*params\.model\b)/.test(
+      runLlmStreamSource,
+    )
+  ) {
+    problems.push("runLLMStream does not forward the exact required model");
+  }
+  for (const setting of ["reasoningEffort", "reasoningMode"] as const) {
+    const acceptsSetting = new RegExp(
+      `\\n\\s*${setting}\\?\\s*:\\s*(?:ReasoningEffort|ReasoningMode)\\s*;`,
+    ).test(runLlmStreamSource);
+    const forwardsSetting = new RegExp(
+      `streamChatWithTools\\s*\\(\\s*\\{[\\s\\S]*?\\b${setting}\\s*(?:,|:\\s*params\\.${setting}\\b)`,
+    ).test(runLlmStreamSource);
+    if (!acceptsSetting || !forwardsSetting) {
+      problems.push(
+        `runLLMStream does not forward ${setting} generation settings`,
+      );
+    }
+  }
+  if (!/\n\s*modelResolution\?\s*:\s*\{/.test(runLlmStreamSource)) {
+    problems.push("runLLMStream does not accept model resolution metadata");
+  }
+  for (const metadataKey of [
+    "requested_model",
+    "resolved_model",
+    "model_resolution_status",
+    "reasoning_effort",
+    "reasoning_mode",
+  ]) {
+    if (!new RegExp(`\\b${metadataKey}\\s*:`).test(runLlmStreamSource)) {
+      problems.push(`runLLMStream metadata omits ${metadataKey}`);
+    }
+  }
+  return problems;
+}
+
+function tabularModelContainmentProblems(
+  tabularRouteSource: string,
+  userSettingsSource: string,
+  userRouteSource: string,
+): string[] {
+  const problems: string[] = [];
+  const tabularChatSource = sourceSection(
+    tabularRouteSource,
+    'tabularRouter.post("/:reviewId/chat"',
+    ["function parseCellContent", "async function queryGeminiAllColumns"],
+  );
+  if (
+    !/const\s*\{\s*tabular_model\s*:\s*tabularModel\s*,\s*api_keys\s*:\s*apiKeys\s*,?\s*\}\s*=\s*await\s+getUserModelSettings\(\s*userId\s*,\s*db\s*,?\s*\)/.test(
+      tabularChatSource,
+    )
+  ) {
+    problems.push(
+      "tabular chat does not load tabular_model and api_keys together",
+    );
+  }
+  if (/\bgetUserApiKeys\s*\(/.test(tabularChatSource)) {
+    problems.push(
+      "tabular chat still loads API keys without its tabular model",
+    );
+  }
+  const runCall = sourceSection(tabularChatSource, "runLLMStream({", [
+    "const annotations =",
+    "catch (err)",
+  ]);
+  if (!/\bmodel\s*:\s*tabularModel\b/.test(runCall)) {
+    problems.push("tabular chat does not pass tabularModel to runLLMStream");
+  }
+  if (/\breasoningEffort\b|\breasoningMode\b/.test(runCall)) {
+    problems.push("tabular chat attaches main-assistant generation settings");
+  }
+  if (
+    !/tabular_model\s*:\s*resolveTabularModel\(\s*data\?\.tabular_model\s*\)/.test(
+      userSettingsSource,
+    )
+  ) {
+    problems.push(
+      "stored tabular settings are not resolved as tabular-only models",
+    );
+  }
+  if (
+    !/resolveTabularModel\(\s*row\.tabular_model\s*\)/.test(userRouteSource)
+  ) {
+    problems.push("profile reads do not safely resolve stale tabular models");
+  }
+  if (!/!isTabularModelId\(\s*raw\.tabularModel\s*\)/.test(userRouteSource)) {
+    problems.push(
+      "profile updates do not reject main-only tabularModel values",
+    );
+  }
+  if (!/detail\s*:\s*["']Unsupported tabularModel["']/.test(userRouteSource)) {
+    problems.push(
+      "profile updates do not preserve the tabularModel error detail",
+    );
+  }
+  if (!/update\.tabular_model\s*=\s*raw\.tabularModel/.test(userRouteSource)) {
+    problems.push("profile updates do not store the validated tabular model");
+  }
+  return problems;
 }
 
 function clientFunctionForwardsAbortSignal(
@@ -792,6 +1023,11 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
     "frontend/src/app/components/assistant/AskInputsPopup.tsx",
   );
   const tabularRouteSource = readSource(root, "backend/src/routes/tabular.ts");
+  const userSettingsSource = readSource(
+    root,
+    "backend/src/lib/userSettings.ts",
+  );
+  const userRouteSource = readSource(root, "backend/src/routes/user.ts");
 
   const modelArrays = {
     CLAUDE_MAIN_MODELS: readConstStringArray(
@@ -891,6 +1127,26 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       ? "providerForModel does not route OpenAI model IDs"
       : "",
   ].filter(Boolean);
+  const exactGpt56ModelErrors: string[] = [];
+  const openAiMainModelDetail = describeSetMismatch(
+    expectedOpenAiMainModels,
+    modelArrays.OPENAI_MAIN_MODELS.values,
+  );
+  if (
+    openAiMainModelDetail ||
+    modelArrays.OPENAI_MAIN_MODELS.values.some(
+      (model, index) => model !== expectedOpenAiMainModels[index],
+    )
+  ) {
+    exactGpt56ModelErrors.push(
+      `OPENAI_MAIN_MODELS must equal ${expectedOpenAiMainModels.join(", ")}; found ${modelArrays.OPENAI_MAIN_MODELS.values.join(", ") || "none"}${openAiMainModelDetail ? ` (${openAiMainModelDetail})` : ""}`,
+    );
+  }
+  if (backendDefaultModel !== expectedDefaultMainModel) {
+    exactGpt56ModelErrors.push(
+      `DEFAULT_MAIN_MODEL must be ${expectedDefaultMainModel}; found ${backendDefaultModel ?? "none"}`,
+    );
+  }
 
   const adapterDefinitions = [
     { provider: "claude", functionName: "streamClaude", file: "claude.ts" },
@@ -961,6 +1217,20 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       );
     }
   }
+  const mainRequestResolutionErrors = [
+    ...(chatRouteSource.error
+      ? [chatRouteSource.error]
+      : mainAssistantRouteResolutionProblems(chatRouteSource.source, "chat")),
+    ...(projectChatRouteSource.error
+      ? [projectChatRouteSource.error]
+      : mainAssistantRouteResolutionProblems(
+          projectChatRouteSource.source,
+          "project chat",
+        )),
+  ];
+  const explicitRuntimeModelErrors = chatToolsSource.error
+    ? [chatToolsSource.error]
+    : explicitAssistantRuntimeModelProblems(chatToolsSource.source);
 
   const frontendErrors: string[] = [];
   if (frontendApiSource.error) frontendErrors.push(frontendApiSource.error);
@@ -1129,6 +1399,20 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
   const turnScopedReadErrors = chatToolsSource.error
     ? [chatToolsSource.error]
     : turnScopedReadProblems(chatToolsSource.source);
+  const tabularModelContainmentErrors = [
+    ...(tabularRouteSource.error ? [tabularRouteSource.error] : []),
+    ...(userSettingsSource.error ? [userSettingsSource.error] : []),
+    ...(userRouteSource.error ? [userRouteSource.error] : []),
+  ];
+  if (tabularModelContainmentErrors.length === 0) {
+    tabularModelContainmentErrors.push(
+      ...tabularModelContainmentProblems(
+        tabularRouteSource.source,
+        userSettingsSource.source,
+        userRouteSource.source,
+      ),
+    );
+  }
 
   const modelPickerDetail = describeSetMismatch(
     mainModels,
@@ -1144,6 +1428,11 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       name: "backend canonical model registry",
       ok: canonicalModelErrors.length === 0,
       detail: canonicalModelErrors.join("; ") || undefined,
+    },
+    {
+      name: "GPT-5.6 main model literals are exact",
+      ok: exactGpt56ModelErrors.length === 0,
+      detail: exactGpt56ModelErrors.join("; ") || undefined,
     },
     {
       name: "main model picker matches backend canonical models",
@@ -1189,6 +1478,21 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       name: "SSE routes cancel provider work on disconnect",
       ok: routeErrors.length === 0,
       detail: routeErrors.join("; ") || undefined,
+    },
+    {
+      name: "main assistant requests resolve before SSE",
+      ok: mainRequestResolutionErrors.length === 0,
+      detail: mainRequestResolutionErrors.join("; ") || undefined,
+    },
+    {
+      name: "runLLMStream consumes explicit model settings",
+      ok: explicitRuntimeModelErrors.length === 0,
+      detail: explicitRuntimeModelErrors.join("; ") || undefined,
+    },
+    {
+      name: "tabular chat and profiles stay on tabular models",
+      ok: tabularModelContainmentErrors.length === 0,
+      detail: tabularModelContainmentErrors.join("; ") || undefined,
     },
     {
       name: "SSE event protocol is complete",

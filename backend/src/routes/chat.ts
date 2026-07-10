@@ -16,6 +16,7 @@ import {
     AssistantStreamAbortError,
     completeText,
     isAbortError,
+    parseMainModelRequest,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
@@ -55,7 +56,9 @@ function createSafeStreamWriter(res: Response) {
     };
 }
 
-function parseOptionalProjectId(value: unknown):
+function parseOptionalProjectId(
+    value: unknown,
+):
     | { ok: true; provided: boolean; projectId: string | null }
     | { ok: false; detail: string } {
     if (value === undefined)
@@ -70,19 +73,20 @@ function parseOptionalProjectId(value: unknown):
     return { ok: true, provided: true, projectId: value.trim() };
 }
 
-function parseOptionalChatId(value: unknown):
-    | { ok: true; chatId: string | null }
-    | { ok: false; detail: string } {
-    if (value === undefined || value === null) return { ok: true, chatId: null };
+function parseOptionalChatId(
+    value: unknown,
+): { ok: true; chatId: string | null } | { ok: false; detail: string } {
+    if (value === undefined || value === null)
+        return { ok: true, chatId: null };
     if (typeof value !== "string" || !value.trim()) {
         return { ok: false, detail: "chat_id must be a non-empty string" };
     }
     return { ok: true, chatId: value.trim() };
 }
 
-function parseChatMessages(value: unknown):
-    | { ok: true; messages: ChatMessage[] }
-    | { ok: false; detail: string } {
+function parseChatMessages(
+    value: unknown,
+): { ok: true; messages: ChatMessage[] } | { ok: false; detail: string } {
     if (!Array.isArray(value) || value.length === 0) {
         return { ok: false, detail: "messages must be a non-empty array" };
     }
@@ -107,16 +111,6 @@ function parseChatMessages(value: unknown):
     }
 
     return { ok: true, messages: value as ChatMessage[] };
-}
-
-function parseOptionalModel(value: unknown):
-    | { ok: true; model: string | undefined }
-    | { ok: false; detail: string } {
-    if (value === undefined) return { ok: true, model: undefined };
-    if (typeof value !== "string" || !value.trim()) {
-        return { ok: false, detail: "model must be a non-empty string" };
-    }
-    return { ok: true, model: value.trim() };
 }
 
 function replaceLatestUserMessage(
@@ -263,8 +257,7 @@ chatRouter.get("/:chatId", requireAuth, async (req, res) => {
     const chat = await getAccessibleChat(chatId, userId, userEmail, db, {
         allowAdmin: true,
     });
-    if (!chat)
-        return void res.status(404).json({ detail: "Chat not found" });
+    if (!chat) return void res.status(404).json({ detail: "Chat not found" });
 
     const { data: messages } = await db
         .from("chat_messages")
@@ -291,8 +284,7 @@ async function hydrateEditStatuses(
         if (!Array.isArray(list)) return;
         for (const a of list as Record<string, unknown>[]) {
             if (typeof a?.edit_id === "string") editIds.add(a.edit_id);
-            if (typeof a?.version_id === "string")
-                versionIds.add(a.version_id);
+            if (typeof a?.version_id === "string") versionIds.add(a.version_id);
         }
     };
     for (const m of messages) {
@@ -442,8 +434,7 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
 
     const db = createServerSupabase();
     const chat = await getAccessibleChat(chatId, userId, userEmail, db);
-    if (!chat)
-        return void res.status(404).json({ detail: "Chat not found" });
+    if (!chat) return void res.status(404).json({ detail: "Chat not found" });
 
     try {
         const { title_model, api_keys } = await getUserModelSettings(
@@ -467,10 +458,7 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
         });
         const title = titleText.trim() || message.slice(0, 60);
 
-        await db
-            .from("chats")
-            .update({ title })
-            .eq("id", chatId);
+        await db.from("chats").update({ title }).eq("id", chatId);
 
         res.json({ title });
     } catch (err) {
@@ -498,10 +486,6 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     if (!parsedProjectId.ok) {
         return void res.status(400).json({ detail: parsedProjectId.detail });
     }
-    const parsedModel = parseOptionalModel(body.model);
-    if (!parsedModel.ok) {
-        return void res.status(400).json({ detail: parsedModel.detail });
-    }
     const parsedAskInputsResponse = parseAskInputsResponsePayload(
         body.ask_inputs_response,
     );
@@ -515,17 +499,23 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             detail: "ask_inputs_response requires an existing chat_id",
         });
     }
+    const parsedMainModel = parseMainModelRequest(req.body);
+    if (!parsedMainModel.ok) {
+        return void res.status(400).json({ detail: parsedMainModel.detail });
+    }
+    const mainModelRequest = parsedMainModel.value;
 
     const messages = parsedMessages.messages;
     const chat_id = parsedChatId.chatId;
     const project_id = parsedProjectId.projectId;
-    const model = parsedModel.model;
 
     devLog("[chat/stream] incoming request", {
         userId,
         chat_id,
         project_id,
-        model,
+        requestedModel: mainModelRequest.requestedModel,
+        resolvedModel: mainModelRequest.providerModel,
+        modelResolutionStatus: mainModelRequest.status,
         messageCount: messages?.length,
     });
 
@@ -536,9 +526,15 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     let resolvedProjectId: string | null = parsedProjectId.projectId;
 
     if (chatId) {
-        const existing = await getAccessibleChat(chatId, userId, userEmail, db, {
-            allowAdmin: true,
-        });
+        const existing = await getAccessibleChat(
+            chatId,
+            userId,
+            userEmail,
+            db,
+            {
+                allowAdmin: true,
+            },
+        );
         if (!existing)
             return void res.status(404).json({ detail: "Chat not found" });
 
@@ -670,10 +666,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             db,
             docIndex,
         );
-        const {
-            api_keys: apiKeys,
-            legal_research_us: legalResearchUs,
-        } = await getUserModelSettings(userId, db);
+        const { api_keys: apiKeys, legal_research_us: legalResearchUs } =
+            await getUserModelSettings(userId, db);
         const apiMessages = buildMessages(
             enrichedMessages,
             docAvailability,
@@ -698,7 +692,14 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             db,
             write: citationSse.write,
             workflowStore,
-            model,
+            model: mainModelRequest.providerModel,
+            reasoningEffort: mainModelRequest.reasoningEffort,
+            reasoningMode: mainModelRequest.reasoningMode,
+            modelResolution: {
+                requestedModel: mainModelRequest.requestedModel,
+                resolvedModel: mainModelRequest.providerModel,
+                status: mainModelRequest.status,
+            },
             apiKeys,
             includeResearchTools: legalResearchUs,
             chatId,

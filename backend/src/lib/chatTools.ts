@@ -35,11 +35,12 @@ import {
     AssistantStreamAbortError,
     isAbortError,
     streamChatWithTools,
-    resolveModel,
-    DEFAULT_MAIN_MODEL,
     throwIfAborted,
     type LlmMessage,
+    type MainModelResolutionStatus,
     type OpenAIToolSchema,
+    type ReasoningEffort,
+    type ReasoningMode,
 } from "./llm";
 import {
     getCourtlistenerCaseOpinions,
@@ -512,7 +513,8 @@ export const TOOLS = [
                             properties: {
                                 name: {
                                     type: "string",
-                                    description: "Sheet tab name. Keep it short.",
+                                    description:
+                                        "Sheet tab name. Keep it short.",
                                 },
                                 columns: {
                                     type: "array",
@@ -548,7 +550,8 @@ export const TOOLS = [
                 properties: {
                     title: {
                         type: "string",
-                        description: "Presentation title, used as the filename.",
+                        description:
+                            "Presentation title, used as the filename.",
                     },
                     slides: {
                         type: "array",
@@ -1092,7 +1095,9 @@ export async function generateDocx(
             value: string,
         ): { text: string; levelOffset: number | null } => {
             const trimmed = value.trim();
-            const match = trimmed.match(/^(\(([a-z]+)\)|([a-z]+)[.)])\s+(.+)$/i);
+            const match = trimmed.match(
+                /^(\(([a-z]+)\)|([a-z]+)[.)])\s+(.+)$/i,
+            );
             if (!match) return { text: trimmed, levelOffset: null };
             const marker = (match[2] ?? match[3] ?? "").toLowerCase();
             const isRoman =
@@ -1159,13 +1164,15 @@ export async function generateDocx(
         };
         let currentClauseLevel: number | null = null;
 
-        for (const [sectionIndex, section] of (sections as {
-            heading?: string;
-            content?: string;
-            level?: number;
-            pageBreak?: boolean;
-            table?: { headers: string[]; rows: string[][] };
-        }[]).entries()) {
+        for (const [sectionIndex, section] of (
+            sections as {
+                heading?: string;
+                content?: string;
+                level?: number;
+                pageBreak?: boolean;
+                table?: { headers: string[]; rows: string[][] };
+            }[]
+        ).entries()) {
             if (section.pageBreak) {
                 children.push(new Paragraph({ children: [new PageBreak()] }));
             }
@@ -1303,11 +1310,11 @@ export async function generateDocx(
                               ? currentClauseLevel + 2
                               : manualList.levelOffset !== null
                                 ? currentClauseLevel + manualList.levelOffset
-                              : numeric.levelFromPrefix !== null
-                                ? numeric.levelFromPrefix
-                                : numberedBodyParagraphs === 0
-                                  ? currentClauseLevel + 1
-                                  : currentClauseLevel + 2;
+                                : numeric.levelFromPrefix !== null
+                                  ? numeric.levelFromPrefix
+                                  : numberedBodyParagraphs === 0
+                                    ? currentClauseLevel + 1
+                                    : currentClauseLevel + 2;
                     if (currentClauseLevel !== null) numberedBodyParagraphs++;
                     children.push(
                         new Paragraph({
@@ -1567,7 +1574,10 @@ export async function generateExcel(
         });
     } catch (error) {
         return {
-            error: safeErrorMessage(error, "Unable to generate the Excel workbook."),
+            error: safeErrorMessage(
+                error,
+                "Unable to generate the Excel workbook.",
+            ),
         };
     }
 }
@@ -1591,7 +1601,10 @@ export async function generatePpt(
         });
     } catch (error) {
         return {
-            error: safeErrorMessage(error, "Unable to generate the PowerPoint presentation."),
+            error: safeErrorMessage(
+                error,
+                "Unable to generate the PowerPoint presentation.",
+            ),
         };
     }
 }
@@ -2074,7 +2087,9 @@ async function findInDocumentContent(params: {
         write,
         docIndex,
         db,
-        { emitEvents: false },
+        {
+            emitEvents: false,
+        },
     );
     if (!text || text === "Document could not be read.") {
         write(
@@ -2364,20 +2379,21 @@ function upsertCourtlistenerCases(
 ): CourtlistenerCaseRecord[] {
     const records: CourtlistenerCaseRecord[] = [];
     for (const input of inputs) {
-        if (typeof input.clusterId !== "number" || !Number.isFinite(input.clusterId)) {
+        if (
+            typeof input.clusterId !== "number" ||
+            !Number.isFinite(input.clusterId)
+        ) {
             continue;
         }
         const clusterId = Math.floor(input.clusterId);
-        const current =
-            state.casesByClusterId.get(clusterId) ??
-            {
-                clusterId,
-                caseName: null,
-                citations: [],
-                url: null,
-                pdfUrl: null,
-                dateFiled: null,
-            };
+        const current = state.casesByClusterId.get(clusterId) ?? {
+            clusterId,
+            caseName: null,
+            citations: [],
+            url: null,
+            pdfUrl: null,
+            dateFiled: null,
+        };
         const nextCitations = [
             ...current.citations,
             ...(input.citation ? [input.citation] : []),
@@ -2490,7 +2506,9 @@ function courtlistenerFetchedCaseMetadata(
         opinion_count: opinionCount,
         opinions: (record.opinions ?? [])
             .map(courtlistenerOpinionMetadata)
-            .filter((opinion): opinion is NonNullable<typeof opinion> => !!opinion),
+            .filter(
+                (opinion): opinion is NonNullable<typeof opinion> => !!opinion,
+            ),
     };
 }
 
@@ -2558,7 +2576,8 @@ type FindInCaseArgs = {
 function parseFindInCaseArgs(args: Record<string, unknown>): FindInCaseArgs {
     return {
         clusterId:
-            typeof args.clusterId === "number" && Number.isFinite(args.clusterId)
+            typeof args.clusterId === "number" &&
+            Number.isFinite(args.clusterId)
                 ? Math.floor(args.clusterId)
                 : typeof args.cluster_id === "number" &&
                     Number.isFinite(args.cluster_id)
@@ -2577,7 +2596,10 @@ function parseFindInCaseArgs(args: Record<string, unknown>): FindInCaseArgs {
 }
 
 function findInCaseSearchSummary(
-    event: Extract<CourtlistenerToolEvent, { type: "courtlistener_find_in_case" }>,
+    event: Extract<
+        CourtlistenerToolEvent,
+        { type: "courtlistener_find_in_case" }
+    >,
 ) {
     return {
         cluster_id: event.cluster_id,
@@ -2593,8 +2615,7 @@ function cachedCaseNotFetchedResult(clusterId: number | null) {
     return {
         ok: false,
         cluster_id: clusterId,
-        error:
-            "Case has not been fetched in this turn. Call courtlistener_get_cases first.",
+        error: "Case has not been fetched in this turn. Call courtlistener_get_cases first.",
     };
 }
 
@@ -2646,10 +2667,13 @@ export async function runToolCalls(
     const courtlistenerEvents: CourtlistenerToolEvent[] = [];
     const caseCitationEvents: CaseCitationEvent[] = [];
     const mcpEvents: McpToolEvent[] = [];
-    const courtState: CourtlistenerTurnState =
-        courtlistenerState ?? { casesByClusterId: new Map() };
+    const courtState: CourtlistenerTurnState = courtlistenerState ?? {
+        casesByClusterId: new Map(),
+    };
     const groupedFindInCaseSearches = toolCalls
-        .filter((tc) => tc.function.name === COURTLISTENER_TOOL_NAMES.findInCase)
+        .filter(
+            (tc) => tc.function.name === COURTLISTENER_TOOL_NAMES.findInCase,
+        )
         .map((tc) => {
             let rawArgs: Record<string, unknown> = {};
             try {
@@ -2689,7 +2713,9 @@ export async function runToolCalls(
         const filename =
             typeof record.filename === "string" ? record.filename : null;
         const downloadUrl =
-            typeof record.download_url === "string" ? record.download_url : null;
+            typeof record.download_url === "string"
+                ? record.download_url
+                : null;
         let newDocLabel: string | null = null;
 
         if (filename && downloadUrl) {
@@ -2698,7 +2724,9 @@ export async function runToolCalls(
                     ? record.document_id
                     : undefined;
             const versionId =
-                typeof record.version_id === "string" ? record.version_id : undefined;
+                typeof record.version_id === "string"
+                    ? record.version_id
+                    : undefined;
             const versionNumber =
                 typeof record.version_number === "number"
                     ? record.version_number
@@ -2783,8 +2811,7 @@ export async function runToolCalls(
                     tool_call_id: tc.id,
                     content: JSON.stringify({
                         ok: false,
-                        error:
-                            "Ask Inputs is available only in an assistant chat with a persisted response placeholder.",
+                        error: "Ask Inputs is available only in an assistant chat with a persisted response placeholder.",
                     }),
                 });
                 continue;
@@ -2814,7 +2841,10 @@ export async function runToolCalls(
                 toolResults.push({
                     role: "tool",
                     tool_call_id: tc.id,
-                    content: JSON.stringify({ ok: false, error: persisted.detail }),
+                    content: JSON.stringify({
+                        ok: false,
+                        error: persisted.detail,
+                    }),
                 });
                 continue;
             }
@@ -3513,7 +3543,9 @@ export async function runToolCalls(
                     fail(`replicate_document failed: ${String(e)}`);
                 }
             }
-        } else if (tc.function.name === COURTLISTENER_TOOL_NAMES.searchCaseLaw) {
+        } else if (
+            tc.function.name === COURTLISTENER_TOOL_NAMES.searchCaseLaw
+        ) {
             const query = typeof args.query === "string" ? args.query : "";
             write(
                 `data: ${JSON.stringify({ type: "courtlistener_search_case_law_start", query })}\n\n`,
@@ -3521,7 +3553,8 @@ export async function runToolCalls(
             try {
                 const result = await searchCourtlistenerCaseLaw({
                     query: query || undefined,
-                    court: typeof args.court === "string" ? args.court : undefined,
+                    court:
+                        typeof args.court === "string" ? args.court : undefined,
                     filedAfter:
                         typeof args.filedAfter === "string"
                             ? args.filedAfter
@@ -3530,7 +3563,8 @@ export async function runToolCalls(
                         typeof args.filedBefore === "string"
                             ? args.filedBefore
                             : undefined,
-                    limit: typeof args.limit === "number" ? args.limit : undefined,
+                    limit:
+                        typeof args.limit === "number" ? args.limit : undefined,
                     apiToken: apiKeys?.courtlistener,
                 });
                 const resultCount =
@@ -3589,7 +3623,10 @@ export async function runToolCalls(
             const clusterIds = Array.from(
                 new Set(
                     rawClusterIds
-                        .filter((value): value is number => typeof value === "number")
+                        .filter(
+                            (value): value is number =>
+                                typeof value === "number",
+                        )
                         .filter((value) => Number.isFinite(value) && value > 0)
                         .map((value) => Math.floor(value)),
                 ),
@@ -3626,7 +3663,8 @@ export async function runToolCalls(
                     }
                 }
                 const opinionCount = fetchedCases.reduce<number>(
-                    (sum, fetchedCase) => sum + courtlistenerOpinionCount(fetchedCase),
+                    (sum, fetchedCase) =>
+                        sum + courtlistenerOpinionCount(fetchedCase),
                     0,
                 );
                 const caseOpinionCountByClusterId = new Map<number, number>();
@@ -3645,7 +3683,8 @@ export async function runToolCalls(
                 });
                 const errors = fetchedCases
                     .map((fetchedCase) =>
-                        typeof (fetchedCase as { error?: unknown }).error === "string"
+                        typeof (fetchedCase as { error?: unknown }).error ===
+                        "string"
                             ? (fetchedCase as { error: string }).error
                             : null,
                     )
@@ -3685,8 +3724,9 @@ export async function runToolCalls(
                         cases: caseRecords.map((record) =>
                             courtlistenerFetchedCaseMetadata(
                                 record,
-                                caseOpinionCountByClusterId.get(record.clusterId) ??
-                                    0,
+                                caseOpinionCountByClusterId.get(
+                                    record.clusterId,
+                                ) ?? 0,
                             ),
                         ),
                         ...(resultError || errors.length
@@ -3836,7 +3876,8 @@ export async function runToolCalls(
             });
         } else if (tc.function.name === COURTLISTENER_TOOL_NAMES.readCase) {
             const clusterId =
-                typeof args.clusterId === "number" && Number.isFinite(args.clusterId)
+                typeof args.clusterId === "number" &&
+                Number.isFinite(args.clusterId)
                     ? Math.floor(args.clusterId)
                     : typeof args.cluster_id === "number" &&
                         Number.isFinite(args.cluster_id)
@@ -3940,7 +3981,9 @@ export async function runToolCalls(
                     opinions: selectedOpinions,
                 }),
             });
-        } else if (tc.function.name === COURTLISTENER_TOOL_NAMES.verifyCitations) {
+        } else if (
+            tc.function.name === COURTLISTENER_TOOL_NAMES.verifyCitations
+        ) {
             const citations = Array.isArray(args.citations)
                 ? args.citations.filter(
                       (value): value is string => typeof value === "string",
@@ -4075,13 +4118,9 @@ export async function runToolCalls(
             write(
                 `data: ${JSON.stringify({ type: "doc_created_start", filename: previewFilename })}\n\n`,
             );
-            const result = await generateExcel(
-                title,
-                args.sheets,
-                userId,
-                db,
-                { projectId: projectId ?? null },
-            );
+            const result = await generateExcel(title, args.sheets, userId, db, {
+                projectId: projectId ?? null,
+            });
             publishGeneratedDocument(tc, result, previewFilename, "xlsx");
         } else if (tc.function.name === "generate_ppt") {
             const title =
@@ -4092,13 +4131,9 @@ export async function runToolCalls(
             write(
                 `data: ${JSON.stringify({ type: "doc_created_start", filename: previewFilename })}\n\n`,
             );
-            const result = await generatePpt(
-                title,
-                args.slides,
-                userId,
-                db,
-                { projectId: projectId ?? null },
-            );
+            const result = await generatePpt(title, args.slides, userId, db, {
+                projectId: projectId ?? null,
+            });
             publishGeneratedDocument(tc, result, previewFilename, "pptx");
         }
     }
@@ -4243,7 +4278,14 @@ export async function runLLMStream(params: {
     workflowStore?: WorkflowStore;
     tabularStore?: TabularCellStore;
     buildCitations?: (fullText: string) => unknown[];
-    model?: string;
+    model: string;
+    reasoningEffort?: ReasoningEffort;
+    reasoningMode?: ReasoningMode;
+    modelResolution?: {
+        requestedModel: string | null;
+        resolvedModel: string;
+        status: MainModelResolutionStatus;
+    };
     apiKeys?: import("./llm").UserApiKeys;
     includeResearchTools?: boolean;
     chatId?: string | null;
@@ -4270,6 +4312,9 @@ export async function runLLMStream(params: {
         tabularStore,
         buildCitations,
         model,
+        reasoningEffort,
+        reasoningMode,
+        modelResolution,
         apiKeys,
         includeResearchTools = false,
         chatId,
@@ -4422,17 +4467,17 @@ export async function runLLMStream(params: {
         }
     };
 
-    const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
-
     throwIfAborted(signal);
     await streamChatWithTools({
-        model: selectedModel,
+        model,
         systemPrompt,
         messages: chatMessages,
         tools: activeTools as OpenAIToolSchema[],
         maxIterations: 10,
         apiKeys,
         enableThinking: true,
+        reasoningEffort,
+        reasoningMode,
         abortSignal: signal,
         aiObservability: {
             distinctId: userId,
@@ -4445,6 +4490,19 @@ export async function runLLMStream(params: {
                 tool_count: activeTools.length,
                 message_count: chatMessages.length,
                 legal_research_enabled: includeResearchTools,
+                ...(modelResolution
+                    ? {
+                          requested_model: modelResolution.requestedModel,
+                          resolved_model: modelResolution.resolvedModel,
+                          model_resolution_status: modelResolution.status,
+                      }
+                    : {}),
+                ...(reasoningEffort !== undefined
+                    ? { reasoning_effort: reasoningEffort }
+                    : {}),
+                ...(reasoningMode !== undefined
+                    ? { reasoning_mode: reasoningMode }
+                    : {}),
             },
         },
         callbacks: {

@@ -25,7 +25,7 @@ import {
     streamChatWithTools,
     throwIfAborted,
 } from "../lib/llm";
-import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
+import { getUserModelSettings } from "../lib/userSettings";
 import {
     checkProjectAccess,
     ensureReviewAccess,
@@ -111,7 +111,10 @@ function normalizeTabularColumns(value: unknown): {
         return { columns: null, detail: "columns_config must be an array" };
     }
     if (value.length > 100) {
-        return { columns: null, detail: "columns_config may contain at most 100 columns" };
+        return {
+            columns: null,
+            detail: "columns_config may contain at most 100 columns",
+        };
     }
     const seenIndexes = new Set<number>();
     const columns: TabularWorkflowColumn[] = [];
@@ -122,12 +125,23 @@ function normalizeTabularColumns(value: unknown): {
         const column = item as Record<string, unknown>;
         const index = column.index;
         const name = typeof column.name === "string" ? column.name.trim() : "";
-        const prompt = typeof column.prompt === "string" ? column.prompt.trim() : "";
-        if (!Number.isInteger(index) || (index as number) < 0 || seenIndexes.has(index as number)) {
-            return { columns: null, detail: "Each column needs a unique non-negative integer index" };
+        const prompt =
+            typeof column.prompt === "string" ? column.prompt.trim() : "";
+        if (
+            !Number.isInteger(index) ||
+            (index as number) < 0 ||
+            seenIndexes.has(index as number)
+        ) {
+            return {
+                columns: null,
+                detail: "Each column needs a unique non-negative integer index",
+            };
         }
         if (!name || name.length > 160 || !prompt || prompt.length > 10_000) {
-            return { columns: null, detail: "Each column needs a name and prompt within the allowed length" };
+            return {
+                columns: null,
+                detail: "Each column needs a name and prompt within the allowed length",
+            };
         }
         seenIndexes.add(index as number);
         columns.push({
@@ -140,7 +154,9 @@ function normalizeTabularColumns(value: unknown): {
             ...(Array.isArray(column.tags)
                 ? {
                       tags: column.tags
-                          .filter((tag): tag is string => typeof tag === "string")
+                          .filter(
+                              (tag): tag is string => typeof tag === "string",
+                          )
                           .map((tag) => tag.trim())
                           .filter(Boolean)
                           .slice(0, 50),
@@ -323,13 +339,17 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         );
         if (systemWorkflow) {
             if (systemWorkflow.type !== "tabular") {
-                return void res.status(400).json({ detail: "Selected workflow is not a tabular workflow" });
+                return void res.status(400).json({
+                    detail: "Selected workflow is not a tabular workflow",
+                });
             }
             const normalized = normalizeTabularColumns(
                 systemWorkflow.columns_config ?? [],
             );
             if (!normalized.columns || normalized.columns.length === 0) {
-                return void res.status(500).json({ detail: "System workflow has no usable columns" });
+                return void res
+                    .status(500)
+                    .json({ detail: "System workflow has no usable columns" });
             }
             resolvedColumns = normalized.columns;
             systemWorkflowId = systemWorkflow.id;
@@ -341,10 +361,14 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
                 .eq("is_system", false)
                 .maybeSingle();
             if (workflowError) {
-                return void res.status(500).json({ detail: workflowError.message });
+                return void res
+                    .status(500)
+                    .json({ detail: workflowError.message });
             }
             if (!workflow || workflow.type !== "tabular") {
-                return void res.status(404).json({ detail: "Tabular workflow not found" });
+                return void res
+                    .status(404)
+                    .json({ detail: "Tabular workflow not found" });
             }
             let canUse = workflow.user_id === userId;
             if (!canUse && userEmail) {
@@ -354,15 +378,24 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
                     .eq("workflow_id", requestedWorkflowId)
                     .eq("shared_with_email", userEmail.trim().toLowerCase())
                     .maybeSingle();
-                if (shareError) return void res.status(500).json({ detail: shareError.message });
+                if (shareError)
+                    return void res
+                        .status(500)
+                        .json({ detail: shareError.message });
                 canUse = !!share;
             }
             if (!canUse) {
-                return void res.status(404).json({ detail: "Tabular workflow not found" });
+                return void res
+                    .status(404)
+                    .json({ detail: "Tabular workflow not found" });
             }
-            const normalized = normalizeTabularColumns(workflow.columns_config ?? []);
+            const normalized = normalizeTabularColumns(
+                workflow.columns_config ?? [],
+            );
             if (!normalized.columns || normalized.columns.length === 0) {
-                return void res.status(400).json({ detail: "Selected workflow has no usable columns" });
+                return void res.status(400).json({
+                    detail: "Selected workflow has no usable columns",
+                });
             }
             resolvedColumns = normalized.columns;
             customWorkflowId = workflow.id;
@@ -376,12 +409,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
     }
 
     const allowedDocumentIds = Array.isArray(document_ids)
-        ? await filterAccessibleDocumentIds(
-              document_ids,
-              userId,
-              userEmail,
-              db,
-          )
+        ? await filterAccessibleDocumentIds(document_ids, userId, userEmail, db)
         : [];
     const { data: review, error } = await db
         .from("tabular_reviews")
@@ -476,8 +504,7 @@ tabularRouter.post("/prompt", requireAuth, async (req, res) => {
             textFormat: {
                 type: "json_schema",
                 name: "tabular_column_prompt",
-                description:
-                    "A generated legal tabular review column prompt.",
+                description: "A generated legal tabular review column prompt.",
                 strict: true,
                 schema: {
                     type: "object",
@@ -807,9 +834,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 
     res.json({
         ...updatedReview,
-        ...(persistedDocumentIds
-            ? { document_ids: persistedDocumentIds }
-            : {}),
+        ...(persistedDocumentIds ? { document_ids: persistedDocumentIds } : {}),
     });
 });
 
@@ -1571,7 +1596,8 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
         }
 
-        const apiKeys = await getUserApiKeys(userId, db);
+        const { tabular_model: tabularModel, api_keys: apiKeys } =
+            await getUserModelSettings(userId, db);
         throwIfAborted(streamAbort.signal);
         const { fullText, events } = await runLLMStream({
             apiMessages,
@@ -1584,6 +1610,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             tabularStore,
             buildCitations: (text) =>
                 extractTabularAnnotations(text, tabularStore),
+            model: tabularModel,
             apiKeys,
             chatId,
             signal: streamAbort.signal,
@@ -2032,7 +2059,12 @@ Rules:
                                     summary: { type: "string" },
                                     flag: {
                                         type: "string",
-                                        enum: ["green", "grey", "yellow", "red"],
+                                        enum: [
+                                            "green",
+                                            "grey",
+                                            "yellow",
+                                            "red",
+                                        ],
                                     },
                                     reasoning: { type: "string" },
                                 },
@@ -2055,7 +2087,8 @@ Rules:
         for (const item of parsed.results ?? []) {
             throwIfAborted(signal);
             const normalized = normalizeResult(item);
-            if (normalized) await onResult(normalized.columnIndex, normalized.result);
+            if (normalized)
+                await onResult(normalized.columnIndex, normalized.result);
         }
         return;
     }
@@ -2112,7 +2145,10 @@ Rules:
         });
     } catch (err) {
         if (signal?.aborted || isAbortError(err)) throw err;
-        console.error("[queryGeminiAllColumns] stream failed", safeErrorLog(err));
+        console.error(
+            "[queryGeminiAllColumns] stream failed",
+            safeErrorLog(err),
+        );
     }
 
     throwIfAborted(signal);
