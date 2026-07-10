@@ -20,10 +20,9 @@ export interface ModelOption {
 }
 
 export const MODELS: ModelOption[] = [
-    { id: "gpt-5.5-pro", label: "GPT-5.5 Pro", group: "OpenAI" },
-    { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
-    { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", group: "OpenAI" },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", group: "OpenAI" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", group: "OpenAI" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", group: "OpenAI" },
     { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
     { id: "claude-mythos-5", label: "Claude Mythos 5", group: "Anthropic" },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
@@ -49,7 +48,7 @@ export const TABULAR_MODELS: ModelOption[] = [
     },
 ];
 
-export const DEFAULT_MODEL_ID = "gpt-5.5";
+export const DEFAULT_MODEL_ID = "gpt-5.6-sol";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
