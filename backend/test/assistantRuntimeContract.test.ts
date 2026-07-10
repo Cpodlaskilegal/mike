@@ -1176,3 +1176,39 @@ test("assistant-runtime-check rejects duplicate-read suppression without edit in
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("OpenAI Standard and Pro preserve Docket's provider-neutral callback contract", () => {
+  const source = readFileSync(
+    join(backendRoot, "src/lib/llm/openai.ts"),
+    "utf8",
+  );
+
+  assert.match(source, /ResponseCreateParamsStreaming/);
+  assert.match(source, /ResponseCreateParamsNonStreaming/);
+  assert.match(source, /buildOpenAIStandardStreamingRequest/);
+  assert.match(source, /buildOpenAIProNonStreamingRequest/);
+  assert.match(source, /buildOpenAIStandardNonStreamingRequest/);
+  assert.match(source, /reasoning:\s*\{\s*effort:\s*reasoningEffort,?\s*\}/);
+  assert.match(
+    source,
+    /reasoning:\s*\{\s*effort:\s*reasoningEffort,\s*mode:\s*["']pro["']\s*\}/,
+  );
+  assert.doesNotMatch(source, /isProModel|gpt-5\.5-pro/);
+  assert.match(source, /strict:\s*false/);
+  assert.match(source, /parallel_tool_calls:\s*true/);
+  assert.match(
+    source,
+    /OPENAI_STREAM_ERROR[\s\S]*?event\.message[\s\S]*?OpenAI stream failed/,
+  );
+
+  for (const callback of [
+    "onContentDelta",
+    "onReasoningDelta",
+    "onReasoningBlockEnd",
+    "onToolCallStart",
+  ]) {
+    assert.match(source, new RegExp(`callbacks\\.${callback}|params\\.${callback}`));
+  }
+  assert.match(source, /buildToolContinuationInput\(response, results\)/);
+  assert.match(source, /extractCompletedOpenAIOutput\(response\)/);
+});

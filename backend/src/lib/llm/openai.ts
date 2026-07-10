@@ -2,9 +2,13 @@ import OpenAI from "openai";
 import { randomUUID } from "crypto";
 import type {
     Response,
+    ResponseCreateParamsBase,
+    ResponseCreateParamsNonStreaming,
+    ResponseCreateParamsStreaming,
     ResponseFunctionToolCall,
     ResponseInput,
     ResponseInputItem,
+    ResponseOutputItem,
     ResponseStreamEvent,
     ResponseTextConfig,
     Tool,
@@ -12,12 +16,15 @@ import type {
 import type {
     JsonSchemaTextFormat,
     NormalizedToolCall,
+    NormalizedToolResult,
     ReasoningEffort,
+    ReasoningMode,
     StreamChatParams,
     StreamChatResult,
     TextVerbosity,
 } from "./types";
 import { throwIfAborted } from "./types";
+import type { Gpt56ReasoningEffort } from "./models";
 import { captureAiGeneration } from "../posthog";
 import {
     calculateLlmCostNanos,
@@ -36,6 +43,30 @@ type OpenAIResponseResult = {
     timeToFirstTokenSeconds?: number;
 };
 
+export type OpenAIRequestBuilderInput = Omit<
+    ResponseCreateParamsBase,
+    "reasoning"
+> & {
+    reasoningEffort: ReasoningEffort;
+};
+
+export type Gpt56ProReasoningEffort = Exclude<
+    Gpt56ReasoningEffort,
+    "none" | "low"
+>;
+
+export type CompletedOpenAIOutput =
+    | { kind: "text"; text: string }
+    | { kind: "refusal"; text: string }
+    | { kind: "tool_calls"; text: "" };
+
+class NamedOpenAIError extends Error {
+    constructor(name: string, message: string) {
+        super(message);
+        this.name = name;
+    }
+}
+
 function client(apiKeyOverride?: string | null): OpenAI {
     const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) {
@@ -46,19 +77,13 @@ function client(apiKeyOverride?: string | null): OpenAI {
     return new OpenAI({ apiKey });
 }
 
-function isProModel(model: string): boolean {
-    return model === "gpt-5.5-pro";
-}
-
 function defaultReasoningEffort(
     model: string,
     enableThinking?: boolean,
 ): ReasoningEffort {
-    // OpenAI pro models are explicitly high-reasoning/non-streaming. For the
-    // normal chat surface, mirror Claude/Gemini by spending reasoning only
-    // where the UI is prepared to show it; extraction and short generated text
-    // stay lean unless a caller overrides this.
-    if (isProModel(model)) return "high";
+    // For interactive Standard chat, mirror Claude/Gemini by spending
+    // reasoning only where the UI is prepared to show it. One-shot title and
+    // extraction calls stay lean unless their caller explicitly overrides it.
     if (enableThinking) {
         if (model.endsWith("-mini") || model.endsWith("-nano")) return "low";
         return "medium";
@@ -67,13 +92,56 @@ function defaultReasoningEffort(
     return "low";
 }
 
-function reasoningForModel(
-    model: string,
-    reasoningEffort?: ReasoningEffort,
-    enableThinking?: boolean,
-) {
+function proReasoningEffort(
+    effort: ReasoningEffort | undefined,
+): Gpt56ProReasoningEffort {
+    switch (effort) {
+        case "medium":
+        case "high":
+        case "xhigh":
+        case "max":
+            return effort;
+        default:
+            return "medium";
+    }
+}
+
+export function shouldStreamOpenAI(reasoningMode: ReasoningMode): boolean {
+    return reasoningMode !== "pro";
+}
+
+export function buildOpenAIStandardStreamingRequest(
+    input: OpenAIRequestBuilderInput,
+): ResponseCreateParamsStreaming {
+    const { reasoningEffort, ...request } = input;
     return {
-        effort: reasoningEffort ?? defaultReasoningEffort(model, enableThinking),
+        ...request,
+        reasoning: { effort: reasoningEffort },
+        stream: true,
+    };
+}
+
+export function buildOpenAIProNonStreamingRequest(
+    input: Omit<OpenAIRequestBuilderInput, "reasoningEffort"> & {
+        reasoningEffort: Gpt56ProReasoningEffort;
+    },
+): ResponseCreateParamsNonStreaming {
+    const { reasoningEffort, ...request } = input;
+    return {
+        ...request,
+        reasoning: { effort: reasoningEffort, mode: "pro" },
+        stream: false,
+    };
+}
+
+export function buildOpenAIStandardNonStreamingRequest(
+    input: OpenAIRequestBuilderInput,
+): ResponseCreateParamsNonStreaming {
+    const { reasoningEffort, ...request } = input;
+    return {
+        ...request,
+        reasoning: { effort: reasoningEffort },
+        stream: false,
     };
 }
 
@@ -133,8 +201,84 @@ function extractFunctionCalls(response: Response): ResponseFunctionToolCall[] {
     );
 }
 
-function outputText(response: Response): string {
-    return response.output_text ?? "";
+function namedResponseError(
+    name: string,
+    unsafeMessage: unknown,
+    fallback: string,
+): NamedOpenAIError {
+    return new NamedOpenAIError(name, safeErrorMessage(unsafeMessage, fallback));
+}
+
+export function extractCompletedOpenAIOutput(
+    response: Response,
+): CompletedOpenAIOutput {
+    if (response.status === "failed") {
+        throw namedResponseError(
+            "OPENAI_RESPONSE_FAILED",
+            response.error?.message,
+            "OpenAI response failed",
+        );
+    }
+    if (response.status === "incomplete") {
+        throw namedResponseError(
+            "OPENAI_RESPONSE_INCOMPLETE",
+            response.incomplete_details?.reason,
+            "OpenAI response incomplete",
+        );
+    }
+
+    const outputText = response.output_text ?? "";
+    if (outputText) return { kind: "text", text: outputText };
+
+    const messageText = response.output
+        .filter((item) => item.type === "message")
+        .flatMap((item) => item.content)
+        .filter((content) => content.type === "output_text")
+        .map((content) => content.text)
+        .join("");
+    if (messageText) return { kind: "text", text: messageText };
+
+    const refusal = response.output
+        .filter((item) => item.type === "message")
+        .flatMap((item) => item.content)
+        .filter((content) => content.type === "refusal")
+        .map((content) => content.refusal)
+        .filter(Boolean)
+        .join("\n");
+    if (refusal) return { kind: "refusal", text: refusal };
+
+    if (extractFunctionCalls(response).length > 0) {
+        return { kind: "tool_calls", text: "" };
+    }
+
+    throw new NamedOpenAIError(
+        "OPENAI_EMPTY_RESPONSE",
+        "OpenAI completed without usable output.",
+    );
+}
+
+export function buildToolContinuationInput(
+    response: Response,
+    results: NormalizedToolResult[],
+): ResponseInput {
+    const responseItems = response.output.map((item: ResponseOutputItem) => {
+        if ("status" in item && item.status === "failed") {
+            throw new NamedOpenAIError(
+                "OPENAI_TOOL_OUTPUT_FAILED",
+                "OpenAI returned a failed output item.",
+            );
+        }
+        // The SDK output union includes failed tool-output statuses that its
+        // input union intentionally rejects. After the guard, completed
+        // response items are the provider-prescribed continuation payload.
+        return item as ResponseInputItem;
+    });
+    const toolOutputs: ResponseInputItem[] = results.map((result) => ({
+        type: "function_call_output",
+        call_id: result.tool_use_id,
+        output: result.content,
+    }));
+    return [...responseItems, ...toolOutputs];
 }
 
 function elapsedSeconds(startedAt: number): number {
@@ -229,22 +373,25 @@ async function createStreamingResponse(
 ): Promise<OpenAIResponseResult> {
     throwIfAborted(params.abortSignal);
     const startedAt = Date.now();
-    const stream = await openai.responses.create({
+    const request = buildOpenAIStandardStreamingRequest({
         model: params.model,
         instructions: params.systemPrompt,
         input: params.input,
         previous_response_id: params.previousResponseId,
         tools: params.tools.length ? params.tools : undefined,
         max_output_tokens: MAX_OUTPUT_TOKENS,
-        reasoning: reasoningForModel(
-            params.model,
-            params.reasoningEffort,
-            params.enableThinking,
-        ),
+        reasoningEffort:
+            params.reasoningEffort ??
+            defaultReasoningEffort(
+                params.model,
+                params.enableThinking,
+            ),
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
-        stream: true,
-    }, { signal: params.abortSignal });
+    });
+    const stream = await openai.responses.create(request, {
+        signal: params.abortSignal,
+    });
 
     let final: Response | null = null;
     let reasoningOpen = false;
@@ -273,17 +420,32 @@ async function createStreamingResponse(
         } else if (event.type === "response.completed") {
             final = event.response;
         } else if (event.type === "response.failed") {
-            throw new Error(event.response.error?.message ?? "OpenAI response failed");
+            throw namedResponseError(
+                "OPENAI_RESPONSE_FAILED",
+                event.response.error?.message,
+                "OpenAI response failed",
+            );
         } else if (event.type === "response.incomplete") {
-            throw new Error(
-                event.response.incomplete_details?.reason ??
-                    "OpenAI response incomplete",
+            throw namedResponseError(
+                "OPENAI_RESPONSE_INCOMPLETE",
+                event.response.incomplete_details?.reason,
+                "OpenAI response incomplete",
             );
         } else if (event.type === "error") {
-            throw new Error(event.message);
+            throw namedResponseError(
+                "OPENAI_STREAM_ERROR",
+                event.message,
+                "OpenAI stream failed",
+            );
         }
     }
-    if (!final) throw new Error("OpenAI stream ended without a completed response");
+    if (!final) {
+        throw new NamedOpenAIError(
+            "OPENAI_STREAM_INCOMPLETE",
+            "OpenAI stream ended without a completed response.",
+        );
+    }
+    extractCompletedOpenAIOutput(final);
     return {
         response: final,
         latencySeconds: elapsedSeconds(startedAt),
@@ -302,6 +464,7 @@ async function createNonStreamingResponse(
         maxTokens?: number;
         enableThinking?: boolean;
         reasoningEffort?: ReasoningEffort;
+        reasoningMode?: ReasoningMode;
         textVerbosity?: TextVerbosity;
         textFormat?: JsonSchemaTextFormat;
         abortSignal?: AbortSignal;
@@ -309,31 +472,39 @@ async function createNonStreamingResponse(
 ): Promise<OpenAIResponseResult> {
     throwIfAborted(params.abortSignal);
     const startedAt = Date.now();
-    const response = await openai.responses.create({
+    const reasoningEffort =
+        params.reasoningEffort ??
+        defaultReasoningEffort(
+            params.model,
+            params.enableThinking,
+        );
+    const requestBase = {
         model: params.model,
         instructions: params.systemPrompt,
         input: params.input,
         previous_response_id: params.previousResponseId,
         tools: params.tools?.length ? params.tools : undefined,
         max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
-        reasoning: reasoningForModel(
-            params.model,
-            params.reasoningEffort,
-            params.enableThinking,
-        ),
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
-        stream: false,
-    }, { signal: params.abortSignal });
+    };
+    const response = params.reasoningMode === "pro"
+        ? await openai.responses.create(
+              buildOpenAIProNonStreamingRequest({
+                  ...requestBase,
+                  reasoningEffort: proReasoningEffort(reasoningEffort),
+              }),
+              { signal: params.abortSignal },
+          )
+        : await openai.responses.create(
+              buildOpenAIStandardNonStreamingRequest({
+                  ...requestBase,
+                  reasoningEffort,
+              }),
+              { signal: params.abortSignal },
+          );
     throwIfAborted(params.abortSignal);
-    if (response.status === "failed") {
-        throw new Error(response.error?.message ?? "OpenAI response failed");
-    }
-    if (response.status === "incomplete") {
-        throw new Error(
-            response.incomplete_details?.reason ?? "OpenAI response incomplete",
-        );
-    }
+    extractCompletedOpenAIOutput(response);
     return {
         response,
         latencySeconds: elapsedSeconds(startedAt),
@@ -353,6 +524,8 @@ export async function streamOpenAI(
     const maxIter = params.maxIterations ?? 10;
     const openai = client(params.apiKeys?.openai);
     const openaiTools = toOpenAITools(tools);
+    const reasoningMode = params.reasoningMode ?? "standard";
+    const streaming = shouldStreamOpenAI(reasoningMode);
     let input = toInput(params.messages);
     let fullText = "";
     const traceId = params.aiObservability?.traceId || randomUUID();
@@ -366,19 +539,8 @@ export async function streamOpenAI(
         let iterationText = "";
         let result: OpenAIResponseResult;
         try {
-            result = isProModel(model)
-                ? await createNonStreamingResponse(openai, {
-                      model,
-                      systemPrompt,
-                      input,
-                      tools: openaiTools,
-                      enableThinking: params.enableThinking,
-                      reasoningEffort: params.reasoningEffort,
-                      textVerbosity: params.textVerbosity,
-                      textFormat: params.textFormat,
-                      abortSignal: params.abortSignal,
-                  })
-                : await createStreamingResponse(openai, {
+            result = streaming
+                ? await createStreamingResponse(openai, {
                       model,
                       systemPrompt,
                       input,
@@ -395,6 +557,18 @@ export async function streamOpenAI(
                       onReasoningDelta: callbacks.onReasoningDelta,
                       onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
                       abortSignal: params.abortSignal,
+                  })
+                : await createNonStreamingResponse(openai, {
+                      model,
+                      systemPrompt,
+                      input,
+                      tools: openaiTools,
+                      enableThinking: params.enableThinking,
+                      reasoningEffort: params.reasoningEffort,
+                      reasoningMode,
+                      textVerbosity: params.textVerbosity,
+                      textFormat: params.textFormat,
+                      abortSignal: params.abortSignal,
                   });
         } catch (error) {
             await captureAiGeneration({
@@ -409,7 +583,7 @@ export async function streamOpenAI(
                 projectId: params.aiObservability?.projectId,
                 model,
                 provider: "openai",
-                stream: !isProModel(model),
+                stream: streaming,
                 latencySeconds: elapsedSeconds(requestStartedAt),
                 input: aiInputMessages(systemPrompt, params.messages),
                 output: "",
@@ -425,14 +599,10 @@ export async function streamOpenAI(
 
         const { response } = result;
         throwIfAborted(params.abortSignal);
+        const completedOutput = extractCompletedOpenAIOutput(response);
 
-        if (isProModel(model)) {
-            const text = outputText(response);
-            iterationText += text;
-            fullText += text;
-            callbacks.onContentDelta?.(text);
-        } else if (fullText.length === beforeLength) {
-            const text = outputText(response);
+        if (!streaming || fullText.length === beforeLength) {
+            const text = completedOutput.text;
             if (text) {
                 iterationText += text;
                 fullText += text;
@@ -458,11 +628,11 @@ export async function streamOpenAI(
             projectId: params.aiObservability?.projectId,
             model,
             provider: "openai",
-            stream: !isProModel(model),
+            stream: streaming,
             latencySeconds: result.latencySeconds,
             timeToFirstTokenSeconds: result.timeToFirstTokenSeconds,
             input: aiInputMessages(systemPrompt, params.messages),
-            output: iterationText || outputText(response),
+            output: iterationText || completedOutput.text,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             totalTokens: usage.totalTokens,
@@ -494,12 +664,7 @@ export async function streamOpenAI(
         throwIfAborted(params.abortSignal);
         input = [
             ...input,
-            ...(response.output as ResponseInputItem[]),
-            ...results.map((result): ResponseInputItem => ({
-                type: "function_call_output",
-                call_id: result.tool_use_id,
-                output: result.content,
-            })),
+            ...buildToolContinuationInput(response, results),
         ];
     }
 
@@ -533,7 +698,7 @@ export async function completeOpenAIText(params: {
             textVerbosity: params.textVerbosity,
             textFormat: params.textFormat,
         });
-        const text = outputText(result.response);
+        const text = extractCompletedOpenAIOutput(result.response).text;
         const usage = await recordOpenAIUsage({
             model: params.model,
             response: result.response,
