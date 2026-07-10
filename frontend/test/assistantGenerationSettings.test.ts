@@ -13,6 +13,7 @@ import {
   deserializeAssistantGenerationSettings,
   effectiveAssistantGenerationSettings,
   isGpt56Model,
+  persistAssistantGenerationSettings,
   resetAssistantSession,
   selectAssistantEffort,
   selectAssistantModel,
@@ -170,6 +171,52 @@ test("migrates legacy GPT values once into Standard mode", () => {
     assert.equal(migrated.reasoningMode, "standard", legacy);
     assert.equal(migrated.sessionKey, null, legacy);
   }
+});
+
+test("removes the legacy key only after a successful versioned write", () => {
+  const events: string[] = [];
+  const storage = {
+    setItem(key: string, value: string) {
+      events.push(`set:${key}:${JSON.parse(value).version}`);
+    },
+    removeItem(key: string) {
+      events.push(`remove:${key}`);
+    },
+  };
+
+  assert.equal(
+    persistAssistantGenerationSettings(
+      storage,
+      defaultAssistantGenerationSettings(),
+    ),
+    true,
+  );
+  assert.deepEqual(events, [
+    `set:${ASSISTANT_GENERATION_STORAGE_KEY}:1`,
+    `remove:${LEGACY_ASSISTANT_MODEL_STORAGE_KEY}`,
+  ]);
+});
+
+test("never removes the legacy key when the versioned write fails", () => {
+  const events: string[] = [];
+  const storage = {
+    setItem() {
+      events.push("set");
+      throw new Error("storage unavailable");
+    },
+    removeItem(key: string) {
+      events.push(`remove:${key}`);
+    },
+  };
+
+  assert.equal(
+    persistAssistantGenerationSettings(
+      storage,
+      defaultAssistantGenerationSettings(),
+    ),
+    false,
+  );
+  assert.deepEqual(events, ["set"]);
 });
 
 test("enabling Pro clamps None and Low to Medium without changing Standard", () => {

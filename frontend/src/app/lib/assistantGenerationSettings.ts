@@ -179,6 +179,33 @@ export function serializeAssistantGenerationSettings(
     return JSON.stringify({ version: 1, model, standardEffort });
 }
 
+export type AssistantGenerationSettingsStorage = {
+    setItem: (key: string, value: string) => void;
+    removeItem: (key: string) => void;
+};
+
+export function persistAssistantGenerationSettings(
+    storage: AssistantGenerationSettingsStorage,
+    state: AssistantGenerationSettingsState,
+): boolean {
+    try {
+        storage.setItem(
+            ASSISTANT_GENERATION_STORAGE_KEY,
+            serializeAssistantGenerationSettings(state),
+        );
+    } catch {
+        return false;
+    }
+
+    try {
+        storage.removeItem(LEGACY_ASSISTANT_MODEL_STORAGE_KEY);
+    } catch {
+        // The versioned preference already won hydration precedence. Storage
+        // implementations can deny removal independently of a successful set.
+    }
+    return true;
+}
+
 export function selectAssistantModel(
     state: AssistantGenerationSettingsState,
     model: string,
