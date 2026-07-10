@@ -14,6 +14,7 @@ import type {
     Tool,
 } from "openai/resources/responses/responses";
 import type {
+    AiObservabilityMetadata,
     JsonSchemaTextFormat,
     NormalizedToolCall,
     NormalizedToolResult,
@@ -32,6 +33,7 @@ import {
     recordLlmUsage,
     spendUsd,
     type LlmCost,
+    type RecordLlmUsageInput,
 } from "../llmSpend";
 import { safeErrorMessage } from "../safeError";
 
@@ -394,6 +396,92 @@ function aiInputMessages(
     return [{ role: "system", content: systemPrompt }, ...input];
 }
 
+export type NormalizedOpenAIUsage = {
+    provider: "openai";
+    model: string;
+    inputTokens: number;
+    cachedInputTokens: number;
+    cacheCreation5mTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    providerResponseId: string;
+};
+
+export function normalizeOpenAIUsage(response: Response): NormalizedOpenAIUsage {
+    return {
+        provider: "openai",
+        model: response.model,
+        inputTokens: response.usage?.input_tokens ?? 0,
+        cachedInputTokens:
+            response.usage?.input_tokens_details?.cached_tokens ?? 0,
+        cacheCreation5mTokens:
+            response.usage?.input_tokens_details?.cache_write_tokens ?? 0,
+        outputTokens: response.usage?.output_tokens ?? 0,
+        totalTokens: response.usage?.total_tokens ?? 0,
+        providerResponseId: response.id,
+    };
+}
+
+export function buildOpenAILedgerUsage(
+    response: Response,
+    params: Pick<StreamChatParams, "apiKeys" | "aiObservability">,
+): RecordLlmUsageInput {
+    const usage = normalizeOpenAIUsage(response);
+    return {
+        provider: usage.provider,
+        model: usage.model,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        cacheCreation5mTokens: usage.cacheCreation5mTokens,
+        outputTokens: usage.outputTokens,
+        providerResponseId: usage.providerResponseId,
+        billingSource: params.apiKeys?.sources?.openai ?? "account",
+        context: {
+            userId:
+                params.apiKeys?.ownerUserId ??
+                params.aiObservability?.distinctId,
+            route: params.aiObservability?.route,
+            chatId: params.aiObservability?.chatId,
+            projectId: params.aiObservability?.projectId,
+        },
+    };
+}
+
+export type OpenAIGenerationMetadata = {
+    requested_model: string | null;
+    resolved_model: string | null;
+    actual_response_model: string | null;
+    reasoning_mode: ReasoningMode | null;
+    reasoning_effort: ReasoningEffort | null;
+    streaming: boolean;
+    model_resolution_status:
+        | NonNullable<AiObservabilityMetadata["model_resolution_status"]>
+        | null;
+};
+
+export function buildOpenAIGenerationIdentity(input: {
+    resolvedModel: string;
+    actualResponseModel: string | null;
+    streaming: boolean;
+    metadata?: AiObservabilityMetadata;
+}): { model: string; metadata: OpenAIGenerationMetadata } {
+    return {
+        model: input.actualResponseModel ?? input.resolvedModel,
+        metadata: {
+            requested_model:
+                input.metadata?.requested_model ?? input.resolvedModel,
+            resolved_model:
+                input.metadata?.resolved_model ?? input.resolvedModel,
+            actual_response_model: input.actualResponseModel,
+            reasoning_mode: input.metadata?.reasoning_mode ?? null,
+            reasoning_effort: input.metadata?.reasoning_effort ?? null,
+            streaming: input.streaming,
+            model_resolution_status:
+                input.metadata?.model_resolution_status ?? "direct",
+        },
+    };
+}
+
 type RecordedOpenAIUsage = {
     inputTokens: number;
     outputTokens: number;
@@ -402,48 +490,35 @@ type RecordedOpenAIUsage = {
 };
 
 async function recordOpenAIUsage(input: {
-    model: string;
     response: Response;
     params: Pick<StreamChatParams, "apiKeys" | "aiObservability">;
 }): Promise<RecordedOpenAIUsage> {
-    const inputTokens = input.response.usage?.input_tokens ?? 0;
-    const cachedInputTokens =
-        input.response.usage?.input_tokens_details?.cached_tokens ?? 0;
-    const outputTokens = input.response.usage?.output_tokens ?? 0;
-    const totalTokens = input.response.usage?.total_tokens ?? 0;
-    const costInput = {
-        provider: "openai" as const,
-        model: input.model,
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-    };
-    const fallbackCost = calculateLlmCostNanos(costInput);
+    const normalized = normalizeOpenAIUsage(input.response);
+    const ledgerUsage = buildOpenAILedgerUsage(input.response, input.params);
+    const fallbackCost = calculateLlmCostNanos(ledgerUsage);
 
     try {
-        const recorded = await recordLlmUsage({
-            ...costInput,
-            providerResponseId: input.response.id,
-            billingSource: input.params.apiKeys?.sources?.openai ?? "account",
-            context: {
-                userId:
-                    input.params.apiKeys?.ownerUserId ??
-                    input.params.aiObservability?.distinctId,
-                route: input.params.aiObservability?.route,
-                chatId: input.params.aiObservability?.chatId,
-                projectId: input.params.aiObservability?.projectId,
-            },
-        });
+        const recorded = await recordLlmUsage(ledgerUsage);
         await Promise.all(
             recorded.newReports.map((report) => deliverSpendReport(report.id)),
         );
-        return { inputTokens, outputTokens, totalTokens, cost: recorded.cost };
+        return {
+            inputTokens: normalized.inputTokens,
+            outputTokens: normalized.outputTokens,
+            totalTokens: normalized.totalTokens,
+            cost: recorded.cost,
+        };
     } catch (error) {
         console.error(
             "[llm-spend] failed to record OpenAI usage",
             safeErrorMessage(error, "LLM usage accounting failed"),
         );
-        return { inputTokens, outputTokens, totalTokens, cost: fallbackCost };
+        return {
+            inputTokens: normalized.inputTokens,
+            outputTokens: normalized.outputTokens,
+            totalTokens: normalized.totalTokens,
+            cost: fallbackCost,
+        };
     }
 }
 
@@ -622,6 +697,12 @@ export async function streamOpenAI(
                       abortSignal: params.abortSignal,
                   });
         } catch (error) {
+            const generationIdentity = buildOpenAIGenerationIdentity({
+                resolvedModel: model,
+                actualResponseModel: null,
+                streaming,
+                metadata: params.aiObservability?.metadata,
+            });
             await captureAiGeneration({
                 distinctId: params.aiObservability?.distinctId,
                 traceId,
@@ -632,7 +713,7 @@ export async function streamOpenAI(
                 route: params.aiObservability?.route,
                 chatId: params.aiObservability?.chatId,
                 projectId: params.aiObservability?.projectId,
-                model,
+                model: generationIdentity.model,
                 provider: "openai",
                 stream: streaming,
                 latencySeconds: elapsedSeconds(requestStartedAt),
@@ -642,7 +723,7 @@ export async function streamOpenAI(
                 metadata: {
                     iteration: iter + 1,
                     tool_count: openaiTools.length,
-                    ...params.aiObservability?.metadata,
+                    ...generationIdentity.metadata,
                 },
             });
             throw error;
@@ -663,10 +744,12 @@ export async function streamOpenAI(
             fullText += completedOutput.text;
         }
 
-        const usage = await recordOpenAIUsage({
-            model,
-            response,
-            params,
+        const usage = await recordOpenAIUsage({ response, params });
+        const generationIdentity = buildOpenAIGenerationIdentity({
+            resolvedModel: model,
+            actualResponseModel: response.model,
+            streaming,
+            metadata: params.aiObservability?.metadata,
         });
 
         await captureAiGeneration({
@@ -679,7 +762,7 @@ export async function streamOpenAI(
             route: params.aiObservability?.route,
             chatId: params.aiObservability?.chatId,
             projectId: params.aiObservability?.projectId,
-            model,
+            model: generationIdentity.model,
             provider: "openai",
             stream: streaming,
             latencySeconds: result.latencySeconds,
@@ -698,7 +781,7 @@ export async function streamOpenAI(
                 iteration: iter + 1,
                 tool_count: openaiTools.length,
                 function_call_count: extractFunctionCalls(response).length,
-                ...params.aiObservability?.metadata,
+                ...generationIdentity.metadata,
             },
         });
 
@@ -751,9 +834,14 @@ export async function completeOpenAIText(params: {
         });
         const text = extractCompletedOpenAIOutput(result.response).text;
         const usage = await recordOpenAIUsage({
-            model: params.model,
             response: result.response,
             params,
+        });
+        const generationIdentity = buildOpenAIGenerationIdentity({
+            resolvedModel: params.model,
+            actualResponseModel: result.response.model,
+            streaming: false,
+            metadata: params.aiObservability?.metadata,
         });
         await captureAiGeneration({
             distinctId: params.aiObservability?.distinctId,
@@ -765,7 +853,7 @@ export async function completeOpenAIText(params: {
             route: params.aiObservability?.route,
             chatId: params.aiObservability?.chatId,
             projectId: params.aiObservability?.projectId,
-            model: params.model,
+            model: generationIdentity.model,
             provider: "openai",
             stream: false,
             latencySeconds: result.latencySeconds,
@@ -779,10 +867,16 @@ export async function completeOpenAIText(params: {
             ),
             outputCostUsd: spendUsd(usage.cost.outputCostNanos),
             totalCostUsd: spendUsd(usage.cost.totalCostNanos),
-            metadata: params.aiObservability?.metadata,
+            metadata: generationIdentity.metadata,
         });
         return text;
     } catch (error) {
+        const generationIdentity = buildOpenAIGenerationIdentity({
+            resolvedModel: params.model,
+            actualResponseModel: null,
+            streaming: false,
+            metadata: params.aiObservability?.metadata,
+        });
         await captureAiGeneration({
             distinctId: params.aiObservability?.distinctId,
             traceId,
@@ -793,14 +887,14 @@ export async function completeOpenAIText(params: {
             route: params.aiObservability?.route,
             chatId: params.aiObservability?.chatId,
             projectId: params.aiObservability?.projectId,
-            model: params.model,
+            model: generationIdentity.model,
             provider: "openai",
             stream: false,
             latencySeconds: elapsedSeconds(requestStartedAt),
             input: aiInputMessages(params.systemPrompt, params.user),
             output: "",
             error: safeErrorMessage(error),
-            metadata: params.aiObservability?.metadata,
+            metadata: generationIdentity.metadata,
         });
         throw error;
     }

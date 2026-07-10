@@ -36,6 +36,8 @@ const docketTool = {
 };
 
 function responseFixture(input: {
+  model?: string;
+  usage?: NonNullable<Response["usage"]>;
   outputText?: string;
   output?: ResponseOutputItem[];
   status?: Response["status"];
@@ -44,7 +46,8 @@ function responseFixture(input: {
 } = {}): Response {
   return {
     id: "resp_test",
-    model: "gpt-5.6-sol",
+    model: input.model ?? "gpt-5.6-sol",
+    usage: input.usage ?? null,
     output_text: input.outputText ?? "",
     output: input.output ?? [],
     status: input.status ?? "completed",
@@ -381,4 +384,149 @@ test("propagates aborts during a Standard stream without emitting later deltas",
   );
 
   assert.deepEqual(emitted, ["first"]);
+});
+
+test("normalizes usage from the actual response model including cache writes", () => {
+  const response = responseFixture({
+    model: "gpt-5.6-terra",
+    usage: {
+      input_tokens: 1_000_000,
+      input_tokens_details: {
+        cached_tokens: 200_000,
+        cache_write_tokens: 100_000,
+      },
+      output_tokens: 1_000_000,
+      output_tokens_details: { reasoning_tokens: 250_000 },
+      total_tokens: 2_000_000,
+    },
+  });
+
+  assert.deepEqual(adapter.normalizeOpenAIUsage(response), {
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    inputTokens: 1_000_000,
+    cachedInputTokens: 200_000,
+    cacheCreation5mTokens: 100_000,
+    outputTokens: 1_000_000,
+    totalTokens: 2_000_000,
+    providerResponseId: "resp_test",
+  });
+});
+
+test("builds the ledger record from response.model rather than the requested selection", () => {
+  const response = responseFixture({
+    model: "gpt-5.6-terra",
+    usage: {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 20, cache_write_tokens: 10 },
+      output_tokens: 50,
+      output_tokens_details: { reasoning_tokens: 5 },
+      total_tokens: 150,
+    },
+  });
+
+  const record = adapter.buildOpenAILedgerUsage(response, {
+    apiKeys: {
+      ownerUserId: "owner-1",
+      sources: { openai: "user_api_key" },
+    },
+    aiObservability: {
+      distinctId: "viewer-1",
+      route: "chat",
+      chatId: "chat-1",
+      projectId: "project-1",
+    },
+  });
+
+  assert.equal(record.model, "gpt-5.6-terra");
+  assert.equal(record.providerResponseId, "resp_test");
+  assert.equal(record.billingSource, "user_api_key");
+  assert.equal(record.context?.userId, "owner-1");
+  assert.equal(record.cachedInputTokens, 20);
+  assert.equal(record.cacheCreation5mTokens, 10);
+});
+
+test("prices the actual response model and leaves an unknown actual model unpriced", async () => {
+  const spend = await import("../src/lib/llmSpend");
+  const terra = adapter.normalizeOpenAIUsage(
+    responseFixture({
+      model: "gpt-5.6-terra",
+      usage: {
+        input_tokens: 1_000_000,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        output_tokens: 1_000_000,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 2_000_000,
+      },
+    }),
+  );
+  const unknown = { ...terra, model: "gpt-5.6-future" };
+
+  assert.equal(spend.calculateLlmCostNanos(terra).totalCostNanos, 17_500_000_000n);
+  assert.equal(spend.calculateLlmCostNanos(unknown).pricingStatus, "unpriced");
+});
+
+test("builds approved success metadata with actual response model as primary", () => {
+  const identity = adapter.buildOpenAIGenerationIdentity({
+    resolvedModel: "gpt-5.6-sol",
+    actualResponseModel: "gpt-5.6-terra",
+    streaming: false,
+    metadata: {
+      requested_model: "gpt-5.6-sol",
+      resolved_model: "gpt-5.6-sol",
+      reasoning_mode: "pro",
+      reasoning_effort: "high",
+      model_resolution_status: "direct",
+    },
+  });
+
+  assert.deepEqual(identity, {
+    model: "gpt-5.6-terra",
+    metadata: {
+      requested_model: "gpt-5.6-sol",
+      resolved_model: "gpt-5.6-sol",
+      actual_response_model: "gpt-5.6-terra",
+      reasoning_mode: "pro",
+      reasoning_effort: "high",
+      streaming: false,
+      model_resolution_status: "direct",
+    },
+  });
+});
+
+test("failure identity keeps resolved model, sets actual null, and drops unsafe metadata", () => {
+  const secret = "sk-proj-metadatasecretsecret";
+  const identity = adapter.buildOpenAIGenerationIdentity({
+    resolvedModel: "gpt-5.6-sol",
+    actualResponseModel: null,
+    streaming: true,
+    metadata: {
+      requested_model: "gpt-5.6-sol",
+      resolved_model: "gpt-5.6-sol",
+      reasoning_mode: "standard",
+      reasoning_effort: "medium",
+      model_resolution_status: "direct",
+      api_key: secret,
+      prompt: "privileged prompt text",
+      document_content: "private document body",
+      raw_provider_error: `authorization: Bearer ${secret}`,
+    },
+  });
+  const serialized = JSON.stringify(identity);
+
+  assert.equal(identity.model, "gpt-5.6-sol");
+  assert.equal(identity.metadata.actual_response_model, null);
+  assert.deepEqual(Object.keys(identity.metadata).sort(), [
+    "actual_response_model",
+    "model_resolution_status",
+    "reasoning_effort",
+    "reasoning_mode",
+    "requested_model",
+    "resolved_model",
+    "streaming",
+  ]);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("privileged prompt text"), false);
+  assert.equal(serialized.includes("private document body"), false);
+  assert.equal(serialized.includes("authorization"), false);
 });

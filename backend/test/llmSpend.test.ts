@@ -35,6 +35,65 @@ test("calculates GPT-5.5 input, cached-input, and output cost in nano-USD", asyn
   assert.equal(result.totalCostNanos, 34_100_000_000n);
 });
 
+test("prices every GPT-5.6 family model at its exact per-million rate", async () => {
+  const spend = await loadSpend();
+  const cases = [
+    ["gpt-5.6-sol", 35_000_000_000n],
+    ["gpt-5.6-terra", 17_500_000_000n],
+    ["gpt-5.6-luna", 7_000_000_000n],
+  ] as const;
+
+  for (const [model, expectedTotal] of cases) {
+    const result = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+
+    assert.equal(result.pricingStatus, "priced", model);
+    assert.equal(result.totalCostNanos, expectedTotal, model);
+  }
+});
+
+test("subtracts OpenAI cached and cache-write tokens exactly once", async () => {
+  const spend = await loadSpend();
+  const result = spend.calculateLlmCostNanos({
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    inputTokens: 1_000_000,
+    cachedInputTokens: 200_000,
+    cacheCreation5mTokens: 100_000,
+    outputTokens: 1_000_000,
+  });
+
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 3_500_000_000n);
+  assert.equal(result.cachedInputCostNanos, 725_000_000n);
+  assert.equal(result.outputCostNanos, 30_000_000_000n);
+  assert.equal(result.totalCostNanos, 34_225_000_000n);
+});
+
+test("retains historical GPT-5.5 and GPT-5.4 ledger pricing", async () => {
+  const spend = await loadSpend();
+  for (const model of [
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+  ]) {
+    const result = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+    });
+    assert.equal(result.pricingStatus, "priced", model);
+    assert.ok(result.totalCostNanos > 0n, model);
+  }
+});
+
 test("calculates Claude cache reads separately from standard input", async () => {
   const spend = await loadSpend();
   const result = spend.calculateLlmCostNanos({
