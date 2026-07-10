@@ -112,13 +112,14 @@ connectors.
   cache behavior while disabling obvious mutating tools such as
   create/update/delete plus `pp_api_request` pending a human-confirmation path.
 - Current deployed backend image tag:
-  `202607092340-upstream-port`.
+  `202607092215-admin-spend-reports`.
 - Current deployed frontend image tag:
-  `202607092340-upstream-port`.
-- The 2026-07-09 upstream-port rollout is live on `mike-api--0000036` and
-  `mike-web--0000036` with 100% traffic to the latest revision. It includes
-  the Docket-native assistant, court/version, workflow, and retention
-  migrations. The live health checks used:
+  `202607092230-admin-spend-reports`.
+- The 2026-07-10 admin spend reports rollout is live on `mike-api--0000037`
+  and `mike-web--0000037` with 100% traffic to the latest revision. It adds
+  server-enforced admin-only Privacy & Data controls, a durable GPT/Claude
+  spend ledger, $100 milestones, and the admin reporting dashboard. The live
+  health checks used:
   `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/health`,
   `https://mike-web.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/login`,
   and `https://docket.podlaskilegal.com/login`.
@@ -187,5 +188,11 @@ connectors.
   `backend/migrations/20260708_workflow_metadata_azure.sql`; it was applied
   inside the production `mike-api` container before the `0000035` backend
   revision was deployed.
+- The 2026-07-10 spend reporting rollout applied
+  `backend/migrations/20260709_04_admin_spend_reports.sql` before deploying
+  `mike-api--0000037`; it creates the account-state, report-delivery, and
+  GPT/Claude usage-ledger tables. Email delivery remains `not_configured`
+  until production is given both `RESEND_API_KEY` and a verified
+  `SPEND_REPORT_FROM` sender.
 - Azure CLI has a stale local default group on this machine, so use
   `--resource-group mike-prod-rg` explicitly for Azure commands.
