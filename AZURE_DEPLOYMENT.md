@@ -111,13 +111,14 @@ connectors.
   the connector for authenticated users and keeps existing read/status tool
   cache behavior while disabling obvious mutating tools such as
   create/update/delete plus `pp_api_request` pending a human-confirmation path.
-- Current deployed MCP backend image tag:
-  `202607082239-office-workflow-a3f18df`.
+- Current deployed backend image tag:
+  `202607092340-upstream-port`.
 - Current deployed frontend image tag:
-  `202607082239-office-workflow-a3f18df`.
-- The 2026-07-08 Office document and workflow metadata rollout is live on
-  `mike-api--0000035` and `mike-web--0000035` with 100% traffic to latest
-  revision. The live health checks used:
+  `202607092340-upstream-port`.
+- The 2026-07-09 upstream-port rollout is live on `mike-api--0000036` and
+  `mike-web--0000036` with 100% traffic to the latest revision. It includes
+  the Docket-native assistant, court/version, workflow, and retention
+  migrations. The live health checks used:
   `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/health`,
   `https://mike-web.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/login`,
   and `https://docket.podlaskilegal.com/login`.

@@ -41,7 +41,7 @@ export interface DocketDocument {
   status: "pending" | "processing" | "ready" | "error";
   created_at: string | null;
   updated_at?: string | null;
-  /** Max version_number across assistant_edit rows, null if doc is unedited. */
+  /** Highest active version number across user and assistant history. */
   latest_version_number?: number | null;
 }
 
@@ -80,8 +80,51 @@ export interface DocketEditAnnotation {
   status: "pending" | "accepted" | "rejected";
 }
 
+export type DocketAskInputItem =
+  | {
+      id: string;
+      kind: "choice";
+      question: string;
+      options: { value: string }[];
+      allow_other: boolean;
+      other_label: string;
+      response_prefix?: string;
+    }
+  | {
+      id: string;
+      kind: "documents";
+      document_types: string[];
+      response_prefix?: string;
+    };
+
+export type DocketAskInputResponseItem =
+  | {
+      id: string;
+      kind: "choice";
+      question?: string;
+      answer?: string;
+      skipped?: boolean;
+    }
+  | {
+      id: string;
+      kind: "documents";
+      filenames?: string[];
+      skipped?: boolean;
+    };
+
+export type DocketAskInputsResponse = {
+  request_id: string;
+  responses: DocketAskInputResponseItem[];
+};
+
 export type AssistantEvent =
   | { type: "reasoning"; text: string; isStreaming?: boolean }
+  | {
+      type: "ask_inputs";
+      request_id: string;
+      items: DocketAskInputItem[];
+    }
+  | ({ type: "ask_inputs_response" } & DocketAskInputsResponse)
   | {
         type: "tool_call_start";
         name: string;
@@ -217,6 +260,8 @@ export interface DocketMessage {
   workflow?: { id: string; title: string };
   model?: string;
   annotations?: DocketCitationAnnotation[];
+  citations?: DocketCitation[];
+  citationStatus?: "started" | "partial" | "final";
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
@@ -227,6 +272,8 @@ export interface DocketMessage {
 export interface CitationQuote {
   page: number;
   quote: string;
+  sheet?: string;
+  cell?: string;
 }
 
 /**
@@ -238,6 +285,7 @@ export interface CitationQuote {
  */
 export interface DocketCitationAnnotation {
   type: "citation_data";
+  kind?: "document";
   ref: number;
   doc_id: string;
   document_id: string;
@@ -246,7 +294,37 @@ export interface DocketCitationAnnotation {
   filename: string;
   page: number | string;
   quote: string;
+  sheet?: string;
+  cell?: string;
+  quotes?: DocketDocumentCitationQuote[];
 }
+
+export interface DocketDocumentCitationQuote {
+  page: number | string;
+  quote: string;
+  sheet?: string;
+  cell?: string;
+}
+
+export interface DocketCaseCitation {
+  type: "citation_data";
+  kind: "case";
+  ref: number;
+  cluster_id: number;
+  case_name?: string | null;
+  citation?: string | null;
+  url?: string | null;
+  pdfUrl?: string | null;
+  dateFiled?: string | null;
+  quotes: {
+    opinionId: number | null;
+    type: string | null;
+    author: string | null;
+    quote: string;
+  }[];
+}
+
+export type DocketCitation = DocketCitationAnnotation | DocketCaseCitation;
 
 const PAGE_BREAK_SENTINEL = "[[PAGE_BREAK]]";
 
@@ -267,25 +345,80 @@ export function expandCitationToEntries(
     const endPage = parseInt(rangeMatch[2], 10);
     const [before, after] = a.quote.split(PAGE_BREAK_SENTINEL);
     return [
-      { page: startPage, quote: before.trim() },
-      { page: endPage, quote: after.trim() },
+      {
+        page: startPage,
+        quote: before.trim(),
+        sheet: a.sheet,
+        cell: a.cell,
+      },
+      {
+        page: endPage,
+        quote: after.trim(),
+        sheet: a.sheet,
+        cell: a.cell,
+      },
     ].filter((e) => e.quote.length > 0);
   }
   const pageNum =
     typeof a.page === "number" ? a.page : parseInt(String(a.page), 10);
   if (!Number.isFinite(pageNum)) return [];
-  return [{ page: pageNum, quote: a.quote }];
+  return [{
+    page: pageNum,
+    quote: a.quote,
+    sheet: a.sheet,
+    cell: a.cell,
+  }];
+}
+
+export function isDocumentCitation(
+  citation: DocketCitation,
+): citation is DocketCitationAnnotation {
+  return citation.kind !== "case";
+}
+
+export function getDocumentCitationQuotes(
+  citation: DocketCitationAnnotation,
+): DocketDocumentCitationQuote[] {
+  return citation.quotes?.length
+    ? citation.quotes
+    : [
+        {
+          page: citation.page,
+          quote: citation.quote,
+          sheet: citation.sheet,
+          cell: citation.cell,
+        },
+      ];
 }
 
 /** Format the page(s) of a citation for display, e.g. "Page 3" or "Page 41-42". */
-export function formatCitationPage(a: DocketCitationAnnotation): string {
+export function formatCitationPage(a: DocketCitation): string {
+  if (!isDocumentCitation(a)) {
+    return a.citation ?? a.case_name ?? `Case ${a.cluster_id}`;
+  }
+  const quotes = getDocumentCitationQuotes(a);
+  const cells = quotes
+    .map((quote) =>
+      quote.sheet && quote.cell
+        ? `${quote.sheet}!${quote.cell}`
+        : quote.cell ?? quote.sheet ?? "",
+    )
+    .filter(Boolean);
+  if (cells.length) return Array.from(new Set(cells)).join(", ");
   if (typeof a.page === "string") return `Page ${a.page}`;
   return `Page ${a.page}`;
 }
 
 /** Produce a reader-friendly version of the quote (replaces [[PAGE_BREAK]] with "..."). */
-export function displayCitationQuote(a: DocketCitationAnnotation): string {
-  return a.quote.replaceAll(PAGE_BREAK_SENTINEL, "...");
+export function displayCitationQuote(a: DocketCitation): string {
+  if (!isDocumentCitation(a)) {
+    return a.quotes
+      .map((quote) => quote.quote.replaceAll(PAGE_BREAK_SENTINEL, "..."))
+      .join(" / ");
+  }
+  return getDocumentCitationQuotes(a)
+    .map((quote) => quote.quote.replaceAll(PAGE_BREAK_SENTINEL, "..."))
+    .join(" / ");
 }
 
 // Tabular Review
@@ -316,6 +449,8 @@ export interface TabularReview {
   title: string | null;
   columns_config: ColumnConfig[] | null;
   workflow_id: string | null;
+  /** Stable application catalog ID when this review started from a system workflow. */
+  system_workflow_id?: string | null;
   practice?: string | null;
   /** Per-review email list. Used so standalone (project_id null) reviews can be shared directly. */
   shared_with?: string[];
@@ -354,9 +489,31 @@ export interface DocketWorkflow {
   language?: string | null;
   practice?: string | null;
   jurisdictions?: string[] | null;
+  /** Server-owned description for Docket system workflows, if supplied. */
+  description?: string | null;
+  /** Immutable catalog revision for a Docket system workflow. */
+  version?: string | null;
   shared_by_name?: string | null;
   allow_edit?: boolean;
   is_owner?: boolean;
+  open_source_submission?: DocketWorkflowContributionSubmission | null;
+}
+
+export type DocketWorkflowContributionStatus =
+  | "pending_review"
+  | "accepted"
+  | "declined"
+  | "withdrawn";
+
+export interface DocketWorkflowContributionSubmission {
+  id: string;
+  attribution: "named" | "docket-community";
+  public_name: string | null;
+  status: DocketWorkflowContributionStatus;
+  submitted_at: string;
+  updated_at: string;
+  reviewed_at?: string | null;
+  review_notes?: string | null;
 }
 
 // API helpers

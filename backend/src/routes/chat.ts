@@ -9,12 +9,25 @@ import {
     extractAnnotations,
     runLLMStream,
     type ChatMessage,
+    type DocIndex,
 } from "../lib/chatTools";
-import { completeText } from "../lib/llm";
+import {
+    appendCancellationMarker,
+    AssistantStreamAbortError,
+    completeText,
+    isAbortError,
+} from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine } from "../lib/chatErrors";
+import { safeErrorLog } from "../lib/safeError";
 import { isAdminUser } from "../lib/userRoles";
+import {
+    consumeAskInputsResponse,
+    createCitationSseBridge,
+    extractRichCitations,
+    parseAskInputsResponsePayload,
+} from "../lib/assistantContracts";
 
 export const chatRouter = Router();
 
@@ -104,6 +117,22 @@ function parseOptionalModel(value: unknown):
         return { ok: false, detail: "model must be a non-empty string" };
     }
     return { ok: true, model: value.trim() };
+}
+
+function replaceLatestUserMessage(
+    messages: ChatMessage[],
+    content: string,
+): ChatMessage[] {
+    const index = [...messages]
+        .map((message, i) => (message.role === "user" ? i : -1))
+        .reverse()
+        .find((i) => i >= 0);
+    if (index === undefined) {
+        return [...messages, { role: "user", content }];
+    }
+    const next = messages.slice();
+    next[index] = { ...next[index], content };
+    return next;
 }
 
 async function validateAccessibleProjectId(
@@ -445,7 +474,7 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
 
         res.json({ title });
     } catch (err) {
-        console.error("[generate-title]", err);
+        console.error("[generate-title]", safeErrorLog(err));
         res.status(500).json({ detail: "Failed to generate title" });
     }
 });
@@ -472,6 +501,19 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     const parsedModel = parseOptionalModel(body.model);
     if (!parsedModel.ok) {
         return void res.status(400).json({ detail: parsedModel.detail });
+    }
+    const parsedAskInputsResponse = parseAskInputsResponsePayload(
+        body.ask_inputs_response,
+    );
+    if (!parsedAskInputsResponse.ok) {
+        return void res
+            .status(400)
+            .json({ detail: parsedAskInputsResponse.detail });
+    }
+    if (parsedAskInputsResponse.response && !parsedChatId.chatId) {
+        return void res.status(400).json({
+            detail: "ask_inputs_response requires an existing chat_id",
+        });
     }
 
     const messages = parsedMessages.messages;
@@ -533,7 +575,10 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             .select("id, title")
             .single();
         if (error || !newChat) {
-            console.error("[chat/stream] failed to create chat", error);
+            console.error(
+                "[chat/stream] failed to create chat",
+                safeErrorLog(error),
+            );
             return void res
                 .status(500)
                 .json({ detail: "Failed to create chat" });
@@ -544,7 +589,26 @@ chatRouter.post("/", requireAuth, async (req, res) => {
 
     devLog("[chat/stream] resolved chatId", chatId);
 
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    let streamMessages = messages;
+    let isAskInputsContinuation = false;
+    if (parsedAskInputsResponse.response) {
+        const consumed = await consumeAskInputsResponse(db, {
+            chatId,
+            submittedByUserId: userId,
+            response: parsedAskInputsResponse.response,
+        });
+        if (!consumed.ok) {
+            return void res
+                .status(consumed.status)
+                .json({ detail: consumed.detail });
+        }
+        streamMessages = replaceLatestUserMessage(messages, consumed.content);
+        isAskInputsContinuation = true;
+    }
+
+    const lastUser = [...streamMessages]
+        .reverse()
+        .find((m) => m.role === "user");
     if (lastUser) {
         await db.from("chat_messages").insert({
             chat_id: chatId,
@@ -562,6 +626,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             role: "assistant",
             content: null,
             annotations: null,
+            citations: null,
         })
         .select("id")
         .maybeSingle();
@@ -575,16 +640,24 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     res.flushHeaders();
 
     const write = createSafeStreamWriter(res);
+    const citationSse = createCitationSseBridge(write);
+    const streamAbort = new AbortController();
+    let streamFinished = false;
+    let streamDocIndex: DocIndex = {};
+    res.on("close", () => {
+        if (!streamFinished) streamAbort.abort();
+    });
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
 
         const { docIndex, docStore } = await buildDocContext(
-            messages,
+            streamMessages,
             userId,
             db,
             chatId,
         );
+        streamDocIndex = docIndex;
         const docAvailability = Object.entries(docIndex).map(
             ([doc_id, info]) => ({
                 doc_id,
@@ -592,7 +665,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             }),
         );
         const enrichedMessages = await enrichWithPriorEvents(
-            messages,
+            streamMessages,
             chatId,
             db,
             docIndex,
@@ -623,13 +696,15 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             docIndex,
             userId,
             db,
-            write,
+            write: citationSse.write,
             workflowStore,
             model,
             apiKeys,
             includeResearchTools: legalResearchUs,
             chatId,
+            assistantMessageId,
             projectId: resolvedProjectId,
+            signal: streamAbort.signal,
         });
 
         devLog("[chat/stream] LLM stream finished", {
@@ -638,9 +713,12 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         });
 
         const annotations = extractAnnotations(fullText, docIndex, events);
+        const citations = extractRichCitations(fullText, docIndex, events);
+        citationSse.finish(citations);
         const assistantPayload = {
             content: events.length ? events : null,
             annotations: annotations.length ? annotations : null,
+            citations: citations.length ? citations : null,
         };
         if (assistantMessageId) {
             await db
@@ -655,14 +733,66 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             });
         }
 
-        if (!chatTitle && lastUser?.content) {
+        if (!chatTitle && !isAskInputsContinuation && lastUser?.content) {
             await db
                 .from("chats")
                 .update({ title: lastUser.content.slice(0, 120) })
                 .eq("id", chatId);
         }
     } catch (err) {
-        console.error("[chat/stream] error:", err);
+        if (isAbortError(err)) {
+            devLog("[chat/stream] client aborted stream", { chatId });
+            const partialEvents = appendCancellationMarker(
+                err instanceof AssistantStreamAbortError ? err.events : [],
+            );
+            const annotations =
+                err instanceof AssistantStreamAbortError
+                    ? extractAnnotations(
+                          err.fullText,
+                          streamDocIndex,
+                          partialEvents,
+                      )
+                    : [];
+            const citations =
+                err instanceof AssistantStreamAbortError
+                    ? extractRichCitations(
+                          err.fullText,
+                          streamDocIndex,
+                          partialEvents,
+                      )
+                    : [];
+            const assistantPayload = {
+                content: partialEvents.length ? partialEvents : null,
+                annotations: annotations.length ? annotations : null,
+                citations: citations.length ? citations : null,
+            };
+            if (assistantMessageId) {
+                const { error: saveError } = await db
+                    .from("chat_messages")
+                    .update(assistantPayload)
+                    .eq("id", assistantMessageId);
+                if (saveError)
+                    console.error(
+                        "[chat/stream] failed to save cancelled assistant message",
+                        safeErrorLog(saveError),
+                    );
+            } else {
+                const { error: saveError } = await db
+                    .from("chat_messages")
+                    .insert({
+                        chat_id: chatId,
+                        role: "assistant",
+                        ...assistantPayload,
+                    });
+                if (saveError)
+                    console.error(
+                        "[chat/stream] failed to save cancelled assistant message",
+                        safeErrorLog(saveError),
+                    );
+            }
+            return;
+        }
+        console.error("[chat/stream] error:", safeErrorLog(err));
         if (assistantMessageId) {
             await db
                 .from("chat_messages")
@@ -674,6 +804,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
                         },
                     ],
                     annotations: null,
+                    citations: null,
                 })
                 .eq("id", assistantMessageId);
         }
@@ -684,6 +815,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             /* ignore */
         }
     } finally {
+        streamFinished = true;
         res.end();
     }
 });

@@ -40,6 +40,7 @@ export const TABULAR_MODELS: ModelOption[] = [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
     { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Anthropic" },
     { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Anthropic" },
+    { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
     { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
     {
         id: "gemini-3.1-flash-lite-preview",

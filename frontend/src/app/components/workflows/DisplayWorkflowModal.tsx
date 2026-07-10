@@ -396,7 +396,10 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                 title: wf.title,
                 document_ids: docIds,
                 columns_config: wf.columns_config || [],
-                workflow_id: wf.is_system ? undefined : wf.id,
+                // The API resolves both Docket system and authorized custom
+                // templates server-side, so a browser cannot alter a selected
+                // workflow's stored column configuration in transit.
+                workflow_id: wf.id,
                 project_id: projectId,
             });
             handleClose();

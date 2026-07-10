@@ -19,6 +19,8 @@ import {
     Pencil,
     Table2,
     Users,
+    Copy,
+    Trash2,
 } from "lucide-react";
 import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
 import {
@@ -43,6 +45,9 @@ import {
     listDocumentVersions,
     uploadDocumentVersion,
     renameDocumentVersion,
+    copyDocumentVersion,
+    replaceDocumentVersionFile,
+    deleteDocumentVersion,
     getProjectPeople,
     type DocketDocumentVersion,
 } from "@/app/lib/docketApi";
@@ -69,13 +74,19 @@ import { UploadNewVersionModal } from "@/app/components/shared/UploadNewVersionM
 import { DocViewModal } from "@/app/components/shared/DocViewModal";
 import { AddNewTRModal } from "@/app/components/tabular/AddNewTRModal";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
+import {
+    projectWorkspaceHref,
+    projectWorkspaceTabFromLegacyQuery,
+    PROJECT_WORKSPACE_TABS,
+    type ProjectWorkspaceTab,
+} from "./projectWorkspace";
 
 interface Props {
     projectId: string;
-    initialTab?: Tab;
+    initialTab?: ProjectWorkspaceTab;
 }
 
-type Tab = "documents" | "assistant" | "reviews";
+type Tab = ProjectWorkspaceTab;
 
 type ContextMenu = {
     x: number;
@@ -146,6 +157,10 @@ function DocVersionHistory({
     onDownloadVersion,
     onOpenVersion,
     onRenameVersion,
+    onCopyVersion,
+    onReplaceVersion,
+    onDeleteVersion,
+    canManageVersions = true,
 }: {
     docId: string;
     filename: string;
@@ -165,11 +180,22 @@ function DocVersionHistory({
         versionId: string,
         displayName: string | null,
     ) => Promise<void> | void;
+    onCopyVersion?: (versionId: string) => Promise<void> | void;
+    onReplaceVersion?: (
+        versionId: string,
+        file: File,
+        displayName: string,
+    ) => Promise<void> | void;
+    onDeleteVersion?: (versionId: string) => Promise<void> | void;
+    canManageVersions?: boolean;
 }) {
     const [editingVersionId, setEditingVersionId] = useState<string | null>(
         null,
     );
     const [editingValue, setEditingValue] = useState("");
+    const [busyVersionId, setBusyVersionId] = useState<string | null>(null);
+    const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
+    const replaceInputRef = useRef<HTMLInputElement>(null);
 
     const commit = async (versionId: string) => {
         const trimmed = editingValue.trim();
@@ -203,10 +229,78 @@ function DocVersionHistory({
             </div>
         );
     }
+    const activeVersionCount = versions.filter((v) => !v.deleted_at).length;
+    const replaceAccept = (version: DocketDocumentVersion) => {
+        const type = version.file_type?.toLowerCase();
+        if (type === "pdf") return ".pdf";
+        if (type === "doc" || type === "docx") return ".doc,.docx";
+        if (type === "xlsx") return ".xlsx";
+        if (type === "xls") return ".xls";
+        if (type === "xlsm") return ".xlsm";
+        if (type === "ppt") return ".ppt";
+        if (type === "pptx") return ".pptx";
+        return ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.ppt,.pptx";
+    };
+
+    async function runVersionAction(
+        versionId: string,
+        action: () => Promise<void> | void,
+    ) {
+        if (busyVersionId) return;
+        setBusyVersionId(versionId);
+        try {
+            await action();
+        } catch (error) {
+            console.error("document version action failed", error);
+        } finally {
+            setBusyVersionId(null);
+        }
+    }
+
+    function requestReplace(versionId: string) {
+        if (!canManageVersions || busyVersionId) return;
+        setReplaceTargetId(versionId);
+        window.setTimeout(() => replaceInputRef.current?.click(), 0);
+    }
+
+    async function handleReplacementPicked(
+        event: React.ChangeEvent<HTMLInputElement>,
+    ) {
+        const file = event.target.files?.[0] ?? null;
+        event.target.value = "";
+        const versionId = replaceTargetId;
+        setReplaceTargetId(null);
+        if (!file || !versionId || !onReplaceVersion) return;
+        if (
+            !window.confirm(
+                "Replace this version's file? This changes the selected historical version.",
+            )
+        ) {
+            return;
+        }
+        await runVersionAction(versionId, () =>
+            onReplaceVersion(versionId, file, file.name),
+        );
+    }
+
     // Most recent version first.
     const ordered = [...versions].reverse();
     return (
         <>
+            <input
+                ref={replaceInputRef}
+                type="file"
+                className="hidden"
+                accept={
+                    replaceTargetId
+                        ? replaceAccept(
+                              versions.find((version) => version.id === replaceTargetId) ??
+                                  versions[0]!,
+                          )
+                        : undefined
+                }
+                onChange={handleReplacementPicked}
+            />
             {ordered.map((v) => {
                 const numberLabel =
                     typeof v.version_number === "number" && v.version_number >= 1
@@ -226,20 +320,26 @@ function DocVersionHistory({
                           minute: "2-digit",
                       });
                 const isEditing = editingVersionId === v.id;
+                const deleted = !!v.deleted_at;
+                const busy = busyVersionId === v.id;
                 return (
                     <div
                         key={`ver-${docId}-${v.id}`}
                         onClick={() => {
-                            if (isEditing) return;
+                            if (isEditing || deleted) return;
                             onOpenVersion?.(v.id, displayLabel);
                         }}
-                        className="group flex items-center h-9 pr-8 border-b border-gray-50 bg-gray-50/60 text-xs text-gray-600 cursor-pointer hover:bg-gray-100/80 transition-colors"
+                        className={`group flex items-center h-9 border-b border-gray-50 bg-gray-50/60 text-xs text-gray-600 transition-colors ${
+                            deleted
+                                ? "cursor-not-allowed opacity-50"
+                                : "cursor-pointer hover:bg-gray-100/80"
+                        }`}
                     >
                         <div className={`sticky left-0 z-[60] ${CHECK_W} bg-gray-50/60 group-hover:bg-gray-100/80 self-stretch`} style={treeControlCellStyle(depth)} />
                         <div className={`sticky left-8 z-[60] ${NAME_COL_W} bg-gray-50/60 group-hover:bg-gray-100/80 p-2`} style={treeNameCellStyle(depth)}>
                         <div className="flex items-center gap-2">
                             <span className="shrink-0 text-gray-400">↳</span>
-                            {isEditing ? (
+                            {isEditing && !deleted ? (
                                 <input
                                     autoFocus
                                     value={editingValue}
@@ -263,7 +363,7 @@ function DocVersionHistory({
                                     {displayLabel}
                                 </span>
                             )}
-                            {!isEditing && onRenameVersion && (
+                            {!isEditing && !deleted && onRenameVersion && (
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
@@ -278,23 +378,94 @@ function DocVersionHistory({
                             )}
                             <span className="text-gray-400 truncate">{dateLabel}</span>
                             <span className="text-gray-300 shrink-0">·</span>
-                            <span className="text-gray-400 truncate">{v.source}</span>
+                            <span className="text-gray-400 truncate">
+                                {deleted ? "deleted" : v.source}
+                            </span>
                         </div>
                         </div>
                         <div className="ml-auto w-20 shrink-0" />
                         <div className="w-24 shrink-0" />
                         <div className="ml-auto w-20 shrink-0" />
-                        <div className="w-8 shrink-0 flex justify-end">
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDownloadVersion(docId, v.id, filename);
-                                }}
-                                title="Download this version"
-                                className="flex items-center justify-center w-6 h-6 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
-                            >
-                                <Download className="h-3.5 w-3.5" />
-                            </button>
+                        <div className="w-28 shrink-0 flex justify-end">
+                            {!deleted ? (
+                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            void runVersionAction(v.id, () =>
+                                                onCopyVersion?.(v.id),
+                                            );
+                                        }}
+                                        disabled={!onCopyVersion || busy}
+                                        title="Copy as a new current version"
+                                        className="flex items-center justify-center w-6 h-6 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors disabled:opacity-40"
+                                    >
+                                        {busy && onCopyVersion ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Copy className="h-3.5 w-3.5" />
+                                        )}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            requestReplace(v.id);
+                                        }}
+                                        disabled={!canManageVersions || busy}
+                                        title="Replace this version file"
+                                        className="flex items-center justify-center w-6 h-6 rounded text-blue-500 hover:text-blue-700 hover:bg-blue-50 transition-colors disabled:opacity-40"
+                                    >
+                                        <Upload className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onDownloadVersion(docId, v.id, filename);
+                                        }}
+                                        title="Download this version"
+                                        className="flex items-center justify-center w-6 h-6 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+                                    >
+                                        <Download className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (
+                                                !canManageVersions ||
+                                                activeVersionCount <= 1 ||
+                                                !window.confirm(
+                                                    "Delete this version? Its stored file will no longer be available.",
+                                                )
+                                            ) {
+                                                return;
+                                            }
+                                            void runVersionAction(v.id, () =>
+                                                onDeleteVersion?.(v.id),
+                                            );
+                                        }}
+                                        disabled={
+                                            !canManageVersions ||
+                                            !onDeleteVersion ||
+                                            activeVersionCount <= 1 ||
+                                            busy
+                                        }
+                                        title={
+                                            activeVersionCount <= 1
+                                                ? "The only version cannot be deleted"
+                                                : "Delete this version"
+                                        }
+                                        className="flex items-center justify-center w-6 h-6 rounded text-red-500 hover:text-red-700 hover:bg-red-50 transition-colors disabled:opacity-40"
+                                    >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
+                            ) : (
+                                <span className="text-[10px] text-gray-400">Deleted</span>
+                            )}
                         </div>
                     </div>
                 );
@@ -311,10 +482,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     const [loading, setLoading] = useState(true);
     const searchParams = useSearchParams();
     const tabParam = searchParams.get("tab");
-    const tab: Tab =
-        tabParam === "assistant" || tabParam === "reviews"
-            ? tabParam
-            : initialTab;
+    const tab = projectWorkspaceTabFromLegacyQuery(tabParam, initialTab);
     const [addDocsOpen, setAddDocsOpen] = useState(false);
     const [peopleModalOpen, setPeopleModalOpen] = useState(false);
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
@@ -468,6 +636,43 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
         }
     }
 
+    async function refreshDocumentVersionState(docId: string) {
+        const [updatedProject, versionResult] = await Promise.all([
+            getProject(projectId),
+            listDocumentVersions(docId),
+        ]);
+        setProject(updatedProject);
+        setVersionsByDocId((prev) => {
+            const next = new Map(prev);
+            next.set(docId, versionResult.versions);
+            return next;
+        });
+        setExpandedVersionDocIds((prev) => new Set([...prev, docId]));
+    }
+
+    async function handleCopyVersion(docId: string, versionId: string) {
+        await copyDocumentVersion(docId, versionId);
+        await refreshDocumentVersionState(docId);
+    }
+
+    async function handleReplaceVersion(
+        docId: string,
+        versionId: string,
+        file: File,
+        displayName: string,
+    ) {
+        await replaceDocumentVersionFile(docId, versionId, file, displayName);
+        await refreshDocumentVersionState(docId);
+    }
+
+    async function handleDeleteVersion(docId: string, versionId: string) {
+        await deleteDocumentVersion(docId, versionId);
+        if (viewingDoc?.id === docId && viewingDocVersion?.id === versionId) {
+            setViewingDocVersion(null);
+        }
+        await refreshDocumentVersionState(docId);
+    }
+
     // Inline rename for chats and reviews
     const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
     const [renameChatValue, setRenameChatValue] = useState("");
@@ -496,9 +701,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     const { saveChat } = useChatHistoryContext();
 
     function handleTabChange(newTab: Tab) {
-        const base = `/projects/${projectId}`;
-        const url = newTab === "documents" ? base : `${base}?tab=${newTab}`;
-        router.push(url);
+        router.push(projectWorkspaceHref(projectId, newTab));
     }
 
     useEffect(() => {
@@ -745,6 +948,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
         _projectId?: string,
         documentIds?: string[],
         columnsConfig?: ColumnConfig[] | null,
+        workflowId?: string,
     ) {
         setCreatingReview(true);
         try {
@@ -753,6 +957,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                 title: title || undefined,
                 document_ids: documentIds ?? docs.map((d) => d.id),
                 columns_config: columnsConfig ?? [],
+                ...(workflowId ? { workflow_id: workflowId } : {}),
                 project_id: projectId,
             });
             router.push(`/projects/${projectId}/tabular-reviews/${review.id}`);
@@ -1122,6 +1327,25 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                     onRenameVersion={(versionId, displayName) =>
                                         handleRenameVersion(doc.id, versionId, displayName)
                                     }
+                                    onCopyVersion={(versionId) =>
+                                        handleCopyVersion(doc.id, versionId)
+                                    }
+                                    onReplaceVersion={(versionId, file, displayName) =>
+                                        handleReplaceVersion(
+                                            doc.id,
+                                            versionId,
+                                            file,
+                                            displayName,
+                                        )
+                                    }
+                                    onDeleteVersion={(versionId) =>
+                                        handleDeleteVersion(doc.id, versionId)
+                                    }
+                                    canManageVersions={
+                                        !doc.user_id ||
+                                        !user?.id ||
+                                        doc.user_id === user.id
+                                    }
                                 />
                             )}
                         </div>
@@ -1425,11 +1649,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
             </div>
 
             <ToolbarTabs
-                tabs={[
-                    { id: "documents", label: "Documents" },
-                    { id: "assistant", label: "Assistant" },
-                    { id: "reviews", label: "Tabular Reviews" },
-                ]}
+                tabs={PROJECT_WORKSPACE_TABS}
                 active={tab}
                 onChange={handleTabChange}
                 actions={
@@ -1614,6 +1834,25 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                                                         }}
                                                         onRenameVersion={(versionId, displayName) =>
                                                             handleRenameVersion(doc.id, versionId, displayName)
+                                                        }
+                                                        onCopyVersion={(versionId) =>
+                                                            handleCopyVersion(doc.id, versionId)
+                                                        }
+                                                        onReplaceVersion={(versionId, file, displayName) =>
+                                                            handleReplaceVersion(
+                                                                doc.id,
+                                                                versionId,
+                                                                file,
+                                                                displayName,
+                                                            )
+                                                        }
+                                                        onDeleteVersion={(versionId) =>
+                                                            handleDeleteVersion(doc.id, versionId)
+                                                        }
+                                                        canManageVersions={
+                                                            !doc.user_id ||
+                                                            !user?.id ||
+                                                            doc.user_id === user.id
                                                         }
                                                     />
                                                 )}

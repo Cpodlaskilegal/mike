@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { DocPanel, type DocPanelMode } from "../shared/DocPanel";
+import { CaseLawPanel, type CaseTab } from "./CaseLawPanel";
 import type {
     DocketCitationAnnotation,
     DocketEditAnnotation,
@@ -42,7 +43,13 @@ export type EditTab = CommonTab & {
     edit: DocketEditAnnotation;
 };
 
-export type AssistantSidePanelTab = DocumentTab | CitationTab | EditTab;
+export type { CaseTab } from "./CaseLawPanel";
+
+export type AssistantSidePanelTab =
+    | DocumentTab
+    | CitationTab
+    | EditTab
+    | CaseTab;
 
 interface Props {
     tabs: AssistantSidePanelTab[];
@@ -164,7 +171,14 @@ export function AssistantSidePanel({
                 <div className="flex-1 flex items-end gap-1 overflow-x-auto pl-2 pr-2">
                     {tabs.map((tab) => {
                         const isActive = tab.id === active.id;
+                        const title =
+                            tab.kind === "case"
+                                ? [tab.caseName, tab.citation]
+                                      .filter(Boolean)
+                                      .join(", ") || "Court opinion"
+                                : tab.filename;
                         const showVersionBadge =
+                            tab.kind !== "case" &&
                             typeof tab.versionNumber === "number" &&
                             Number.isFinite(tab.versionNumber) &&
                             tab.versionNumber > 1;
@@ -180,9 +194,9 @@ export function AssistantSidePanel({
                             >
                                 <span
                                     className={`min-w-0 flex-1 truncate text-xs ${isActive ? "font-medium" : "font-normal"}`}
-                                    title={tab.filename}
+                                    title={title}
                                 >
-                                    {tab.filename}
+                                    {title}
                                 </span>
                                 {showVersionBadge && (
                                     <span
@@ -223,6 +237,17 @@ export function AssistantSidePanel({
             <div className="flex-1 min-h-0 relative">
                 {tabs.map((tab) => {
                     const isActive = tab.id === active.id;
+                    if (tab.kind === "case") {
+                        return (
+                            <div
+                                key={tab.id}
+                                className={`absolute inset-0 flex flex-col ${isActive ? "" : "invisible pointer-events-none"}`}
+                                aria-hidden={!isActive}
+                            >
+                                <CaseLawPanel tab={tab} />
+                            </div>
+                        );
+                    }
                     const mode: DocPanelMode =
                         tab.kind === "citation"
                             ? {

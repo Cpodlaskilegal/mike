@@ -6,6 +6,7 @@ import type {
     NormalizedToolCall,
     NormalizedToolResult,
 } from "./types";
+import { throwIfAborted } from "./types";
 import { toClaudeTools } from "./tools";
 
 type ContentBlock =
@@ -76,6 +77,7 @@ export async function streamClaude(
     let fullText = "";
 
     for (let iter = 0; iter < maxIter; iter++) {
+        throwIfAborted(params.abortSignal);
         const stream = anthropic.messages.stream({
             model,
             system: systemPrompt,
@@ -86,6 +88,11 @@ export async function streamClaude(
             max_tokens: MAX_TOKENS,
             ...thinkingOptions(model, enableThinking),
             // Extended thinking requires temperature to be default (omitted).
+        }, { signal: params.abortSignal });
+
+        const abortStream = () => stream.abort();
+        params.abortSignal?.addEventListener("abort", abortStream, {
+            once: true,
         });
 
         let sawThinking = false;
@@ -100,8 +107,19 @@ export async function streamClaude(
             });
         }
 
-        const final = await stream.finalMessage();
+        let final: Awaited<ReturnType<typeof stream.finalMessage>>;
+        try {
+            final = await stream.finalMessage();
+        } catch (error) {
+            if (params.abortSignal?.aborted) {
+                throwIfAborted(params.abortSignal);
+            }
+            throw error;
+        } finally {
+            params.abortSignal?.removeEventListener("abort", abortStream);
+        }
         if (sawThinking) callbacks.onReasoningBlockEnd?.();
+        throwIfAborted(params.abortSignal);
         const stopReason = final.stop_reason;
         const assistantBlocks = final.content as ContentBlock[];
 
@@ -132,7 +150,9 @@ export async function streamClaude(
             break;
         }
 
+        throwIfAborted(params.abortSignal);
         const results = await runTools(toolCalls);
+        throwIfAborted(params.abortSignal);
 
         // Record the assistant turn (preserving the original content blocks,
         // which Claude requires on the follow-up) and the user turn that

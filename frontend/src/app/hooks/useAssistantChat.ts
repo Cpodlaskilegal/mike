@@ -8,6 +8,8 @@ import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
 import type {
     AssistantEvent,
+    DocketAskInputsResponse,
+    DocketCitation,
     DocketCitationAnnotation,
     DocketMessage,
 } from "@/app/components/shared/types";
@@ -380,6 +382,7 @@ export function useAssistantChat({
         message: DocketMessage,
         opts?: {
             displayedDoc?: { filename: string; documentId: string } | null;
+            askInputsResponse?: DocketAskInputsResponse;
         },
     ): Promise<string | null> => {
         if (!message.content.trim()) return null;
@@ -458,12 +461,14 @@ export function useAssistantChat({
                           : undefined,
                       attached_documents:
                           attachedDocs.length > 0 ? attachedDocs : undefined,
+                      ask_inputs_response: opts?.askInputsResponse,
                       signal: controller.signal,
                   })
                 : streamChat({
                       messages: apiMessages,
                       chat_id: chatId,
                       model,
+                      ask_inputs_response: opts?.askInputsResponse,
                       signal: controller.signal,
                   }));
 
@@ -670,6 +675,23 @@ export function useAssistantChat({
                                 workflow_id: data.workflow_id as string,
                                 title: data.title as string,
                             });
+                            continue;
+                        }
+
+                        if (data.type === "ask_inputs") {
+                            if (
+                                typeof data.request_id === "string" &&
+                                Array.isArray(data.items)
+                            ) {
+                                pushEvent({
+                                    type: "ask_inputs",
+                                    request_id: data.request_id,
+                                    items: data.items as Extract<
+                                        AssistantEvent,
+                                        { type: "ask_inputs" }
+                                    >["items"],
+                                });
+                            }
                             continue;
                         }
 
@@ -940,19 +962,32 @@ export function useAssistantChat({
                         }
 
                         if (data.type === "citations") {
-                            // End-of-stream signal — scrub any lingering
-                            // placeholders so they don't persist into the
-                            // finalised message.
-                            clearStreamingPlaceholders();
+                            const citationStatus =
+                                data.status === "started" ||
+                                data.status === "partial" ||
+                                data.status === "final"
+                                    ? data.status
+                                    : "final";
+                            if (citationStatus === "final") {
+                                // End-of-stream signal — scrub any lingering
+                                // placeholders so they don't persist into the
+                                // finalised message.
+                                clearStreamingPlaceholders();
+                            }
                             const incoming = (data.citations ??
-                                []) as DocketCitationAnnotation[];
+                                []) as DocketCitation[];
                             setMessages((prev) => {
                                 const updated = [...prev];
                                 const last = updated[updated.length - 1];
                                 if (last?.role === "assistant") {
                                     updated[updated.length - 1] = {
                                         ...last,
-                                        annotations: incoming,
+                                        citations: incoming,
+                                        citationStatus,
+                                        annotations: incoming.filter(
+                                            (citation): citation is DocketCitationAnnotation =>
+                                                citation.kind !== "case",
+                                        ),
                                     };
                                 }
                                 return updated;
@@ -1103,6 +1138,20 @@ export function useAssistantChat({
         }
     };
 
+    const submitAskInputs = (
+        response: DocketAskInputsResponse,
+        content: string,
+        files: { filename: string; document_id: string }[],
+    ) =>
+        handleChat(
+            {
+                role: "user",
+                content,
+                files: files.length ? files : undefined,
+            },
+            { askInputsResponse: response },
+        );
+
     const handleNewChat = async (
         message: DocketMessage,
         projectId?: string,
@@ -1127,6 +1176,7 @@ export function useAssistantChat({
         setIsResponseLoading,
         isLoadingCitations,
         handleChat,
+        submitAskInputs,
         handleNewChat,
         setMessages,
         cancel,

@@ -36,6 +36,10 @@ import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { UserMessage } from "@/app/components/assistant/UserMessage";
 import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
+import {
+    CaseLawPanel,
+    type CaseTab,
+} from "@/app/components/assistant/CaseLawPanel";
 import { ChatInput } from "@/app/components/assistant/ChatInput";
 import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
@@ -47,6 +51,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { useSidebar } from "@/app/contexts/SidebarContext";
 import type {
+    AssistantEvent,
     CitationQuote,
     DocketCitationAnnotation,
     DocketDocument,
@@ -229,6 +234,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const [activeQuotes, setActiveQuotes] = useState<CitationQuote[] | null>(
         null,
     );
+    const [activeCase, setActiveCase] = useState<CaseTab | null>(null);
     const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
     const [editScrollTarget, setEditScrollTarget] =
         useState<EditScrollTarget | null>(null);
@@ -254,8 +260,14 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         saveChat,
     } = useChatHistoryContext();
     const [initialMessages] = useState<DocketMessage[]>(newChatMessages ?? []);
-    const { messages, isResponseLoading, handleChat, setMessages, cancel } =
-        useAssistantChat({ initialMessages, chatId, projectId });
+    const {
+        messages,
+        isResponseLoading,
+        handleChat,
+        submitAskInputs,
+        setMessages,
+        cancel,
+    } = useAssistantChat({ initialMessages, chatId, projectId });
 
     const hasLoaded = useRef(false);
     const hasAutoSent = useRef(false);
@@ -424,6 +436,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         quotes?: CitationQuote[],
         versionId?: string | null,
     ) {
+        setActiveCase(null);
         setTabs((prev) => {
             const existing = prev.find((t) => t.documentId === docId);
             if (existing) {
@@ -462,6 +475,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     }
 
     function switchTab(docId: string) {
+        setActiveCase(null);
         setActiveTabId(docId);
         setActiveQuotes(null);
         setSelectedDocId(docId);
@@ -491,6 +505,32 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             citation.filename,
             expandCitationToEntries(citation),
         );
+    };
+
+    const handleCaseCitationClick = (
+        citation: Extract<AssistantEvent, { type: "case_citation" }>,
+    ) => {
+        if (
+            typeof citation.cluster_id !== "number" ||
+            !Number.isFinite(citation.cluster_id) ||
+            citation.cluster_id <= 0
+        ) {
+            return;
+        }
+        const clusterId = Math.floor(citation.cluster_id);
+        setActiveCase({
+            kind: "case",
+            id: `case:${clusterId}`,
+            clusterId,
+            caseName: citation.case_name,
+            citation: citation.citation,
+            url: citation.url,
+            pdfUrl: citation.pdfUrl ?? null,
+            dateFiled: citation.dateFiled ?? null,
+        });
+        setActiveTabId(null);
+        setActiveQuotes(null);
+        setSelectedDocId(null);
     };
 
     const handleOpenDocument = (args: {
@@ -972,12 +1012,36 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                         ref={tabBarRef}
                         className="h-10 flex items-end border-b border-gray-200 shrink-0 overflow-x-auto min-w-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
                     >
-                        {tabs.length === 0 ? (
+                        {tabs.length === 0 && !activeCase ? (
                             <span className="px-4 self-center text-xs text-gray-700">
                                 Document Viewer
                             </span>
                         ) : (
-                            tabs.map((tab) => {
+                            <>
+                            {activeCase ? (
+                                <div
+                                    className="group flex items-center gap-1.5 px-3 h-full border-r border-gray-200 cursor-pointer shrink-0 max-w-[300px] bg-gray-100"
+                                    title={[activeCase.caseName, activeCase.citation]
+                                        .filter(Boolean)
+                                        .join(", ") || "Court opinion"}
+                                >
+                                    <FileText className="h-3.5 w-3.5 shrink-0 text-violet-600" />
+                                    <span className="text-xs truncate text-gray-900 font-medium">
+                                        {[activeCase.caseName, activeCase.citation]
+                                            .filter(Boolean)
+                                            .join(", ") || "Court opinion"}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setActiveCase(null)}
+                                        className="shrink-0 text-gray-500 hover:text-gray-700"
+                                        aria-label="Close court opinion"
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </div>
+                            ) : null}
+                            {tabs.map((tab) => {
                                 const isActive = tab.documentId === activeTabId;
                                 const ext = tab.filename
                                     .split(".")
@@ -1049,11 +1113,14 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         </button>
                                     </div>
                                 );
-                            })
+                            })}
+                            </>
                         )}
                     </div>
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                        {activeTab ? (
+                        {activeCase ? (
+                            <CaseLawPanel tab={activeCase} />
+                        ) : activeTab ? (
                             isDocxTab(activeTab.filename) ? (
                                 <DocxView
                                     key={activeTab.documentId}
@@ -1189,8 +1256,16 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             }
                                             isError={!!msg.error}
                                             annotations={msg.annotations}
+                                            citations={msg.citations}
                                             onCitationClick={
                                                 handleCitationClick
+                                            }
+                                            onAskInputsSubmit={
+                                                submitAskInputs
+                                            }
+                                            projectId={projectId}
+                                            onCaseCitationClick={
+                                                handleCaseCitationClick
                                             }
                                             minHeight={
                                                 i === lastAssistantIdx

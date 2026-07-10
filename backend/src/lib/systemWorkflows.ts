@@ -1,6 +1,36 @@
-import type { DocketWorkflow } from "../shared/types";
+/**
+ * Docket's server-owned system workflow catalog.
+ *
+ * Keep the current IDs stable: they are persisted in hidden-workflow settings,
+ * selected assistant messages, and existing tabular-review rows. The frontend
+ * receives this catalog from the authenticated workflows API instead of
+ * maintaining a separate copy.
+ */
+export type SystemWorkflowColumn = {
+    index: number;
+    name: string;
+    prompt: string;
+    format?: string;
+    tags?: string[];
+};
 
-export const BUILT_IN_WORKFLOWS: DocketWorkflow[] = [
+export type SystemWorkflow = {
+    id: string;
+    user_id: null;
+    is_system: true;
+    created_at: string;
+    title: string;
+    type: "assistant" | "tabular";
+    prompt_md: string | null;
+    columns_config: SystemWorkflowColumn[] | null;
+    practice?: string | null;
+    language?: string | null;
+    jurisdictions?: string[] | null;
+    description?: string | null;
+    version?: string | null;
+};
+
+export const SYSTEM_WORKFLOWS: SystemWorkflow[] = [
     {
         id: "builtin-cp-checklist",
         user_id: null,
@@ -1243,4 +1273,9 @@ export const BUILT_IN_WORKFLOWS: DocketWorkflow[] = [
     },
 ];
 
-export const BUILT_IN_IDS = new Set(BUILT_IN_WORKFLOWS.map((wf) => wf.id));
+export const SYSTEM_WORKFLOW_IDS = new Set(SYSTEM_WORKFLOWS.map((wf) => wf.id));
+
+export const SYSTEM_ASSISTANT_WORKFLOWS = SYSTEM_WORKFLOWS.filter(
+    (workflow): workflow is SystemWorkflow & { type: "assistant"; prompt_md: string } =>
+        workflow.type === "assistant" && typeof workflow.prompt_md === "string",
+).map(({ id, title, prompt_md }) => ({ id, title, prompt_md }));

@@ -4,6 +4,7 @@ import type {
     StreamChatResult,
     NormalizedToolCall,
 } from "./types";
+import { throwIfAborted } from "./types";
 import { toGeminiTools } from "./tools";
 
 type GeminiPart = {
@@ -52,6 +53,7 @@ export async function streamGemini(
     let fullText = "";
 
     for (let iter = 0; iter < maxIter; iter++) {
+        throwIfAborted(params.abortSignal);
         const stream = await ai.models.generateContentStream({
             model,
             contents: contents as never,
@@ -67,6 +69,7 @@ export async function streamGemini(
                 thinkingConfig: enableThinking
                     ? { includeThoughts: true }
                     : { thinkingBudget: 0 },
+                abortSignal: params.abortSignal,
             },
         });
 
@@ -76,37 +79,75 @@ export async function streamGemini(
         const toolCalls: NormalizedToolCall[] = [];
         let sawThinking = false;
 
-        for await (const chunk of stream) {
-            const parts =
-                (chunk as { candidates?: { content?: { parts?: GeminiPart[] } }[] })
-                    .candidates?.[0]?.content?.parts ?? [];
+        const iterator = stream[Symbol.asyncIterator]();
+        let rejectAbort: ((reason?: unknown) => void) | null = null;
+        const abortPromise = new Promise<never>((_, reject) => {
+            rejectAbort = reject;
+        });
+        const onAbort = () => {
+            const error = new Error("Stream aborted.");
+            error.name = "AbortError";
+            rejectAbort?.(error);
+        };
+        params.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-            for (const part of parts) {
-                if (part.text) {
-                    if (part.thought) {
-                        sawThinking = true;
-                        callbacks.onReasoningDelta?.(part.text);
-                    } else {
-                        textParts.push(part.text);
-                        callbacks.onContentDelta?.(part.text);
+        try {
+            while (true) {
+                throwIfAborted(params.abortSignal);
+                const { value: chunk, done } = await Promise.race([
+                    iterator.next(),
+                    abortPromise,
+                ]);
+                if (done) break;
+
+                const parts =
+                    (
+                        chunk as {
+                            candidates?: {
+                                content?: { parts?: GeminiPart[] };
+                            }[];
+                        }
+                    ).candidates?.[0]?.content?.parts ?? [];
+
+                for (const part of parts) {
+                    if (part.text) {
+                        if (part.thought) {
+                            sawThinking = true;
+                            callbacks.onReasoningDelta?.(part.text);
+                        } else {
+                            textParts.push(part.text);
+                            callbacks.onContentDelta?.(part.text);
+                        }
+                    }
+                    if (part.functionCall) {
+                        // Preserve the whole part (including thoughtSignature)
+                        // so it can be echoed verbatim in the replay turn.
+                        callParts.push(part);
+                        const call: NormalizedToolCall = {
+                            id:
+                                part.functionCall.id ??
+                                `${part.functionCall.name}-${toolCalls.length}`,
+                            name: part.functionCall.name,
+                            input: part.functionCall.args ?? {},
+                        };
+                        callbacks.onToolCallStart?.(call);
+                        toolCalls.push(call);
                     }
                 }
-                if (part.functionCall) {
-                    // Preserve the whole part (including thoughtSignature)
-                    // so it can be echoed verbatim in the replay turn.
-                    callParts.push(part);
-                    const call: NormalizedToolCall = {
-                        id: part.functionCall.id ?? `${part.functionCall.name}-${toolCalls.length}`,
-                        name: part.functionCall.name,
-                        input: part.functionCall.args ?? {},
-                    };
-                    callbacks.onToolCallStart?.(call);
-                    toolCalls.push(call);
+            }
+        } finally {
+            params.abortSignal?.removeEventListener("abort", onAbort);
+            if (params.abortSignal?.aborted) {
+                try {
+                    await iterator.return?.(undefined);
+                } catch {
+                    // Preserve the normalized cancellation error from the race.
                 }
             }
         }
 
         if (sawThinking) callbacks.onReasoningBlockEnd?.();
+        throwIfAborted(params.abortSignal);
 
         fullText += textParts.join("");
 
@@ -114,7 +155,9 @@ export async function streamGemini(
             break;
         }
 
+        throwIfAborted(params.abortSignal);
         const results = await runTools(toolCalls);
+        throwIfAborted(params.abortSignal);
 
         // Append the model's turn (text + functionCall parts, in that order)
         // and the matching functionResponse turn.

@@ -20,7 +20,6 @@ import {
     unhideWorkflow,
 } from "@/app/lib/docketApi";
 import type { DocketWorkflow } from "../shared/types";
-import { BUILT_IN_WORKFLOWS, BUILT_IN_IDS } from "./builtinWorkflows";
 import { DisplayWorkflowModal } from "./DisplayWorkflowModal";
 import { NewWorkflowModal } from "./NewWorkflowModal";
 import { ToolbarTabs } from "../shared/ToolbarTabs";
@@ -43,7 +42,7 @@ const TABS: { id: Tab; label: string }[] = [
 export function WorkflowList() {
     const router = useRouter();
     const { user } = useAuth();
-    const [custom, setCustom] = useState<DocketWorkflow[]>([]);
+    const [workflows, setWorkflows] = useState<DocketWorkflow[]>([]);
     const [loading, setLoading] = useState(true);
     const [selected, setSelected] = useState<DocketWorkflow | null>(null);
     const [activeTab, setActiveTab] = useState<Tab>("all");
@@ -69,10 +68,10 @@ export function WorkflowList() {
             listHiddenWorkflows(),
         ])
             .then(([assistant, tabular, hidden]) => {
-                setCustom([...assistant, ...tabular]);
+                setWorkflows([...assistant, ...tabular]);
                 setHiddenBuiltinIds(hidden);
             })
-            .catch(() => setCustom([]))
+            .catch(() => setWorkflows([]))
             .finally(() => setLoading(false));
     }, []);
 
@@ -113,10 +112,12 @@ export function WorkflowList() {
         return () => document.removeEventListener("mousedown", handleClick);
     }, []);
 
-    const hiddenBuiltins = BUILT_IN_WORKFLOWS.filter((wf) =>
+    const systemWorkflows = workflows.filter((workflow) => workflow.is_system);
+    const custom = workflows.filter((workflow) => !workflow.is_system);
+    const hiddenBuiltins = systemWorkflows.filter((wf) =>
         hiddenBuiltinIds.includes(wf.id),
     );
-    const visibleBuiltins = BUILT_IN_WORKFLOWS.filter(
+    const visibleBuiltins = systemWorkflows.filter(
         (wf) => !hiddenBuiltinIds.includes(wf.id),
     );
     const all = [...visibleBuiltins, ...custom];
@@ -172,8 +173,10 @@ export function WorkflowList() {
         const ids = [...selectedIds];
         setActionsOpen(false);
         setSelectedIds([]);
-        const builtinIds = ids.filter((id) => BUILT_IN_IDS.has(id));
-        const customIds = ids.filter((id) => !BUILT_IN_IDS.has(id));
+        const builtinIds = ids.filter((id) =>
+            systemWorkflows.some((workflow) => workflow.id === id),
+        );
+        const customIds = ids.filter((id) => !builtinIds.includes(id));
         if (builtinIds.length > 0) {
             setHiddenBuiltinIds((prev) => [
                 ...prev,
@@ -187,7 +190,7 @@ export function WorkflowList() {
             await Promise.all(
                 customIds.map((id) => deleteWorkflow(id).catch(() => {})),
             );
-            setCustom((prev) => prev.filter((w) => !customIds.includes(w.id)));
+            setWorkflows((prev) => prev.filter((w) => !customIds.includes(w.id)));
         }
     }
 
@@ -574,7 +577,7 @@ export function WorkflowList() {
                                         <RowActions
                                             onDelete={async () => {
                                                 await deleteWorkflow(wf.id);
-                                                setCustom((prev) =>
+                                                setWorkflows((prev) =>
                                                     prev.filter(
                                                         (w) => w.id !== wf.id,
                                                     ),
@@ -600,7 +603,7 @@ export function WorkflowList() {
                 open={newModalOpen}
                 onClose={() => setNewModalOpen(false)}
                 onCreated={(wf) => {
-                    setCustom((prev) => [wf, ...prev]);
+                    setWorkflows((prev) => [wf, ...prev]);
                     setNewModalOpen(false);
                     router.push(`/workflows/${wf.id}`);
                 }}

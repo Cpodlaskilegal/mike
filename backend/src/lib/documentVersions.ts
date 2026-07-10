@@ -25,6 +25,9 @@ export interface ActiveVersion {
     version_number: number | null;
     display_name: string | null;
     source: string | null;
+    file_type: string | null;
+    size_bytes: number | null;
+    page_count: number | null;
 }
 
 /**
@@ -54,11 +57,18 @@ export async function loadActiveVersion(
     const { data: v } = await db
         .from("document_versions")
         .select(
-            "id, document_id, storage_path, pdf_storage_path, version_number, display_name, source",
+            "id, document_id, storage_path, pdf_storage_path, version_number, display_name, source, file_type, size_bytes, page_count, deleted_at",
         )
         .eq("id", targetVersionId)
         .single();
-    if (!v || v.document_id !== documentId || !v.storage_path) return null;
+    if (
+        !v ||
+        v.document_id !== documentId ||
+        !v.storage_path ||
+        v.deleted_at
+    ) {
+        return null;
+    }
     return {
         id: v.id as string,
         storage_path: v.storage_path as string,
@@ -66,6 +76,9 @@ export async function loadActiveVersion(
         version_number: (v.version_number as number | null) ?? null,
         display_name: (v.display_name as string | null) ?? null,
         source: (v.source as string | null) ?? null,
+        file_type: (v.file_type as string | null) ?? null,
+        size_bytes: (v.size_bytes as number | null) ?? null,
+        page_count: (v.page_count as number | null) ?? null,
     };
 }
 
@@ -92,7 +105,9 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
     }
     const { data: rows } = await db
         .from("document_versions")
-        .select("id, storage_path, pdf_storage_path, version_number")
+        .select(
+            "id, storage_path, pdf_storage_path, version_number, deleted_at",
+        )
         .in("id", versionIds);
     const byId = new Map<
         string,
@@ -107,7 +122,9 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
         storage_path: string | null;
         pdf_storage_path: string | null;
         version_number: number | null;
+        deleted_at: string | null;
     }[]) {
+        if (r.deleted_at) continue;
         byId.set(r.id, {
             storage_path: r.storage_path ?? null,
             pdf_storage_path: r.pdf_storage_path ?? null,
@@ -125,8 +142,9 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
 
 /**
  * Given a list of document rows, attach `latest_version_number` — the
- * max `version_number` across all assistant_edit rows for that doc, or
- * null if none. Mutates rows in place and returns the same reference.
+ * max active `version_number` across every version for that doc, or null if
+ * none. This drives the version-control UI for user uploads, copies, and
+ * assistant edits alike. Mutates rows in place and returns the same reference.
  * One extra query regardless of list size.
  */
 export async function attachLatestVersionNumbers<T extends DocRow>(
@@ -139,7 +157,7 @@ export async function attachLatestVersionNumbers<T extends DocRow>(
         .from("document_versions")
         .select("document_id, version_number")
         .in("document_id", ids)
-        .eq("source", "assistant_edit")
+        .is("deleted_at", null)
         .not("version_number", "is", null);
 
     const latestByDoc = new Map<string, number>();

@@ -1,0 +1,17 @@
+export function toolCallLabel(name: string): string {
+    if (name === "ask_inputs") return "Asking for input...";
+    if (name === "generate_docx") return "Creating document...";
+    if (name === "generate_excel") return "Creating spreadsheet...";
+    if (name === "generate_ppt") return "Creating presentation...";
+    if (name === "edit_document") return "Editing document...";
+    if (name === "read_document") return "Reading document...";
+    if (name === "fetch_documents") return "Reading documents...";
+    if (name === "find_in_document") return "Searching document...";
+    if (name === "replicate_document") return "Copying document...";
+    if (name === "read_workflow") return "Loading workflow...";
+    if (name === "list_workflows") return "Loading workflows...";
+    if (name === "list_documents") return "Loading documents...";
+    if (name.startsWith("courtlistener_")) return "Researching case law...";
+    if (name.startsWith("mcp_")) return "Using connector...";
+    return name ? `Running ${name}...` : "Working...";
+}

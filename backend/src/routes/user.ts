@@ -30,6 +30,18 @@ import {
   normalizeUserRole,
   type AppUserRole,
 } from "../lib/userRoles";
+import {
+  buildDocketDataExport,
+  createDataDeletionRequest,
+  dataExportFilename,
+  executeApprovedDataDeletion,
+  listOwnDataDeletionRequests,
+  parseDataExportScope,
+  reviewDataDeletionRequest,
+  validateDeletionRequestBody,
+  validateDeletionReviewBody,
+} from "../lib/userDataLifecycle";
+import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
 
 export const userRouter = Router();
 
@@ -896,10 +908,169 @@ userRouter.patch(
   },
 );
 
-// DELETE /user/account
-userRouter.delete("/account", requireAuth, async (_req, res) => {
+// GET /user/data-export?scope=account|chats|tabular-reviews
+// This is intentionally a Docket-data export, not an Entra account export.
+userRouter.get("/data-export", requireAuth, async (req, res) => {
+  const parsedScope = parseDataExportScope(req.query.scope ?? "account");
+  if (!parsedScope) {
+    return void res.status(400).json({
+      detail: "scope must be account, chats, or tabular-reviews",
+    });
+  }
   const userId = res.locals.userId as string;
-  const db = createServerSupabase();
-  await db.auth.admin.deleteUser(userId);
-  res.status(204).send();
+  const userEmail = res.locals.userEmail as string | undefined;
+  try {
+    const payload = await buildDocketDataExport(parsedScope, userId, userEmail);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${dataExportFilename(parsedScope, userId)}"`,
+    );
+    res.status(200).send(JSON.stringify(payload, null, 2));
+  } catch (error) {
+    console.error("[user/data-export] failed", safeErrorLog(error));
+    res.status(500).json({ detail: "Unable to prepare Docket data export" });
+  }
+});
+
+// GET /user/data-deletion-requests
+userRouter.get("/data-deletion-requests", requireAuth, async (_req, res) => {
+  try {
+    const requests = await listOwnDataDeletionRequests(res.locals.userId as string);
+    res.json(requests);
+  } catch (error) {
+    console.error("[user/data-deletion-requests] list failed", safeErrorLog(error));
+    res.status(500).json({ detail: "Unable to load Docket data deletion requests" });
+  }
+});
+
+// POST /user/data-deletion-requests
+userRouter.post("/data-deletion-requests", requireAuth, async (req, res) => {
+  const parsed = validateDeletionRequestBody(req.body);
+  if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+  try {
+    const request = await createDataDeletionRequest({
+      userId: res.locals.userId as string,
+      userEmail: res.locals.userEmail as string | undefined,
+      reason: parsed.reason,
+    });
+    res.status(request.alreadyPending ? 200 : 201).json({
+      ...request,
+      note:
+        "This requests deletion of Docket application data after legal-retention review. It does not delete your Microsoft Entra account.",
+    });
+  } catch (error) {
+    console.error("[user/data-deletion-requests] create failed", safeErrorLog(error));
+    res.status(500).json({ detail: "Unable to create Docket data deletion request" });
+  }
+});
+
+// DELETE /user/data-deletion-requests/:requestId
+userRouter.delete(
+  "/data-deletion-requests/:requestId",
+  requireAuth,
+  async (req, res) => {
+    const db = createServerSupabase();
+    const { data, error } = await db
+      .from("data_deletion_requests")
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
+      .eq("id", req.params.requestId)
+      .eq("user_id", res.locals.userId as string)
+      .eq("status", "pending_legal_review")
+      .select("id, status")
+      .maybeSingle();
+    if (error) {
+      console.error("[user/data-deletion-requests] cancel failed", safeErrorLog(error));
+      return void res.status(500).json({ detail: "Unable to cancel Docket data deletion request" });
+    }
+    if (!data) return void res.status(404).json({ detail: "Pending deletion request not found" });
+    res.json(data);
+  },
+);
+
+// GET /user/admin/data-deletion-requests
+userRouter.get(
+  "/admin/data-deletion-requests",
+  requireAuth,
+  async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    if (!(await isAdminUser(db, userId))) {
+      return void res.status(403).json({ detail: "Admin access is required" });
+    }
+    const { data, error } = await db
+      .from("data_deletion_requests")
+      .select("*")
+      .order("requested_at", { ascending: false });
+    if (error) {
+      console.error("[user/admin/data-deletion-requests] list failed", safeErrorLog(error));
+      return void res.status(500).json({ detail: "Unable to load Docket data deletion requests" });
+    }
+    res.json(data ?? []);
+  },
+);
+
+// PATCH /user/admin/data-deletion-requests/:requestId
+userRouter.patch(
+  "/admin/data-deletion-requests/:requestId",
+  requireAuth,
+  async (req, res) => {
+    const db = createServerSupabase();
+    const reviewerUserId = res.locals.userId as string;
+    if (!(await isAdminUser(db, reviewerUserId))) {
+      return void res.status(403).json({ detail: "Admin access is required" });
+    }
+    const parsed = validateDeletionReviewBody(req.body);
+    if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+    try {
+      res.json(
+        await reviewDataDeletionRequest({
+          requestId: req.params.requestId,
+          reviewerUserId,
+          ...parsed,
+        }),
+      );
+    } catch (error) {
+      const detail = safeErrorMessage(error, "Unable to review Docket data deletion request");
+      const status = /not found|already been reviewed/i.test(detail) ? 409 : 500;
+      console.error("[user/admin/data-deletion-requests] review failed", safeErrorLog(error));
+      res.status(status).json({ detail: status === 409 ? detail : "Unable to review Docket data deletion request" });
+    }
+  },
+);
+
+// POST /user/admin/data-deletion-requests/:requestId/execute
+// A separate action prevents review approval from becoming accidental erasure.
+userRouter.post(
+  "/admin/data-deletion-requests/:requestId/execute",
+  requireAuth,
+  async (req, res) => {
+    const db = createServerSupabase();
+    const executorUserId = res.locals.userId as string;
+    if (!(await isAdminUser(db, executorUserId))) {
+      return void res.status(403).json({ detail: "Admin access is required" });
+    }
+    try {
+      await executeApprovedDataDeletion({
+        requestId: req.params.requestId,
+        executorUserId,
+      });
+      res.status(204).send();
+    } catch (error) {
+      const detail = safeErrorMessage(error, "Unable to execute Docket data deletion request");
+      const status = /legal hold|retention date|not approved/i.test(detail) ? 409 : 500;
+      console.error("[user/admin/data-deletion-requests] execute failed", safeErrorLog(error));
+      res.status(status).json({ detail: status === 409 ? detail : "Unable to execute Docket data deletion request" });
+    }
+  },
+);
+
+// DELETE /user/account is retained only as a safe migration guard for older
+// clients. It must never directly delete app_users or an Entra identity.
+userRouter.delete("/account", requireAuth, async (_req, res) => {
+  res.status(410).json({
+    code: "docket_data_request_required",
+    detail:
+      "Direct account deletion is unavailable. Request Docket data deletion through the reviewed data-lifecycle flow; Microsoft Entra identities are managed separately.",
+  });
 });

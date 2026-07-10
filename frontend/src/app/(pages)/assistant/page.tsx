@@ -6,7 +6,7 @@ import { ChatView } from "@/app/components/assistant/ChatView";
 import type { DocketMessage } from "@/app/components/shared/types";
 
 export default function AssistantPage() {
-    const { messages, isResponseLoading, handleChat, cancel } =
+    const { messages, isResponseLoading, handleChat, submitAskInputs, cancel } =
         useAssistantChat();
 
     async function handleInitialSubmit(message: DocketMessage) {
@@ -26,6 +26,7 @@ export default function AssistantPage() {
             messages={messages}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
+            onAskInputsSubmit={submitAskInputs}
             cancel={cancel}
         />
     );

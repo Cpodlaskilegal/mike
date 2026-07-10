@@ -17,7 +17,9 @@ import type {
     StreamChatResult,
     TextVerbosity,
 } from "./types";
+import { throwIfAborted } from "./types";
 import { captureAiGeneration } from "../posthog";
+import { safeErrorMessage } from "../safeError";
 
 const MAX_OUTPUT_TOKENS = 16384;
 
@@ -162,8 +164,10 @@ async function createStreamingResponse(
         onDelta?: (delta: string) => void;
         onReasoningDelta?: (delta: string) => void;
         onReasoningBlockEnd?: () => void;
+        abortSignal?: AbortSignal;
     },
 ): Promise<OpenAIResponseResult> {
+    throwIfAborted(params.abortSignal);
     const startedAt = Date.now();
     const stream = await openai.responses.create({
         model: params.model,
@@ -180,12 +184,13 @@ async function createStreamingResponse(
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
         stream: true,
-    });
+    }, { signal: params.abortSignal });
 
     let final: Response | null = null;
     let reasoningOpen = false;
     let timeToFirstTokenSeconds: number | undefined;
     for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
+        throwIfAborted(params.abortSignal);
         if (event.type === "response.output_text.delta") {
             timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
             params.onDelta?.(event.delta);
@@ -239,8 +244,10 @@ async function createNonStreamingResponse(
         reasoningEffort?: ReasoningEffort;
         textVerbosity?: TextVerbosity;
         textFormat?: JsonSchemaTextFormat;
+        abortSignal?: AbortSignal;
     },
 ): Promise<OpenAIResponseResult> {
+    throwIfAborted(params.abortSignal);
     const startedAt = Date.now();
     const response = await openai.responses.create({
         model: params.model,
@@ -257,7 +264,8 @@ async function createNonStreamingResponse(
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
         stream: false,
-    });
+    }, { signal: params.abortSignal });
+    throwIfAborted(params.abortSignal);
     if (response.status === "failed") {
         throw new Error(response.error?.message ?? "OpenAI response failed");
     }
@@ -291,6 +299,7 @@ export async function streamOpenAI(
     const parentId = traceId;
 
     for (let iter = 0; iter < maxIter; iter++) {
+        throwIfAborted(params.abortSignal);
         const beforeLength = fullText.length;
         const generationId = randomUUID();
         const requestStartedAt = Date.now();
@@ -307,6 +316,7 @@ export async function streamOpenAI(
                       reasoningEffort: params.reasoningEffort,
                       textVerbosity: params.textVerbosity,
                       textFormat: params.textFormat,
+                      abortSignal: params.abortSignal,
                   })
                 : await createStreamingResponse(openai, {
                       model,
@@ -324,6 +334,7 @@ export async function streamOpenAI(
                       },
                       onReasoningDelta: callbacks.onReasoningDelta,
                       onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
+                      abortSignal: params.abortSignal,
                   });
         } catch (error) {
             await captureAiGeneration({
@@ -342,7 +353,7 @@ export async function streamOpenAI(
                 latencySeconds: elapsedSeconds(requestStartedAt),
                 input: aiInputMessages(systemPrompt, params.messages),
                 output: "",
-                error: error instanceof Error ? error.message : String(error),
+                error: safeErrorMessage(error),
                 metadata: {
                     iteration: iter + 1,
                     tool_count: openaiTools.length,
@@ -353,6 +364,7 @@ export async function streamOpenAI(
         }
 
         const { response } = result;
+        throwIfAborted(params.abortSignal);
 
         if (isProModel(model)) {
             const text = outputText(response);
@@ -406,7 +418,9 @@ export async function streamOpenAI(
         }));
         for (const call of normalizedCalls) callbacks.onToolCallStart?.(call);
 
+        throwIfAborted(params.abortSignal);
         const results = await runTools(normalizedCalls);
+        throwIfAborted(params.abortSignal);
         input = [
             ...input,
             ...(response.output as ResponseInputItem[]),
@@ -426,6 +440,7 @@ export async function completeOpenAIText(params: {
     systemPrompt?: string;
     user: string;
     maxTokens?: number;
+    abortSignal?: AbortSignal;
     apiKeys?: { openai?: string | null };
     reasoningEffort?: ReasoningEffort;
     textVerbosity?: TextVerbosity;
@@ -442,6 +457,7 @@ export async function completeOpenAIText(params: {
             systemPrompt: params.systemPrompt,
             input: params.user,
             maxTokens: params.maxTokens ?? 512,
+            abortSignal: params.abortSignal,
             reasoningEffort: params.reasoningEffort,
             textVerbosity: params.textVerbosity,
             textFormat: params.textFormat,
@@ -486,7 +502,7 @@ export async function completeOpenAIText(params: {
             latencySeconds: elapsedSeconds(requestStartedAt),
             input: aiInputMessages(params.systemPrompt, params.user),
             output: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: safeErrorMessage(error),
             metadata: params.aiObservability?.metadata,
         });
         throw error;

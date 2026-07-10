@@ -14,12 +14,15 @@ const JSONB_COLUMNS: Record<string, Set<string>> = {
   projects: new Set(["shared_with"]),
   documents: new Set(["structure_tree"]),
   workflows: new Set(["columns_config"]),
-  chat_messages: new Set(["content", "files", "annotations", "workflow"]),
+  chat_messages: new Set(["content", "files", "annotations", "citations", "workflow"]),
   tabular_reviews: new Set(["columns_config", "document_ids", "shared_with"]),
   tabular_cells: new Set(["citations"]),
-  tabular_review_chat_messages: new Set(["content", "annotations"]),
+  tabular_review_chat_messages: new Set(["content", "annotations", "citations"]),
+  assistant_input_requests: new Set(["request"]),
+  assistant_input_responses: new Set(["response"]),
   user_mcp_connectors: new Set(["tool_policy"]),
   user_mcp_connector_tools: new Set(["input_schema", "output_schema", "annotations"]),
+  workflow_open_source_submissions: new Set(["snapshot"]),
 };
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -438,21 +441,34 @@ export function createServerSupabase() {
           return { data: { users: rows }, error: null };
         },
         async deleteUser(userId: string) {
-          await pool.query('delete from "app_users" where "id" = $1', [userId]);
-          return { data: null, error: null };
+          void userId;
+          throw new Error(
+            "Direct app_users deletion is disabled: it does not delete a Microsoft Entra identity and bypasses Docket retention review.",
+          );
         },
       },
     },
   };
 }
 
-export async function ensureAppUser(user: { id: string; email: string }) {
+export type DocketDataStatus = "active" | "deleted";
+
+export async function ensureAppUser(user: { id: string; email: string }): Promise<{
+  docketDataStatus: DocketDataStatus;
+}> {
   await pool.query(
     `insert into "app_users" ("id", "email")
      values ($1, $2)
      on conflict ("id") do update set "email" = excluded."email", "updated_at" = now()`,
     [user.id, user.email],
   );
+  const { rows } = await pool.query<{ docket_data_status?: unknown }>(
+    `select "docket_data_status" from "app_users" where "id" = $1`,
+    [user.id],
+  );
+  const docketDataStatus: DocketDataStatus =
+    rows[0]?.docket_data_status === "deleted" ? "deleted" : "active";
+  if (docketDataStatus === "deleted") return { docketDataStatus };
   await pool.query(
     `update "app_users"
      set "role" = 'admin', "updated_at" = now()
@@ -468,6 +484,7 @@ export async function ensureAppUser(user: { id: string; email: string }) {
      on conflict ("user_id") do nothing`,
     [user.id],
   );
+  return { docketDataStatus };
 }
 
 export { pool };

@@ -11,6 +11,8 @@ import {
 } from "./AssistantSidePanel";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import type {
+    AssistantEvent,
+    DocketAskInputsResponse,
     DocketCitationAnnotation,
     DocketEditAnnotation,
     DocketMessage,
@@ -22,6 +24,12 @@ interface Props {
     messages: DocketMessage[];
     isResponseLoading: boolean;
     handleChat: (message: DocketMessage) => Promise<string | null>;
+    onAskInputsSubmit?: (
+        response: DocketAskInputsResponse,
+        content: string,
+        files: { filename: string; document_id: string }[],
+    ) => void;
+    projectId?: string;
     cancel: () => void;
 }
 
@@ -29,6 +37,8 @@ export function ChatView({
     messages,
     isResponseLoading,
     handleChat,
+    onAskInputsSubmit,
+    projectId,
     cancel,
 }: Props) {
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
@@ -93,23 +103,32 @@ export function ChatView({
         [activeTabId, setSidebarOpen],
     );
 
-    /**
-     * One tab per document. If a tab for `tab.documentId` already exists,
-     * the panel stays mounted and only the header-relevant fields swap
-     * (kind, citation/edit, version, filename). Per-tab UI state — the
-     * dismissable warning and the saved scroll position — is preserved
-     * so switching headers doesn't blow away viewer state. If no tab
-     * exists for the document, a new one is appended.
-     */
+    /** One tab per document or CourtListener cluster. */
     const upsertTab = useCallback(
         (tab: AssistantSidePanelTab) => {
             setTabs((prev) => {
                 const idx = prev.findIndex(
-                    (t) => t.documentId === tab.documentId,
+                    (t) =>
+                        tab.kind === "case"
+                            ? t.kind === "case" && t.clusterId === tab.clusterId
+                            : t.kind !== "case" &&
+                              t.documentId === tab.documentId,
                 );
                 if (idx >= 0) {
                     const existing = prev[idx];
                     const copy = prev.slice();
+                    // A CourtListener cluster has a stable `case:${id}` tab
+                    // ID and no document-panel state to preserve. Keep the
+                    // discriminated union narrow here: document-tab fields
+                    // are deliberately not invented for a case tab.
+                    if (tab.kind === "case") {
+                        copy[idx] = tab;
+                        return copy;
+                    }
+                    // The matching predicate above makes this impossible in
+                    // normal operation, but the explicit guard keeps the
+                    // union sound if tabs are changed asynchronously.
+                    if (existing.kind === "case") return prev;
                     copy[idx] = {
                         ...tab,
                         id: existing.id,
@@ -140,6 +159,30 @@ export function ChatView({
                 versionId: citation.version_id ?? null,
                 versionNumber: citation.version_number ?? null,
                 citation,
+            });
+        },
+        [upsertTab],
+    );
+
+    const openCaseCitation = useCallback(
+        (citation: Extract<AssistantEvent, { type: "case_citation" }>) => {
+            if (
+                typeof citation.cluster_id !== "number" ||
+                !Number.isFinite(citation.cluster_id) ||
+                citation.cluster_id <= 0
+            ) {
+                return;
+            }
+            const clusterId = Math.floor(citation.cluster_id);
+            upsertTab({
+                kind: "case",
+                id: `case:${clusterId}`,
+                clusterId,
+                caseName: citation.case_name,
+                citation: citation.citation,
+                url: citation.url,
+                pdfUrl: citation.pdfUrl ?? null,
+                dateFiled: citation.dateFiled ?? null,
             });
         },
         [upsertTab],
@@ -287,7 +330,7 @@ export function ChatView({
             // Surface the warning on every tab tied to this document.
             setTabs((prev) =>
                 prev.map((t) =>
-                    t.documentId === args.documentId
+                    t.kind !== "case" && t.documentId === args.documentId
                         ? { ...t, warning: args.message }
                         : t,
                 ),
@@ -512,7 +555,15 @@ export function ChatView({
                                                         : undefined
                                                 }
                                                 annotations={msg.annotations}
+                                                citations={msg.citations}
                                                 onCitationClick={openCitation}
+                                                onAskInputsSubmit={
+                                                    onAskInputsSubmit
+                                                }
+                                                projectId={projectId}
+                                                onCaseCitationClick={
+                                                    openCaseCitation
+                                                }
                                                 minHeight={
                                                     i === lastAssistantIndex
                                                         ? minHeight

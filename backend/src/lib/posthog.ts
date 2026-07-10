@@ -1,4 +1,5 @@
 import { PostHog } from "posthog-node";
+import { safeErrorMessage } from "./safeError";
 
 type Serializable =
     | string
@@ -144,7 +145,7 @@ export async function captureAiGeneration(
             },
         });
     } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = safeErrorMessage(error, "Failed to capture AI generation");
         console.warn(`[posthog] failed to capture AI generation: ${message}`);
     }
 }

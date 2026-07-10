@@ -53,7 +53,15 @@ export async function requireAuth(
     }
 
     const normalizedEmail = userEmail.toLowerCase();
-    await ensureAppUser({ id: userId, email: normalizedEmail });
+    const appUser = await ensureAppUser({ id: userId, email: normalizedEmail });
+    if (appUser.docketDataStatus === "deleted") {
+      res.status(403).json({
+        code: "docket_data_deleted",
+        detail:
+          "Docket data for this Microsoft Entra identity has been deleted. This does not delete the Entra account.",
+      });
+      return;
+    }
     res.locals.userId = userId;
     res.locals.userEmail = normalizedEmail;
     res.locals.token = token;

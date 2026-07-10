@@ -36,6 +36,67 @@ export type StreamCallbacks = {
     onToolCallStart?: (call: NormalizedToolCall) => void;
 };
 
+/**
+ * Normalizes the cancellation errors surfaced by provider SDKs and Node's
+ * fetch implementation. Routes use this to distinguish a disconnected client
+ * from a provider failure that should be shown as an error.
+ */
+export function isAbortError(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const candidate = error as { name?: unknown; message?: unknown };
+    const name = typeof candidate.name === "string" ? candidate.name : "";
+    const message =
+        typeof candidate.message === "string" ? candidate.message : "";
+    return (
+        name === "AbortError" ||
+        name === "APIUserAbortError" ||
+        name.toLowerCase().includes("abort") ||
+        message === "Stream aborted."
+    );
+}
+
+/** Throw a normalized error when a caller-owned assistant stream is cancelled. */
+export function throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    const error = new Error("Stream aborted.");
+    error.name = "AbortError";
+    throw error;
+}
+
+/**
+ * Preserve already-streamed assistant events while making an interrupted turn
+ * unambiguous when it is reloaded from chat history.
+ */
+export function appendCancellationMarker<T extends { type: string }>(
+    events: T[],
+): (T | { type: "content"; text: string })[] {
+    const hasCancellationMarker = events.some((event) => {
+        const candidate = event as { type: string; text?: unknown };
+        return (
+            candidate.type === "content" &&
+            candidate.text === "Cancelled by user."
+        );
+    });
+    if (hasCancellationMarker) return [...events];
+    return [...events, { type: "content", text: "Cancelled by user." }];
+}
+
+/**
+ * Carries the safe-to-persist portion of a streamed turn back to the route
+ * after the client has cancelled the provider request.
+ */
+export class AssistantStreamAbortError<TEvent = unknown> extends Error {
+    readonly fullText: string;
+    readonly events: TEvent[];
+
+    constructor(fullText: string, events: TEvent[]) {
+        super("Stream aborted.");
+        this.name = "AbortError";
+        this.fullText = fullText;
+        this.events = events;
+    }
+}
+
 export type UserApiKeys = {
     claude?: string | null;
     courtlistener?: string | null;
@@ -97,6 +158,8 @@ export type StreamChatParams = {
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
     aiObservability?: AiObservabilityContext;
+    /** Abort an in-flight provider request when the streaming client disconnects. */
+    abortSignal?: AbortSignal;
 };
 
 export type StreamChatResult = {

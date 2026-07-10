@@ -1,11 +1,12 @@
 import path from "path";
+import { randomUUID } from "crypto";
 import {
     downloadFile,
     generatedDocKey,
     storageKey,
     uploadFile,
 } from "./storage";
-import { convertedPdfKey } from "./convert";
+import { convertedPdfKey, docxToPdf } from "./convert";
 import {
     contentTypeForDocumentType,
     isPresentationDocumentType,
@@ -13,6 +14,12 @@ import {
 } from "./documentTypes";
 import { extractPresentationText } from "./officeText";
 import { spreadsheetToLLMText } from "./spreadsheet";
+import {
+    buildPptxPresentation,
+    buildXlsxWorkbook,
+    generatedOfficeFilename,
+} from "./officeGeneration";
+import { safeErrorMessage } from "./safeError";
 import { createServerSupabase } from "./supabase";
 import {
     applyTrackedEdits,
@@ -25,9 +32,12 @@ import {
     loadActiveVersion,
 } from "./documentVersions";
 import {
+    AssistantStreamAbortError,
+    isAbortError,
     streamChatWithTools,
     resolveModel,
     DEFAULT_MAIN_MODEL,
+    throwIfAborted,
     type LlmMessage,
     type OpenAIToolSchema,
 } from "./llm";
@@ -49,6 +59,12 @@ import {
     executeMcpToolCall,
     type McpToolEvent,
 } from "./mcpConnectors";
+import {
+    extractRichCitations,
+    normalizeAskInputsEvent,
+    persistAskInputsRequest,
+    type AskInputsEvent,
+} from "./assistantContracts";
 
 const STANDARD_FONT_DATA_URL = (() => {
     try {
@@ -130,13 +146,15 @@ Rules:
 - For a single-page quote, set "page" to an integer. If a quote is one continuous sentence that spans two pages, set "page" to "N-M" and insert [[PAGE_BREAK]] in the quote at the page break. Otherwise, use separate citations for text on different pages
 - Put the <CITATIONS> block at the very end of the response. Omit it entirely if there are no citations
 
-DOCX GENERATION:
-If asked to draft or generate a document, use the generate_docx tool to produce a downloadable Word document. Always use this tool rather than just displaying the document content inline when the user asks for a document to be created.
-If the user follows up on a document you just generated and asks for changes (e.g. "make section 3 longer", "add a termination clause", "change the parties"), default to calling edit_document on that newly generated document — do NOT call generate_docx again to regenerate the whole document. Only fall back to generate_docx if the user explicitly asks for a brand-new document or the change is so sweeping that an edit would not be coherent.
-After calling generate_docx, do NOT include any download links, URLs, or markdown links to the document in your prose response — the download card is presented automatically by the UI. Do not describe formatting choices such as orientation or layout.
-After calling generate_docx, you MUST call read_document on the returned doc_id before writing your prose response. Base your description on the generated document's actual text, not on memory of what you intended to generate.
-Your prose response MUST include a short description of the generated document: what it is, its structure (key sections/clauses), and — if the draft was informed by any provided source documents — which sources you drew from and how. Keep it concise (typically 3–8 sentences or a short bulleted list). Refer to the document by filename, never by a download link.
-When the description makes factual claims about the contents of the newly generated document, cite the generated document with [N] markers and a <CITATIONS> block exactly as specified in the DOCUMENT CITATION INSTRUCTIONS above. If you also make factual claims about provided source documents, cite those source documents separately. In every citation entry, use the exact chat-local doc_id label for the cited document. Omit the <CITATIONS> block if the description makes no such claims.
+DOCUMENT GENERATION:
+If asked to draft or generate a Word or legal-text document, use the generate_docx tool to produce a downloadable Word document. Always use this tool rather than just displaying the document content inline when the user asks for a Word document to be created.
+If the user asks for a spreadsheet, tracker, matrix, schedule, checklist workbook, or Excel file, use generate_excel to produce a downloadable .xlsx workbook.
+If the user asks for slides, a presentation, board deck, pitch deck, or PowerPoint file, use generate_ppt to produce a downloadable .pptx presentation.
+If the user follows up on a generated .docx and asks for changes (e.g. "make section 3 longer", "add a termination clause", "change the parties"), default to calling edit_document on that document — do NOT call generate_docx again to regenerate the whole document. Only fall back to generate_docx if the user explicitly asks for a brand-new document or the change is so sweeping that an edit would not be coherent. edit_document supports .docx only; for a generated .xlsx or .pptx, create a replacement file when the user asks for changes.
+After calling any generation tool, do NOT include download links, URLs, or markdown links to the file in your prose response — the download card is presented automatically by the UI. Do not describe formatting choices such as orientation or layout.
+After calling any generation tool, you MUST call read_document on the returned doc_id before writing your prose response. Base your description on the generated file's actual text, not on memory of what you intended to generate.
+Your prose response MUST include a short description of the generated file: what it is, its structure, and — if it was informed by provided source documents — which sources you drew from and how. Keep it concise (typically 3–8 sentences or a short bulleted list). Refer to the file by filename, never by a download link.
+When the description makes factual claims about the contents of the newly generated file, cite the generated file with [N] markers and a <CITATIONS> block exactly as specified in the DOCUMENT CITATION INSTRUCTIONS above. If you also make factual claims about provided source documents, cite those source documents separately. In every citation entry, use the exact chat-local doc_id label for the cited file. Omit the <CITATIONS> block if the description makes no such claims.
 Heading hierarchy: always use Heading 1 before introducing Heading 2, Heading 2 before Heading 3, and so on. Never skip levels (e.g. do not jump from Heading 1 to Heading 3).
 Numbering: all numbering MUST start from 1, never 0. This applies at every level of the hierarchy. Legal clause numbering is applied automatically by the document generator: top-level operative headings render as 1., 2., 3.; the first numbered body clause under a top-level heading renders as 1.1; nested body clauses under that render as (a), (b), (c); deeper nested clauses render as (i), (ii), (iii), then (A), (B), (C). Do NOT use 1.1.1 for legal body clauses when (a) is the expected next level. Never produce 0., 0.1, 1.0, 1.0.1, or any other sequence that begins a level with 0.
 Never duplicate the numbering prefix in heading text. The heading's own numbering is applied automatically by the document generator, so the heading text must contain the title only — do NOT prepend "1.", "1.1", "2.", etc. into the heading text itself. For example, a Heading 1 titled "Introduction" must be passed as "Introduction", never as "1. Introduction" (which would render as "1. 1. Introduction"). The same rule applies at every level.
@@ -296,6 +314,54 @@ export const WORKFLOW_TOOLS = [
     },
 ];
 
+/**
+ * Ask Inputs is deliberately offered only to assistant/project chats with a
+ * persisted assistant placeholder. Tabular Review has a different chat table
+ * and does not participate in this pause/resume contract.
+ */
+const ASK_INPUTS_TOOL = {
+    type: "function",
+    function: {
+        name: "ask_inputs",
+        description:
+            "Pause this assistant response to ask the signed-in user one or more bounded follow-up questions. Use only when the missing information is necessary to continue. The user will submit answers in Docket and the assistant will resume in a new turn.",
+        parameters: {
+            type: "object",
+            properties: {
+                items: {
+                    type: "array",
+                    minItems: 1,
+                    maxItems: 12,
+                    items: {
+                        type: "object",
+                        properties: {
+                            id: { type: "string" },
+                            kind: {
+                                type: "string",
+                                enum: ["choice", "documents"],
+                            },
+                            question: { type: "string" },
+                            options: {
+                                type: "array",
+                                items: { type: "string" },
+                            },
+                            allow_other: { type: "boolean" },
+                            other_label: { type: "string" },
+                            document_types: {
+                                type: "array",
+                                items: { type: "string" },
+                            },
+                            response_prefix: { type: "string" },
+                        },
+                        required: ["kind"],
+                    },
+                },
+            },
+            required: ["items"],
+        },
+    },
+};
+
 export const TOOLS = [
     {
         type: "function",
@@ -421,6 +487,92 @@ export const TOOLS = [
                     },
                 },
                 required: ["title", "sections"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "generate_excel",
+            description:
+                "Generate an Excel (.xlsx) workbook from structured sheet data. Use this when the user asks for a spreadsheet, tracker, matrix, checklist, schedule, or Excel file. Returns a download URL for the generated file.",
+            parameters: {
+                type: "object",
+                properties: {
+                    title: {
+                        type: "string",
+                        description: "Workbook title, used as the filename.",
+                    },
+                    sheets: {
+                        type: "array",
+                        description:
+                            "Workbook sheets. Each sheet has a name, columns, and rows. Row values must follow the columns order.",
+                        items: {
+                            type: "object",
+                            properties: {
+                                name: {
+                                    type: "string",
+                                    description: "Sheet tab name. Keep it short.",
+                                },
+                                columns: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                    description: "Column header labels.",
+                                },
+                                rows: {
+                                    type: "array",
+                                    items: {
+                                        type: "array",
+                                        items: { type: "string" },
+                                    },
+                                    description:
+                                        "Array of rows, each row an array of cell strings matching the columns order.",
+                                },
+                            },
+                            required: ["name", "columns", "rows"],
+                        },
+                    },
+                },
+                required: ["title", "sheets"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "generate_ppt",
+            description:
+                "Generate a PowerPoint (.pptx) presentation from structured slides. Use this when the user asks for slides, a deck, presentation, or PowerPoint file. Returns a download URL for the generated file.",
+            parameters: {
+                type: "object",
+                properties: {
+                    title: {
+                        type: "string",
+                        description: "Presentation title, used as the filename.",
+                    },
+                    slides: {
+                        type: "array",
+                        description:
+                            "Slides in order. Each slide has a title and concise bullet points.",
+                        items: {
+                            type: "object",
+                            properties: {
+                                title: {
+                                    type: "string",
+                                    description: "Slide title.",
+                                },
+                                bullets: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                    description:
+                                        "Main bullet points for the slide. Keep each bullet concise.",
+                                },
+                            },
+                            required: ["title", "bullets"],
+                        },
+                    },
+                },
+                required: ["title", "slides"],
             },
         },
     },
@@ -1283,6 +1435,167 @@ export async function generateDocx(
     }
 }
 
+type GeneratedOfficeExtension = "xlsx" | "pptx";
+
+type GeneratedOfficeResult = {
+    filename: string;
+    download_url: string;
+    document_id: string;
+    version_id: string;
+    version_number: number;
+    storage_path: string;
+};
+
+/**
+ * Persist an assistant-created Office file through the same Azure Blob and
+ * document-version contract as an uploaded Docket document. The file is not
+ * a temporary chat attachment: it is an ordinary project/standalone document
+ * that later assistant turns can read and users can open or download.
+ */
+async function persistGeneratedOfficeFile(params: {
+    title: unknown;
+    extension: GeneratedOfficeExtension;
+    buffer: Buffer;
+    userId: string;
+    db: ReturnType<typeof createServerSupabase>;
+    projectId?: string | null;
+}): Promise<GeneratedOfficeResult | { error: string }> {
+    const { title, extension, buffer, userId, db, projectId } = params;
+    const docId = crypto.randomUUID().replace(/-/g, "");
+    const filename = generatedOfficeFilename(title, extension);
+    const key = generatedDocKey(userId, docId, filename);
+    const bytes = buffer.buffer.slice(
+        buffer.byteOffset,
+        buffer.byteOffset + buffer.byteLength,
+    ) as ArrayBuffer;
+
+    await uploadFile(key, bytes, contentTypeForDocumentType(extension));
+
+    // Docket displays presentations through the same optional PDF rendition
+    // used for uploaded .pptx files. Conversion is best-effort: a missing
+    // LibreOffice binary must not prevent a user from downloading their deck.
+    let pdfStoragePath: string | null = null;
+    if (extension === "pptx") {
+        try {
+            const pdfBuffer = await docxToPdf(buffer);
+            const pdfKey = convertedPdfKey(userId, docId);
+            await uploadFile(
+                pdfKey,
+                pdfBuffer.buffer.slice(
+                    pdfBuffer.byteOffset,
+                    pdfBuffer.byteOffset + pdfBuffer.byteLength,
+                ) as ArrayBuffer,
+                "application/pdf",
+            );
+            pdfStoragePath = pdfKey;
+        } catch {
+            console.warn(
+                "[generate_ppt] PDF rendition unavailable; serving raw .pptx download",
+            );
+        }
+    }
+
+    const { data: docRow, error: docErr } = await db
+        .from("documents")
+        .insert({
+            project_id: projectId ?? null,
+            user_id: userId,
+            filename,
+            file_type: extension,
+            size_bytes: buffer.byteLength,
+            status: "ready",
+        })
+        .select("id")
+        .single();
+    if (docErr || !docRow) {
+        return {
+            error: `Failed to record generated document: ${safeErrorMessage(docErr, "database insert failed")}`,
+        };
+    }
+    const documentId = docRow.id as string;
+
+    const { data: versionRow, error: verErr } = await db
+        .from("document_versions")
+        .insert({
+            document_id: documentId,
+            storage_path: key,
+            pdf_storage_path: pdfStoragePath,
+            source: "generated",
+            version_number: 1,
+            display_name: filename,
+        })
+        .select("id")
+        .single();
+    if (verErr || !versionRow) {
+        return {
+            error: `Failed to record generated document version: ${safeErrorMessage(verErr, "database insert failed")}`,
+        };
+    }
+    const versionId = versionRow.id as string;
+
+    await db
+        .from("documents")
+        .update({ current_version_id: versionId })
+        .eq("id", documentId);
+
+    return {
+        filename,
+        download_url: buildDownloadUrl(key, filename),
+        document_id: documentId,
+        version_id: versionId,
+        version_number: 1,
+        storage_path: key,
+    };
+}
+
+export async function generateExcel(
+    title: unknown,
+    sheets: unknown,
+    userId: string,
+    db: ReturnType<typeof createServerSupabase>,
+    options?: { projectId?: string | null },
+) {
+    try {
+        const buffer = buildXlsxWorkbook(title, sheets);
+        return await persistGeneratedOfficeFile({
+            title,
+            extension: "xlsx",
+            buffer,
+            userId,
+            db,
+            projectId: options?.projectId ?? null,
+        });
+    } catch (error) {
+        return {
+            error: safeErrorMessage(error, "Unable to generate the Excel workbook."),
+        };
+    }
+}
+
+export async function generatePpt(
+    title: unknown,
+    slides: unknown,
+    userId: string,
+    db: ReturnType<typeof createServerSupabase>,
+    options?: { projectId?: string | null },
+) {
+    try {
+        const buffer = await buildPptxPresentation(title, slides);
+        return await persistGeneratedOfficeFile({
+            title,
+            extension: "pptx",
+            buffer,
+            userId,
+            db,
+            projectId: options?.projectId ?? null,
+        });
+    } catch (error) {
+        return {
+            error: safeErrorMessage(error, "Unable to generate the PowerPoint presentation."),
+        };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Document version helpers (DOCX tracked-change editing)
 // ---------------------------------------------------------------------------
@@ -1863,6 +2176,104 @@ export type TurnEditState = Map<
     { versionId: string; versionNumber: number; storagePath: string }
 >;
 
+export type TurnReadState = Map<
+    string,
+    {
+        docLabel: string;
+        filename: string;
+        documentId?: string;
+        versionId?: string | null;
+        storagePath: string;
+    }
+>;
+
+/**
+ * Return a stable identity for the exact document bytes a tool call would
+ * read.  A chat can refer to the same document by its local label, filename,
+ * or UUID, so the local label alone is not enough to detect repeats.  Prefer
+ * the active version ID when one exists; otherwise the storage path still
+ * makes an uploaded/generated file safe to de-duplicate within a turn.
+ */
+export async function getTurnReadIdentity(params: {
+    docLabel: string;
+    docStore: DocStore;
+    docIndex?: DocIndex;
+    db?: ReturnType<typeof createServerSupabase>;
+}): Promise<{
+    key: string;
+    docLabel: string;
+    filename: string;
+    documentId?: string;
+    versionId?: string | null;
+    storagePath: string;
+} | null> {
+    const { docLabel, docStore, docIndex, db } = params;
+    const docInfo = docStore.get(docLabel);
+    if (!docInfo) return null;
+
+    const documentId = docIndex?.[docLabel]?.document_id;
+    if (documentId && db) {
+        const active = await loadActiveVersion(documentId, db);
+        if (active?.storage_path) {
+            return {
+                key: `${documentId}:${active.id}`,
+                docLabel,
+                filename: docInfo.filename,
+                documentId,
+                versionId: active.id,
+                storagePath: active.storage_path,
+            };
+        }
+    }
+
+    return {
+        key: `${documentId ?? docLabel}:${docInfo.storage_path}`,
+        docLabel,
+        filename: docInfo.filename,
+        documentId,
+        versionId: docIndex?.[docLabel]?.version_id ?? null,
+        storagePath: docInfo.storage_path,
+    };
+}
+
+export function duplicateReadDocumentResult(identity: {
+    docLabel: string;
+    filename: string;
+    documentId?: string;
+    versionId?: string | null;
+}) {
+    return JSON.stringify({
+        ok: true,
+        already_read: true,
+        doc_id: identity.docLabel,
+        filename: identity.filename,
+        document_id: identity.documentId,
+        version_id: identity.versionId ?? null,
+        content:
+            "This document/version was already read earlier in this response. The full text is not repeated to avoid unnecessary token use.",
+        next_required_action:
+            "Use the prior read_document/fetch_documents result, call find_in_document for targeted checks, or proceed to edit_document.",
+    });
+}
+
+export function clearTurnReadsForDocument(
+    turnReadState: TurnReadState | undefined,
+    documentId: string,
+) {
+    if (!turnReadState) return;
+    for (const [key, value] of turnReadState.entries()) {
+        if (value.documentId === documentId) turnReadState.delete(key);
+    }
+}
+
+function askInputsRequestId(toolCallId: string) {
+    const safe = toolCallId
+        .replace(/[^A-Za-z0-9._:-]/g, "-")
+        .replace(/-+/g, "-")
+        .slice(0, 120);
+    return `ask-${safe || randomUUID()}`;
+}
+
 export type DocCreatedResult = {
     filename: string;
     download_url: string;
@@ -2200,6 +2611,12 @@ export async function runToolCalls(
     projectId?: string | null,
     courtlistenerState?: CourtlistenerTurnState,
     apiKeys?: import("./llm").UserApiKeys,
+    signal?: AbortSignal,
+    askInputsContext?: {
+        chatId: string;
+        assistantMessageId: string;
+    },
+    turnReadState?: TurnReadState,
 ): Promise<{
     toolResults: unknown[];
     docsRead: { filename: string; document_id?: string }[];
@@ -2208,10 +2625,12 @@ export async function runToolCalls(
     docsReplicated: DocReplicatedResult[];
     workflowsApplied: { workflow_id: string; title: string }[];
     docsEdited: DocEditedResult[];
+    askInputsEvents: AskInputsEvent[];
     courtlistenerEvents: CourtlistenerToolEvent[];
     caseCitationEvents: CaseCitationEvent[];
     mcpEvents: McpToolEvent[];
 }> {
+    throwIfAborted(signal);
     const toolResults: unknown[] = [];
     const docsRead: { filename: string; document_id?: string }[] = [];
     const docsFound: {
@@ -2223,6 +2642,7 @@ export async function runToolCalls(
     const docsReplicated: DocReplicatedResult[] = [];
     const workflowsApplied: { workflow_id: string; title: string }[] = [];
     const docsEdited: DocEditedResult[] = [];
+    const askInputsEvents: AskInputsEvent[] = [];
     const courtlistenerEvents: CourtlistenerToolEvent[] = [];
     const caseCitationEvents: CaseCitationEvent[] = [];
     const mcpEvents: McpToolEvent[] = [];
@@ -2250,7 +2670,105 @@ export async function runToolCalls(
         { type: "courtlistener_find_in_case" }
     >[] = [];
 
+    /**
+     * All generation tools emit the existing doc_created SSE contract. That
+     * keeps .xlsx/.pptx download cards and project refresh behavior identical
+     * to generated DOCX files, while registering the new file in the current
+     * turn so read_document can inspect it before the model responds.
+     */
+    const publishGeneratedDocument = (
+        tc: ToolCall,
+        result: unknown,
+        previewFilename: string,
+        fileType: "docx" | "xlsx" | "pptx",
+    ) => {
+        const record =
+            result && typeof result === "object"
+                ? (result as Record<string, unknown>)
+                : {};
+        const filename =
+            typeof record.filename === "string" ? record.filename : null;
+        const downloadUrl =
+            typeof record.download_url === "string" ? record.download_url : null;
+        let newDocLabel: string | null = null;
+
+        if (filename && downloadUrl) {
+            const documentId =
+                typeof record.document_id === "string"
+                    ? record.document_id
+                    : undefined;
+            const versionId =
+                typeof record.version_id === "string" ? record.version_id : undefined;
+            const versionNumber =
+                typeof record.version_number === "number"
+                    ? record.version_number
+                    : null;
+            const storagePath =
+                typeof record.storage_path === "string"
+                    ? record.storage_path
+                    : undefined;
+
+            if (documentId && storagePath && docIndex) {
+                const existingLabels = new Set(Object.keys(docIndex));
+                let i = 0;
+                while (existingLabels.has(`doc-${i}`)) i++;
+                newDocLabel = `doc-${i}`;
+                docIndex[newDocLabel] = {
+                    document_id: documentId,
+                    filename,
+                    version_id: versionId ?? null,
+                    version_number: versionNumber,
+                };
+                docStore.set(newDocLabel, {
+                    storage_path: storagePath,
+                    file_type: fileType,
+                    filename,
+                });
+            }
+
+            write(
+                `data: ${JSON.stringify({
+                    type: "doc_created",
+                    filename,
+                    download_url: downloadUrl,
+                    document_id: documentId,
+                    version_id: versionId,
+                    version_number: versionNumber,
+                })}\n\n`,
+            );
+            docsCreated.push({
+                filename,
+                download_url: downloadUrl,
+                document_id: documentId,
+                version_id: versionId,
+                version_number: versionNumber,
+            });
+        } else {
+            write(
+                `data: ${JSON.stringify({ type: "doc_created", filename: previewFilename, download_url: "" })}\n\n`,
+            );
+        }
+
+        const { download_url, storage_path, ...safeToolResult } = record;
+        const toolResultPayload = newDocLabel
+            ? {
+                  ...safeToolResult,
+                  doc_id: newDocLabel,
+                  next_required_action: `Before writing your final response, call read_document with doc_id "${newDocLabel}". Describe and cite the generated file using doc_id "${newDocLabel}", not any source/template document. Do not include download links because the UI displays the download card automatically.`,
+              }
+            : safeToolResult;
+        toolResults.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify(toolResultPayload),
+        });
+    };
+
     for (const tc of toolCalls) {
+        // A provider response can contain several tool calls. Let the
+        // in-flight call finish so its artifacts/events are retained, then
+        // avoid dispatching any later call after the client disconnects.
+        if (signal?.aborted) break;
         let args: Record<string, unknown> = {};
         try {
             args = JSON.parse(tc.function.arguments || "{}");
@@ -2258,10 +2776,84 @@ export async function runToolCalls(
             /* ignore */
         }
 
+        if (tc.function.name === "ask_inputs") {
+            if (!askInputsContext) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error:
+                            "Ask Inputs is available only in an assistant chat with a persisted response placeholder.",
+                    }),
+                });
+                continue;
+            }
+            const event = normalizeAskInputsEvent(
+                args,
+                askInputsRequestId(tc.id),
+            );
+            if (!event) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "Ask Inputs requires one or more valid choice or document items.",
+                    }),
+                });
+                continue;
+            }
+            const persisted = await persistAskInputsRequest(db, {
+                chatId: askInputsContext.chatId,
+                assistantMessageId: askInputsContext.assistantMessageId,
+                createdByUserId: userId,
+                event,
+            });
+            if (!persisted.ok) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({ ok: false, error: persisted.detail }),
+                });
+                continue;
+            }
+            askInputsEvents.push(persisted.event);
+            write(`data: ${JSON.stringify(persisted.event)}\n\n`);
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                    ok: true,
+                    paused: true,
+                    request_id: persisted.event.request_id,
+                    content:
+                        "The user has been asked for the required inputs. Stop this response and wait for the continuation turn.",
+                }),
+            });
+            // Any provider batch after this tool is intentionally ignored:
+            // inputs must be answered before any more assistant actions run.
+            break;
+        }
+
         if (tc.function.name === "read_document") {
             const rawDocId = args.doc_id as string;
             const docId =
                 resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+            const readIdentity = await getTurnReadIdentity({
+                docLabel: docId,
+                docStore,
+                docIndex,
+                db,
+            });
+            if (readIdentity && turnReadState?.has(readIdentity.key)) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: duplicateReadDocumentResult(readIdentity),
+                });
+                continue;
+            }
             const content = await readDocumentContent(
                 docId,
                 docStore,
@@ -2271,6 +2863,9 @@ export async function runToolCalls(
             );
             const filename = docStore.get(docId)?.filename;
             const documentId = docIndex?.[docId]?.document_id;
+            if (readIdentity && turnReadState) {
+                turnReadState.set(readIdentity.key, readIdentity);
+            }
             if (filename) docsRead.push({ filename, document_id: documentId });
             toolResults.push({
                 role: "tool",
@@ -2340,6 +2935,19 @@ export async function runToolCalls(
             );
             const parts: string[] = [];
             for (const docId of docIds) {
+                const readIdentity = await getTurnReadIdentity({
+                    docLabel: docId,
+                    docStore,
+                    docIndex,
+                    db,
+                });
+                if (readIdentity && turnReadState?.has(readIdentity.key)) {
+                    const filename = docStore.get(docId)?.filename ?? docId;
+                    parts.push(
+                        `--- ${filename} (${docId}) ---\n${duplicateReadDocumentResult(readIdentity)}`,
+                    );
+                    continue;
+                }
                 const content = await readDocumentContent(
                     docId,
                     docStore,
@@ -2348,6 +2956,9 @@ export async function runToolCalls(
                     db,
                 );
                 const filename = docStore.get(docId)?.filename ?? docId;
+                if (readIdentity && turnReadState) {
+                    turnReadState.set(readIdentity.key, readIdentity);
+                }
                 parts.push(
                     `--- ${filename} (${docId}) ---\n${citationReminder(docId, filename)}\n\n${content}`,
                 );
@@ -2531,6 +3142,10 @@ export async function runToolCalls(
                         versionNumber: result.version_number,
                         storagePath: result.storage_path,
                     });
+                    clearTurnReadsForDocument(
+                        turnReadState,
+                        indexed.document_id,
+                    );
                     // Keep the chat-local doc label pointed at the latest
                     // edited version so any follow-up read_document call in
                     // the same assistant turn reads and cites the same bytes.
@@ -3430,11 +4045,10 @@ export async function runToolCalls(
                 content: result.content,
             });
         } else if (tc.function.name === "generate_docx") {
-            const title = args.title as string;
-            const landscape = !!args.landscape;
-            console.log(
-                `[generate_docx] title="${title}" landscape=${landscape} args.landscape=${args.landscape}`,
-            );
+            const title =
+                typeof args.title === "string" && args.title.trim()
+                    ? args.title
+                    : "document";
             const previewFilename = `${
                 title
                     .replace(/[^a-zA-Z0-9 _-]/g, "")
@@ -3446,86 +4060,46 @@ export async function runToolCalls(
             );
             const result = await generateDocx(
                 title,
-                args.sections as unknown[],
+                Array.isArray(args.sections) ? args.sections : [],
                 userId,
                 db,
-                { landscape, projectId: projectId ?? null },
+                { landscape: !!args.landscape, projectId: projectId ?? null },
             );
-            let newDocLabel: string | null = null;
-            if ("filename" in result && "download_url" in result) {
-                const dlFilename = result.filename as string;
-                const dlUrl = result.download_url as string;
-                const documentId = (result as { document_id?: string })
-                    .document_id;
-                const versionId = (result as { version_id?: string })
-                    .version_id;
-                const versionNumber =
-                    (result as { version_number?: number }).version_number ??
-                    null;
-                const storagePath = (result as { storage_path?: string })
-                    .storage_path;
-
-                // Register the generated doc in the chat context so
-                // edit_document (and read_document / find_in_document)
-                // can act on it within the same assistant turn. New label
-                // is the next free `doc-N` index. Subsequent turns pick
-                // it up via the normal attachment/project doc query.
-                if (documentId && storagePath && docIndex) {
-                    const existingLabels = new Set(Object.keys(docIndex));
-                    let i = 0;
-                    while (existingLabels.has(`doc-${i}`)) i++;
-                    newDocLabel = `doc-${i}`;
-                    docIndex[newDocLabel] = {
-                        document_id: documentId,
-                        filename: dlFilename,
-                    };
-                    docStore.set(newDocLabel, {
-                        storage_path: storagePath,
-                        file_type: "docx",
-                        filename: dlFilename,
-                    });
-                }
-
-                write(
-                    `data: ${JSON.stringify({
-                        type: "doc_created",
-                        filename: dlFilename,
-                        download_url: dlUrl,
-                        document_id: documentId,
-                        version_id: versionId,
-                        version_number: versionNumber,
-                    })}\n\n`,
-                );
-                docsCreated.push({
-                    filename: dlFilename,
-                    download_url: dlUrl,
-                    document_id: documentId,
-                    version_id: versionId,
-                    version_number: versionNumber,
-                });
-            } else {
-                write(
-                    `data: ${JSON.stringify({ type: "doc_created", filename: previewFilename, download_url: "" })}\n\n`,
-                );
-            }
-            // Surface the chat-local doc label in the tool result so the
-            // model can pass it as `doc_id` to edit_document / read_document
-            // / find_in_document in the same turn. Without this the model
-            // only sees the DB UUID, which isn't valid as a doc_id anchor.
-            const { download_url, storage_path, ...safeToolResult } =
-                result as Record<string, unknown>;
-            const toolResultPayload = newDocLabel
-                ? {
-                      ...safeToolResult,
-                      doc_id: newDocLabel,
-                      next_required_action: `Before writing your final response, call read_document with doc_id "${newDocLabel}". Describe and cite the generated document using doc_id "${newDocLabel}", not the source/template document.`,
-                  }
-                : safeToolResult;
-            toolResults.push({
-                role: "tool",
-                tool_call_id: tc.id,
-                content: JSON.stringify(toolResultPayload),
-            });
+            publishGeneratedDocument(tc, result, previewFilename, "docx");
+        } else if (tc.function.name === "generate_excel") {
+            const title =
+                typeof args.title === "string" && args.title.trim()
+                    ? args.title
+                    : "Workbook";
+            const previewFilename = generatedOfficeFilename(title, "xlsx");
+            write(
+                `data: ${JSON.stringify({ type: "doc_created_start", filename: previewFilename })}\n\n`,
+            );
+            const result = await generateExcel(
+                title,
+                args.sheets,
+                userId,
+                db,
+                { projectId: projectId ?? null },
+            );
+            publishGeneratedDocument(tc, result, previewFilename, "xlsx");
+        } else if (tc.function.name === "generate_ppt") {
+            const title =
+                typeof args.title === "string" && args.title.trim()
+                    ? args.title
+                    : "Presentation";
+            const previewFilename = generatedOfficeFilename(title, "pptx");
+            write(
+                `data: ${JSON.stringify({ type: "doc_created_start", filename: previewFilename })}\n\n`,
+            );
+            const result = await generatePpt(
+                title,
+                args.slides,
+                userId,
+                db,
+                { projectId: projectId ?? null },
+            );
+            publishGeneratedDocument(tc, result, previewFilename, "pptx");
         }
     }
 
@@ -3556,6 +4130,7 @@ export async function runToolCalls(
         docsReplicated,
         workflowsApplied,
         docsEdited,
+        askInputsEvents,
         courtlistenerEvents,
         caseCitationEvents,
         mcpEvents,
@@ -3647,7 +4222,15 @@ type AssistantEvent =
     | CaseCitationEvent
     | CourtlistenerToolEvent
     | McpToolEvent
+    | AskInputsEvent
     | { type: "content"; text: string };
+
+class AskInputsPauseError extends Error {
+    constructor() {
+        super("Assistant is waiting for Ask Inputs responses");
+        this.name = "AskInputsPauseError";
+    }
+}
 
 export async function runLLMStream(params: {
     apiMessages: unknown[];
@@ -3664,6 +4247,10 @@ export async function runLLMStream(params: {
     apiKeys?: import("./llm").UserApiKeys;
     includeResearchTools?: boolean;
     chatId?: string | null;
+    /** Assistant placeholder row for durable Ask Inputs pause/resume. */
+    assistantMessageId?: string | null;
+    /** Stops provider work when the streaming client disconnects. */
+    signal?: AbortSignal;
     /**
      * If set, generate_docx will attach created docs to this project so
      * they appear in the project sidebar. Leave null for general chats —
@@ -3686,14 +4273,10 @@ export async function runLLMStream(params: {
         apiKeys,
         includeResearchTools = false,
         chatId,
+        assistantMessageId,
         projectId,
+        signal,
     } = params;
-    const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
-    const mcpTools = await buildUserMcpTools(userId, db);
-    const baseTools = [...TOOLS, ...researchTools, ...WORKFLOW_TOOLS, ...mcpTools];
-    const activeTools = extraTools?.length
-        ? [...baseTools, ...extraTools]
-        : baseTools;
 
     // Extract system prompt; pass remaining turns to the adapter as
     // plain user/assistant messages.
@@ -3707,6 +4290,24 @@ export async function runLLMStream(params: {
             content: m.content ?? "",
         }));
 
+    throwIfAborted(signal);
+    const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+    const mcpTools = await buildUserMcpTools(userId, db);
+    throwIfAborted(signal);
+    const askInputsAvailable = Boolean(
+        chatId && assistantMessageId && !tabularStore,
+    );
+    const baseTools = [
+        ...TOOLS,
+        ...researchTools,
+        ...WORKFLOW_TOOLS,
+        ...(askInputsAvailable ? [ASK_INPUTS_TOOL] : []),
+        ...mcpTools,
+    ];
+    const activeTools = extraTools?.length
+        ? [...baseTools, ...extraTools]
+        : baseTools;
+
     const events: AssistantEvent[] = [];
     // One assistant turn produces at most one document_versions row per
     // edited doc. `runToolCalls` fires once per tool-call batch; the model
@@ -3714,6 +4315,10 @@ export async function runLLMStream(params: {
     // across batches to let subsequent edit_document calls overwrite the
     // turn's existing version instead of creating a new one.
     const turnEditState: TurnEditState = new Map();
+    // Keep one full read of a given document version per assistant response.
+    // An edit invalidates its entry so a post-edit verification read remains
+    // available in the same response.
+    const turnReadState: TurnReadState = new Map();
     const courtlistenerTurnState: CourtlistenerTurnState = {
         casesByClusterId: new Map(),
     };
@@ -3723,6 +4328,7 @@ export async function runLLMStream(params: {
     let iterReasoning = "";
     let visibleTailBuffer = "";
     let citationsOpenSeen = false;
+    let partialCitationCount = 0;
 
     const streamVisibleContent = (delta: string) => {
         if (!delta) return;
@@ -3740,6 +4346,15 @@ export async function runLLMStream(params: {
             }
             visibleTailBuffer = "";
             citationsOpenSeen = true;
+            if (!buildCitations) {
+                write(
+                    `data: ${JSON.stringify({
+                        type: "citations",
+                        status: "started",
+                        citations: [],
+                    })}\n\n`,
+                );
+            }
             return;
         }
 
@@ -3754,22 +4369,42 @@ export async function runLLMStream(params: {
         }
     };
 
-    const flushVisibleTail = () => {
+    const streamPartialRichCitations = () => {
+        if (buildCitations || !citationsOpenSeen) return;
+        const citations = extractRichCitations(
+            `${fullText}${iterText}`,
+            docIndex,
+            events,
+        );
+        if (citations.length <= partialCitationCount) return;
+        partialCitationCount = citations.length;
+        write(
+            `data: ${JSON.stringify({
+                type: "citations",
+                status: "partial",
+                citations,
+            })}\n\n`,
+        );
+    };
+
+    const flushVisibleTail = (options: { emit?: boolean } = {}) => {
         if (citationsOpenSeen || !visibleTailBuffer) {
             visibleTailBuffer = "";
             return;
         }
         iterVisibleText += visibleTailBuffer;
-        write(
-            `data: ${JSON.stringify({ type: "content_delta", text: visibleTailBuffer })}\n\n`,
-        );
+        if (options.emit !== false) {
+            write(
+                `data: ${JSON.stringify({ type: "content_delta", text: visibleTailBuffer })}\n\n`,
+            );
+        }
         visibleTailBuffer = "";
     };
 
-    const flushText = () => {
+    const flushText = (options: { emit?: boolean } = {}) => {
         if (!iterText) return;
         fullText += iterText;
-        flushVisibleTail();
+        flushVisibleTail(options);
         if (iterVisibleText) {
             events.push({ type: "content", text: iterVisibleText });
         }
@@ -3779,8 +4414,17 @@ export async function runLLMStream(params: {
         citationsOpenSeen = false;
     };
 
+    const flushPartialTurn = () => {
+        flushText({ emit: false });
+        if (iterReasoning) {
+            events.push({ type: "reasoning", text: iterReasoning });
+            iterReasoning = "";
+        }
+    };
+
     const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
 
+    throwIfAborted(signal);
     await streamChatWithTools({
         model: selectedModel,
         systemPrompt,
@@ -3789,6 +4433,7 @@ export async function runLLMStream(params: {
         maxIterations: 10,
         apiKeys,
         enableThinking: true,
+        abortSignal: signal,
         aiObservability: {
             distinctId: userId,
             sessionId: chatId,
@@ -3806,6 +4451,7 @@ export async function runLLMStream(params: {
             onContentDelta: (delta) => {
                 iterText += delta;
                 streamVisibleContent(delta);
+                streamPartialRichCitations();
             },
             onReasoningDelta: (delta) => {
                 iterReasoning += delta;
@@ -3838,6 +4484,7 @@ export async function runLLMStream(params: {
             },
         },
         runTools: async (calls) => {
+            throwIfAborted(signal);
             // Emit any text the model produced before this tool turn so the
             // UI sees it before the tool results stream in.
             flushText();
@@ -3857,6 +4504,7 @@ export async function runLLMStream(params: {
                 docsReplicated,
                 workflowsApplied,
                 docsEdited,
+                askInputsEvents,
                 courtlistenerEvents,
                 caseCitationEvents,
                 mcpEvents,
@@ -3873,6 +4521,11 @@ export async function runLLMStream(params: {
                 projectId,
                 courtlistenerTurnState,
                 apiKeys,
+                signal,
+                askInputsAvailable && chatId && assistantMessageId
+                    ? { chatId, assistantMessageId }
+                    : undefined,
+                turnReadState,
             );
             for (const r of docsRead) {
                 events.push({
@@ -3925,6 +4578,9 @@ export async function runLLMStream(params: {
                     annotations: e.annotations,
                 });
             }
+            for (const event of askInputsEvents) {
+                events.push(event);
+            }
             for (const event of caseCitationEvents) {
                 events.push(event);
             }
@@ -3946,6 +4602,16 @@ export async function runLLMStream(params: {
                 const row = r as { tool_call_id: string; content?: unknown };
                 resultByCallId.set(row.tool_call_id, String(row.content ?? ""));
             }
+            if (askInputsEvents.length > 0) {
+                // The event has been persisted before it reaches this point.
+                // Throwing here stops all provider adapters before they can
+                // launch another iteration with speculative tool results.
+                throw new AskInputsPauseError();
+            }
+            // The caller persists events accumulated above when this abort
+            // propagates, so wait until after they are recorded before
+            // preventing a follow-up provider iteration.
+            throwIfAborted(signal);
             return toolCalls.map((c) => ({
                 tool_use_id: c.id,
                 content:
@@ -3955,7 +4621,19 @@ export async function runLLMStream(params: {
                     }),
             }));
         },
-    });
+    })
+        .then(() => throwIfAborted(signal))
+        .catch((error) => {
+            if (error instanceof AskInputsPauseError) {
+                flushText();
+                return;
+            }
+            if (signal?.aborted || isAbortError(error)) {
+                flushPartialTurn();
+                throw new AssistantStreamAbortError(fullText, events);
+            }
+            throw error;
+        });
 
     flushText();
 

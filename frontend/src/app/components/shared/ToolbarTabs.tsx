@@ -26,6 +26,7 @@ export function ToolbarTabs<T extends string>({
                     <button
                         key={tab.id}
                         onClick={() => onChange(tab.id)}
+                        aria-pressed={active === tab.id}
                         className={`text-xs transition-colors ${
                             active === tab.id
                                 ? "font-medium text-gray-700"

@@ -25,7 +25,12 @@ interface Props {
     bordered?: boolean;
 }
 
-type QuoteEntry = { page?: number; quote: string };
+type QuoteEntry = {
+    page?: number;
+    quote: string;
+    sheet?: string;
+    cell?: string;
+};
 
 const SIDE_PADDING = 20;
 const ZOOM_MIN = 0.5;
@@ -60,15 +65,31 @@ export function DocView({
 
     const quoteList: QuoteEntry[] = useMemo(() => {
         if (quotes?.length)
-            return quotes.map((q) => ({ page: q.page, quote: q.quote }));
+            return quotes.map((q) => ({
+                page: q.page,
+                quote: q.quote,
+                sheet: q.sheet,
+                cell: q.cell,
+            }));
         if (quote) return [{ page: fallbackPage, quote }];
         return [];
     }, [quotes, quote, fallbackPage]);
 
     // Stable string key so effects can depend on quote-list identity
     const quoteKey = quoteList
-        .map((q) => `${q.page ?? ""}:${q.quote}`)
+        .map((q) => `${q.page ?? ""}:${q.sheet ?? ""}:${q.cell ?? ""}:${q.quote}`)
         .join("|");
+
+    const spreadsheetHighlightCells = useMemo(
+        () =>
+            quoteList
+                .filter((entry) => entry.sheet || entry.cell)
+                .map((entry) => ({
+                    ...(entry.sheet ? { sheet: entry.sheet } : {}),
+                    ...(entry.cell ? { cell: entry.cell } : {}),
+                })),
+        [quoteList],
+    );
 
     const [containerWidth, setContainerWidth] = useState(0);
     const [zoom, setZoom] = useState(1.0);
@@ -550,6 +571,7 @@ export function DocView({
                 versionId={doc.version_id ?? undefined}
                 rounded={rounded}
                 bordered={bordered}
+                highlightCells={spreadsheetHighlightCells}
             />
         );
     }

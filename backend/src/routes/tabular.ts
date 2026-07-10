@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import { downloadFile } from "../lib/storage";
@@ -16,7 +16,15 @@ import {
     type ChatMessage,
     type TabularCellStore,
 } from "../lib/chatTools";
-import { completeText, providerForModel, streamChatWithTools } from "../lib/llm";
+import {
+    appendCancellationMarker,
+    AssistantStreamAbortError,
+    completeText,
+    isAbortError,
+    providerForModel,
+    streamChatWithTools,
+    throwIfAborted,
+} from "../lib/llm";
 import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import {
     checkProjectAccess,
@@ -25,6 +33,8 @@ import {
     listAccessibleProjectIds,
 } from "../lib/access";
 import { chatStreamErrorLine } from "../lib/chatErrors";
+import { safeErrorLog } from "../lib/safeError";
+import { SYSTEM_WORKFLOWS } from "../lib/systemWorkflows";
 
 const TABULAR_CELL_RESULT_FORMAT = {
     type: "json_schema" as const,
@@ -73,6 +83,73 @@ function formatPromptSuffix(format?: string, tags?: string[]): string {
 }
 
 export const tabularRouter = Router();
+
+function createSafeStreamWriter(res: Response) {
+    return (line: string) => {
+        if (res.destroyed || res.writableEnded) return;
+        try {
+            res.write(line);
+        } catch {
+            // A disconnected browser can close between the writable checks.
+        }
+    };
+}
+
+type TabularWorkflowColumn = {
+    index: number;
+    name: string;
+    prompt: string;
+    format?: string;
+    tags?: string[];
+};
+
+function normalizeTabularColumns(value: unknown): {
+    columns: TabularWorkflowColumn[] | null;
+    detail: string | null;
+} {
+    if (!Array.isArray(value)) {
+        return { columns: null, detail: "columns_config must be an array" };
+    }
+    if (value.length > 100) {
+        return { columns: null, detail: "columns_config may contain at most 100 columns" };
+    }
+    const seenIndexes = new Set<number>();
+    const columns: TabularWorkflowColumn[] = [];
+    for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return { columns: null, detail: "Each column must be an object" };
+        }
+        const column = item as Record<string, unknown>;
+        const index = column.index;
+        const name = typeof column.name === "string" ? column.name.trim() : "";
+        const prompt = typeof column.prompt === "string" ? column.prompt.trim() : "";
+        if (!Number.isInteger(index) || (index as number) < 0 || seenIndexes.has(index as number)) {
+            return { columns: null, detail: "Each column needs a unique non-negative integer index" };
+        }
+        if (!name || name.length > 160 || !prompt || prompt.length > 10_000) {
+            return { columns: null, detail: "Each column needs a name and prompt within the allowed length" };
+        }
+        seenIndexes.add(index as number);
+        columns.push({
+            index: index as number,
+            name,
+            prompt,
+            ...(typeof column.format === "string" && column.format.trim()
+                ? { format: column.format.trim() }
+                : {}),
+            ...(Array.isArray(column.tags)
+                ? {
+                      tags: column.tags
+                          .filter((tag): tag is string => typeof tag === "string")
+                          .map((tag) => tag.trim())
+                          .filter(Boolean)
+                          .slice(0, 50),
+                  }
+                : {}),
+        });
+    }
+    return { columns, detail: null };
+}
 
 // GET /tabular-review
 tabularRouter.get("/", requireAuth, async (req, res) => {
@@ -215,7 +292,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         req.body as {
             title?: string;
             document_ids: string[];
-            columns_config: { index: number; name: string; prompt: string }[];
+            columns_config?: TabularWorkflowColumn[];
             workflow_id?: string;
             project_id?: string;
         };
@@ -231,6 +308,73 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         if (!access.ok)
             return void res.status(404).json({ detail: "Project not found" });
     }
+
+    const requestedWorkflowId =
+        typeof workflow_id === "string" && workflow_id.trim()
+            ? workflow_id.trim()
+            : null;
+    let resolvedColumns: TabularWorkflowColumn[];
+    let customWorkflowId: string | null = null;
+    let systemWorkflowId: string | null = null;
+
+    if (requestedWorkflowId) {
+        const systemWorkflow = SYSTEM_WORKFLOWS.find(
+            (workflow) => workflow.id === requestedWorkflowId,
+        );
+        if (systemWorkflow) {
+            if (systemWorkflow.type !== "tabular") {
+                return void res.status(400).json({ detail: "Selected workflow is not a tabular workflow" });
+            }
+            const normalized = normalizeTabularColumns(
+                systemWorkflow.columns_config ?? [],
+            );
+            if (!normalized.columns || normalized.columns.length === 0) {
+                return void res.status(500).json({ detail: "System workflow has no usable columns" });
+            }
+            resolvedColumns = normalized.columns;
+            systemWorkflowId = systemWorkflow.id;
+        } else {
+            const { data: workflow, error: workflowError } = await db
+                .from("workflows")
+                .select("id, user_id, type, columns_config, is_system")
+                .eq("id", requestedWorkflowId)
+                .eq("is_system", false)
+                .maybeSingle();
+            if (workflowError) {
+                return void res.status(500).json({ detail: workflowError.message });
+            }
+            if (!workflow || workflow.type !== "tabular") {
+                return void res.status(404).json({ detail: "Tabular workflow not found" });
+            }
+            let canUse = workflow.user_id === userId;
+            if (!canUse && userEmail) {
+                const { data: share, error: shareError } = await db
+                    .from("workflow_shares")
+                    .select("workflow_id")
+                    .eq("workflow_id", requestedWorkflowId)
+                    .eq("shared_with_email", userEmail.trim().toLowerCase())
+                    .maybeSingle();
+                if (shareError) return void res.status(500).json({ detail: shareError.message });
+                canUse = !!share;
+            }
+            if (!canUse) {
+                return void res.status(404).json({ detail: "Tabular workflow not found" });
+            }
+            const normalized = normalizeTabularColumns(workflow.columns_config ?? []);
+            if (!normalized.columns || normalized.columns.length === 0) {
+                return void res.status(400).json({ detail: "Selected workflow has no usable columns" });
+            }
+            resolvedColumns = normalized.columns;
+            customWorkflowId = workflow.id;
+        }
+    } else {
+        const normalized = normalizeTabularColumns(columns_config ?? []);
+        if (!normalized.columns) {
+            return void res.status(400).json({ detail: normalized.detail });
+        }
+        resolvedColumns = normalized.columns;
+    }
+
     const allowedDocumentIds = Array.isArray(document_ids)
         ? await filterAccessibleDocumentIds(
               document_ids,
@@ -243,11 +387,15 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         .from("tabular_reviews")
         .insert({
             user_id: userId,
-            title: title ?? null,
-            columns_config,
+            title:
+                typeof title === "string" && title.trim()
+                    ? title.trim().slice(0, 255)
+                    : null,
+            columns_config: resolvedColumns,
             document_ids: allowedDocumentIds,
             project_id: project_id ?? null,
-            workflow_id: workflow_id ?? null,
+            workflow_id: customWorkflowId,
+            system_workflow_id: systemWorkflowId,
         })
         .select("*")
         .single();
@@ -257,7 +405,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             .json({ detail: error?.message ?? "Failed to create review" });
 
     const cells = allowedDocumentIds.flatMap((docId) =>
-        columns_config.map((col) => ({
+        resolvedColumns.map((col) => ({
             review_id: review.id,
             document_id: docId,
             column_index: col.index,
@@ -792,7 +940,7 @@ tabularRouter.post(
                 } catch (err) {
                     console.error(
                         `[regenerate-cell] extraction error doc=${document_id}`,
-                        err,
+                        safeErrorLog(err),
                     );
                 }
             }
@@ -900,11 +1048,38 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    const write = (line: string) => res.write(line);
+    const write = createSafeStreamWriter(res);
+    const streamAbort = new AbortController();
+    let streamFinished = false;
+    const startedCells: { documentId: string; columnIndex: number }[] = [];
+    res.on("close", () => {
+        if (!streamFinished) streamAbort.abort();
+    });
+
+    const resetCancelledCells = async () => {
+        await Promise.all(
+            startedCells.map(async ({ documentId, columnIndex }) => {
+                const { error: resetError } = await db
+                    .from("tabular_cells")
+                    .update({ status: "pending" })
+                    .eq("review_id", reviewId)
+                    .eq("document_id", documentId)
+                    .eq("column_index", columnIndex)
+                    .eq("status", "generating");
+                if (resetError) {
+                    console.error(
+                        "[tabular/generate] failed to reset cancelled cell",
+                        safeErrorLog(resetError),
+                    );
+                }
+            }),
+        );
+    };
 
     try {
-        await Promise.all(
+        const outcomes = await Promise.allSettled(
             docs.map(async (doc) => {
+                throwIfAborted(streamAbort.signal);
                 const docId = doc.id as string;
                 const filename = doc.filename as string;
                 let markdown = "";
@@ -921,11 +1096,12 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                         } catch (err) {
                             console.error(
                                 `[tabular/generate] extraction error doc=${docId}`,
-                                err,
+                                safeErrorLog(err),
                             );
                         }
                     }
                 }
+                throwIfAborted(streamAbort.signal);
 
                 // Filter to only columns that need processing
                 const columnsToProcess = columns.filter((col) => {
@@ -936,6 +1112,11 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
 
                 // Mark all as generating upfront
                 for (const col of columnsToProcess) {
+                    throwIfAborted(streamAbort.signal);
+                    startedCells.push({
+                        documentId: docId,
+                        columnIndex: col.index,
+                    });
                     write(
                         `data: ${JSON.stringify({ type: "cell_update", document_id: docId, column_index: col.index, content: null, status: "generating" })}\n\n`,
                     );
@@ -964,6 +1145,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                         markdown,
                         columnsToProcess,
                         async (columnIndex, result) => {
+                            throwIfAborted(streamAbort.signal);
                             receivedColumns.add(columnIndex);
                             await db
                                 .from("tabular_cells")
@@ -974,21 +1156,27 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                                 .eq("review_id", reviewId)
                                 .eq("document_id", docId)
                                 .eq("column_index", columnIndex);
+                            throwIfAborted(streamAbort.signal);
                             write(
                                 `data: ${JSON.stringify({ type: "cell_update", document_id: docId, column_index: columnIndex, content: result, status: "done" })}\n\n`,
                             );
                         },
                         api_keys,
+                        streamAbort.signal,
                     );
                 } catch (err) {
+                    if (streamAbort.signal.aborted || isAbortError(err)) {
+                        throw err;
+                    }
                     console.error(
                         `[tabular/generate] queryGeminiAllColumns error doc=${docId}`,
-                        err,
+                        safeErrorLog(err),
                     );
                 }
 
                 // Mark any columns the LLM didn't return as error
                 for (const col of columnsToProcess) {
+                    throwIfAborted(streamAbort.signal);
                     if (!receivedColumns.has(col.index)) {
                         await db
                             .from("tabular_cells")
@@ -1001,12 +1189,26 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                         );
                     }
                 }
+                throwIfAborted(streamAbort.signal);
             }),
         );
 
+        if (streamAbort.signal.aborted) {
+            throwIfAborted(streamAbort.signal);
+        }
+        const rejected = outcomes.find(
+            (outcome): outcome is PromiseRejectedResult =>
+                outcome.status === "rejected",
+        );
+        if (rejected) throw rejected.reason;
+
         write("data: [DONE]\n\n");
     } catch (err) {
-        console.error("[tabular/generate] stream error", err);
+        if (streamAbort.signal.aborted || isAbortError(err)) {
+            await resetCancelledCells();
+            return;
+        }
+        console.error("[tabular/generate] stream error", safeErrorLog(err));
         try {
             write(chatStreamErrorLine(err));
             write("data: [DONE]\n\n");
@@ -1014,6 +1216,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
             /* ignore */
         }
     } finally {
+        streamFinished = true;
         res.end();
     }
 });
@@ -1323,6 +1526,28 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         });
     }
 
+    let assistantMessageId: string | null = null;
+    if (chatId) {
+        const { data: assistantPlaceholder, error: placeholderError } = await db
+            .from("tabular_review_chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "assistant",
+                content: null,
+                annotations: null,
+            })
+            .select("id")
+            .maybeSingle();
+        assistantMessageId =
+            (assistantPlaceholder as { id?: string } | null)?.id ?? null;
+        if (placeholderError) {
+            console.error(
+                "[tabular/chat] failed to create assistant placeholder",
+                safeErrorLog(placeholderError),
+            );
+        }
+    }
+
     const apiMessages = buildTabularMessages(
         messages,
         tabularStore,
@@ -1334,15 +1559,20 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
-    const write = (line: string) => res.write(line);
-
-    if (chatId) {
-        write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
-    }
-
-    const apiKeys = await getUserApiKeys(userId, db);
+    const write = createSafeStreamWriter(res);
+    const streamAbort = new AbortController();
+    let streamFinished = false;
+    res.on("close", () => {
+        if (!streamFinished) streamAbort.abort();
+    });
 
     try {
+        if (chatId) {
+            write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
+        }
+
+        const apiKeys = await getUserApiKeys(userId, db);
+        throwIfAborted(streamAbort.signal);
         const { fullText, events } = await runLLMStream({
             apiMessages,
             docStore: new Map(),
@@ -1356,17 +1586,43 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
                 extractTabularAnnotations(text, tabularStore),
             apiKeys,
             chatId,
+            signal: streamAbort.signal,
         });
 
         const annotations = extractTabularAnnotations(fullText, tabularStore);
 
+        const assistantPayload = {
+            content: events.length ? events : null,
+            annotations: annotations.length ? annotations : null,
+        };
+        if (chatId && assistantMessageId) {
+            const { error: saveError } = await db
+                .from("tabular_review_chat_messages")
+                .update(assistantPayload)
+                .eq("id", assistantMessageId);
+            if (saveError) {
+                console.error(
+                    "[tabular/chat] failed to save assistant message",
+                    safeErrorLog(saveError),
+                );
+            }
+        } else if (chatId) {
+            const { error: saveError } = await db
+                .from("tabular_review_chat_messages")
+                .insert({
+                    chat_id: chatId,
+                    role: "assistant",
+                    ...assistantPayload,
+                });
+            if (saveError) {
+                console.error(
+                    "[tabular/chat] failed to save assistant message",
+                    safeErrorLog(saveError),
+                );
+            }
+        }
+
         if (chatId) {
-            await db.from("tabular_review_chat_messages").insert({
-                chat_id: chatId,
-                role: "assistant",
-                content: events.length ? events : null,
-                annotations: annotations.length ? annotations : null,
-            });
             await db
                 .from("tabular_review_chats")
                 .update({ updated_at: new Date().toISOString() })
@@ -1396,7 +1652,74 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             }
         }
     } catch (err) {
-        console.error("[tabular/chat] error", err);
+        if (isAbortError(err)) {
+            const partialEvents = appendCancellationMarker(
+                err instanceof AssistantStreamAbortError ? err.events : [],
+            );
+            const annotations =
+                err instanceof AssistantStreamAbortError
+                    ? extractTabularAnnotations(err.fullText, tabularStore)
+                    : [];
+            const assistantPayload = {
+                content: partialEvents.length ? partialEvents : null,
+                annotations: annotations.length ? annotations : null,
+            };
+            if (chatId && assistantMessageId) {
+                const { error: saveError } = await db
+                    .from("tabular_review_chat_messages")
+                    .update(assistantPayload)
+                    .eq("id", assistantMessageId);
+                if (saveError) {
+                    console.error(
+                        "[tabular/chat] failed to save cancelled assistant message",
+                        safeErrorLog(saveError),
+                    );
+                }
+            } else if (chatId) {
+                const { error: saveError } = await db
+                    .from("tabular_review_chat_messages")
+                    .insert({
+                        chat_id: chatId,
+                        role: "assistant",
+                        ...assistantPayload,
+                    });
+                if (saveError) {
+                    console.error(
+                        "[tabular/chat] failed to save cancelled assistant message",
+                        safeErrorLog(saveError),
+                    );
+                }
+            }
+            if (chatId) {
+                await db
+                    .from("tabular_review_chats")
+                    .update({ updated_at: new Date().toISOString() })
+                    .eq("id", chatId);
+            }
+            return;
+        }
+        console.error("[tabular/chat] error", safeErrorLog(err));
+        const failurePayload = {
+            content: [
+                {
+                    type: "content",
+                    text: "The assistant failed before it could finish.",
+                },
+            ],
+            annotations: null,
+        };
+        if (chatId && assistantMessageId) {
+            await db
+                .from("tabular_review_chat_messages")
+                .update(failurePayload)
+                .eq("id", assistantMessageId);
+        } else if (chatId) {
+            await db.from("tabular_review_chat_messages").insert({
+                chat_id: chatId,
+                role: "assistant",
+                ...failurePayload,
+            });
+        }
         try {
             write(chatStreamErrorLine(err));
             write("data: [DONE]\n\n");
@@ -1404,6 +1727,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             /* ignore */
         }
     } finally {
+        streamFinished = true;
         res.end();
     }
 });
@@ -1484,7 +1808,7 @@ The "summary" field must contain only the extracted value with inline citations 
             textFormat: TABULAR_CELL_RESULT_FORMAT,
         });
     } catch (err) {
-        console.error("[queryGemini] completion failed", err);
+        console.error("[queryGemini] completion failed", safeErrorLog(err));
         return null;
     }
     try {
@@ -1619,7 +1943,9 @@ async function queryGeminiAllColumns(
     columns: Column[],
     onResult: (columnIndex: number, result: CellResult) => Promise<void>,
     apiKeys?: import("../lib/llm").UserApiKeys,
+    signal?: AbortSignal,
 ): Promise<void> {
+    throwIfAborted(signal);
     const columnsDesc = columns
         .map((col) => {
             const suffix = formatPromptSuffix(col.format as never, col.tags);
@@ -1715,7 +2041,9 @@ Rules:
                     },
                 },
             },
+            abortSignal: signal,
         });
+        throwIfAborted(signal);
         const parsed = JSON.parse(raw) as {
             results?: {
                 column_index?: unknown;
@@ -1725,6 +2053,7 @@ Rules:
             }[];
         };
         for (const item of parsed.results ?? []) {
+            throwIfAborted(signal);
             const normalized = normalizeResult(item);
             if (normalized) await onResult(normalized.columnIndex, normalized.result);
         }
@@ -1735,6 +2064,7 @@ Rules:
     const pending: Promise<unknown>[] = [];
 
     const processLine = async (line: string) => {
+        throwIfAborted(signal);
         const trimmed = line.trim();
         if (!trimmed) return;
         try {
@@ -1745,8 +2075,12 @@ Rules:
                 reasoning?: unknown;
             };
             const normalized = normalizeResult(parsed);
-            if (normalized) await onResult(normalized.columnIndex, normalized.result);
-        } catch {
+            if (normalized) {
+                throwIfAborted(signal);
+                await onResult(normalized.columnIndex, normalized.result);
+            }
+        } catch (err) {
+            if (signal?.aborted || isAbortError(err)) throw err;
             // malformed line — skip
         }
     };
@@ -1760,6 +2094,7 @@ Rules:
             apiKeys,
             reasoningEffort: "low",
             textVerbosity: "low",
+            abortSignal: signal,
             callbacks: {
                 onContentDelta: (delta) => {
                     contentBuffer += delta;
@@ -1776,11 +2111,14 @@ Rules:
             },
         });
     } catch (err) {
-        console.error("[queryGeminiAllColumns] stream failed", err);
+        if (signal?.aborted || isAbortError(err)) throw err;
+        console.error("[queryGeminiAllColumns] stream failed", safeErrorLog(err));
     }
 
+    throwIfAborted(signal);
     if (contentBuffer.trim()) pending.push(processLine(contentBuffer));
     await Promise.all(pending);
+    throwIfAborted(signal);
 }
 
 async function extractPdfMarkdown(buf: ArrayBuffer): Promise<string> {

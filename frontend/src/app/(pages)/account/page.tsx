@@ -9,7 +9,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     type AdminUser,
-    deleteAccount,
     listAdminUsers,
     updateAdminUserRole,
 } from "@/app/lib/docketApi";
@@ -29,8 +28,6 @@ export default function AccountPage() {
     const [organisation, setOrganisation] = useState("");
     const [isSavingOrg, setIsSavingOrg] = useState(false);
     const [orgSaved, setOrgSaved] = useState(false);
-    const [deleteConfirm, setDeleteConfirm] = useState(false);
-    const [isDeleting, setIsDeleting] = useState(false);
     const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
     const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
     const [adminUsersError, setAdminUsersError] = useState<string | null>(null);
@@ -69,19 +66,6 @@ export default function AccountPage() {
     const handleLogout = async () => {
         await signOut();
         router.push("/");
-    };
-
-    const handleDeleteAccount = async () => {
-        setIsDeleting(true);
-        try {
-            await deleteAccount();
-            await signOut();
-            router.push("/");
-        } catch {
-            setIsDeleting(false);
-            setDeleteConfirm(false);
-            alert("Failed to delete account. Please try again.");
-        }
     };
 
     const handleSaveDisplayName = async () => {
@@ -355,48 +339,23 @@ export default function AccountPage() {
                 </Button>
             </div>
 
-            {/* Danger Zone */}
+            {/* Privacy & data */}
             <div className="py-6">
-                <h2 className="text-2xl font-medium font-serif mb-1 text-red-600">
-                    Danger Zone
+                <h2 className="text-2xl font-medium font-serif mb-1">
+                    Privacy & Data
                 </h2>
                 <p className="text-sm text-gray-500 mb-4">
-                    Permanently delete your account and all associated data.
-                    This action cannot be undone.
+                    Export Docket data or request deletion through the legal-retention
+                    review workflow. These controls do not delete your Microsoft
+                    Entra account.
                 </p>
-                {deleteConfirm ? (
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-4 space-y-3 max-w-sm">
-                        <p className="text-sm font-medium text-red-700">
-                            Are you sure? This will permanently delete your
-                            account.
-                        </p>
-                        <div className="flex gap-2">
-                            <Button
-                                variant="outline"
-                                onClick={() => setDeleteConfirm(false)}
-                                disabled={isDeleting}
-                                className="text-sm"
-                            >
-                                Cancel
-                            </Button>
-                            <Button
-                                onClick={handleDeleteAccount}
-                                disabled={isDeleting}
-                                className="text-sm bg-red-600 hover:bg-red-700 text-white"
-                            >
-                                {isDeleting ? "Deleting…" : "Delete Account"}
-                            </Button>
-                        </div>
-                    </div>
-                ) : (
-                    <Button
-                        variant="outline"
-                        onClick={() => setDeleteConfirm(true)}
-                        className="w-full sm:w-auto border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
-                    >
-                        Delete Account
-                    </Button>
-                )}
+                <Button
+                    variant="outline"
+                    onClick={() => router.push("/account/privacy-data")}
+                    className="w-full sm:w-auto"
+                >
+                    Manage privacy & data
+                </Button>
             </div>
         </div>
     );

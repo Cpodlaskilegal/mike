@@ -72,12 +72,24 @@ const uploadLimiter = makeLimiter({
   message: "Too many upload requests. Please try again later.",
 });
 
+const dataDeleteLimiter = makeLimiter({
+  windowMs: hours(envInt("RATE_LIMIT_DATA_DELETE_WINDOW_HOURS", 1)),
+  max: envInt("RATE_LIMIT_DATA_DELETE_MAX", 20),
+  message: "Too many data deletion requests. Please try again later.",
+});
+
 app.disable("x-powered-by");
 app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
 
 app.use(
   helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        baseUri: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
     crossOriginEmbedderPolicy: false,
     hsts: isProduction
       ? {
@@ -109,6 +121,10 @@ app.post("/chat/:chatId/generate-title", chatCreateLimiter);
 app.post("/single-documents", uploadLimiter);
 app.post("/single-documents/:documentId/versions", uploadLimiter);
 app.post("/projects/:projectId/documents", uploadLimiter);
+app.delete("/user/account", dataDeleteLimiter);
+app.post("/user/data-deletion-requests", dataDeleteLimiter);
+app.delete("/user/data-deletion-requests/:requestId", dataDeleteLimiter);
+app.post("/user/admin/data-deletion-requests/:requestId/execute", dataDeleteLimiter);
 
 app.use("/chat", chatRouter);
 app.use("/projects", projectsRouter);

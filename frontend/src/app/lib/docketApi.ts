@@ -6,14 +6,17 @@
 import { supabase } from "@/lib/supabase";
 import type {
   AssistantEvent,
+  DocketAskInputsResponse,
   DocketChat,
   DocketChatDetailOut,
+  DocketCitation,
   DocketCitationAnnotation,
   DocketDocument,
   DocketFolder,
   DocketMessage,
   DocketProject,
   DocketWorkflow,
+  DocketWorkflowContributionSubmission,
   TabularReview,
   TabularReviewDetailOut,
 } from "@/app/components/shared/types";
@@ -27,6 +30,7 @@ interface ServerMessage {
   files?: { filename: string; document_id?: string }[] | null;
   workflow?: { id: string; title: string } | null;
   annotations?: DocketCitationAnnotation[] | null;
+  citations?: DocketCitation[] | null;
   created_at: string;
 }
 interface ServerChatDetailOut {
@@ -164,8 +168,91 @@ export async function createProject(
   });
 }
 
-export async function deleteAccount(): Promise<void> {
-  return apiRequest<void>("/user/account", { method: "DELETE" });
+export type DataExportScope = "account" | "chats" | "tabular-reviews";
+
+export interface DocketDataDeletionRequest {
+  id: string;
+  status:
+    | "pending_legal_review"
+    | "approved"
+    | "rejected"
+    | "completed"
+    | "cancelled";
+  reason?: string | null;
+  legal_hold?: boolean;
+  retention_until?: string | null;
+  requested_at?: string;
+  reviewed_at?: string | null;
+  completed_at?: string | null;
+  decision_note?: string | null;
+  workflow_submission_disposition?: "retain" | "anonymize" | "delete";
+}
+
+function filenameFromDisposition(value: string | null, fallback: string) {
+  const filename = value?.match(/filename="?([^";]+)"?/i)?.[1];
+  return filename ? decodeURIComponent(filename) : fallback;
+}
+
+export async function downloadUserDataExport(scope: DataExportScope): Promise<{
+  blob: Blob;
+  filename: string;
+}> {
+  const authHeaders = await getAuthHeader(true);
+  const response = await fetch(
+    `${API_BASE}/user/data-export?scope=${encodeURIComponent(scope)}`,
+    {
+      cache: "no-store",
+      headers: { Accept: "application/json", ...authHeaders },
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    let detail = body || `API error: ${response.status}`;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown; code?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+      throw new DocketApiError(
+        detail,
+        response.status,
+        typeof parsed.code === "string" ? parsed.code : undefined,
+      );
+    } catch (error) {
+      if (error instanceof DocketApiError) throw error;
+      throw new DocketApiError(detail, response.status);
+    }
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFromDisposition(
+      response.headers.get("content-disposition"),
+      `docket-${scope}-export.json`,
+    ),
+  };
+}
+
+export async function listDataDeletionRequests(): Promise<
+  DocketDataDeletionRequest[]
+> {
+  return apiRequest<DocketDataDeletionRequest[]>("/user/data-deletion-requests");
+}
+
+export async function requestDocketDataDeletion(input: {
+  confirmation: string;
+  reason?: string;
+}): Promise<DocketDataDeletionRequest & { note?: string }> {
+  return apiRequest("/user/data-deletion-requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function cancelDataDeletionRequest(
+  requestId: string,
+): Promise<DocketDataDeletionRequest> {
+  return apiRequest(`/user/data-deletion-requests/${requestId}`, {
+    method: "DELETE",
+  });
 }
 
 export interface UserProfile {
@@ -546,6 +633,11 @@ export interface DocketDocumentVersion {
   source: string;
   created_at: string;
   display_name: string | null;
+  file_type?: string | null;
+  size_bytes?: number | null;
+  page_count?: number | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
 }
 
 export async function listDocumentVersions(documentId: string): Promise<{
@@ -574,6 +666,56 @@ export async function uploadDocumentVersion(
   );
   if (!response.ok) throw new Error(await response.text());
   return response.json() as Promise<DocketDocumentVersion>;
+}
+
+export async function copyDocumentVersion(
+  documentId: string,
+  versionId: string,
+  displayName?: string,
+): Promise<DocketDocumentVersion> {
+  return apiRequest<DocketDocumentVersion>(
+    `/single-documents/${documentId}/versions/${versionId}/copy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    },
+  );
+}
+
+export async function replaceDocumentVersionFile(
+  documentId: string,
+  versionId: string,
+  file: File,
+  displayName?: string,
+): Promise<DocketDocumentVersion> {
+  const authHeaders = await getAuthHeader(true);
+  const form = new FormData();
+  form.append("file", file);
+  if (displayName) form.append("display_name", displayName);
+  const response = await fetch(
+    `${API_BASE}/single-documents/${documentId}/versions/${versionId}/file`,
+    {
+      method: "PUT",
+      headers: { ...authHeaders },
+      body: form,
+    },
+  );
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<DocketDocumentVersion>;
+}
+
+export async function deleteDocumentVersion(
+  documentId: string,
+  versionId: string,
+): Promise<{
+  deleted_version_id: string;
+  current_version_id: string | null;
+  deleted_at: string;
+}> {
+  return apiRequest(`/single-documents/${documentId}/versions/${versionId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function renameDocumentVersion(
@@ -636,6 +778,32 @@ export async function getDocumentUrl(
 ): Promise<{ url: string; filename: string; version_id: string | null }> {
   const qs = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
   return apiRequest(`/single-documents/${documentId}/url${qs}`);
+}
+
+export interface CaseLawOpinion {
+  opinionId: number | null;
+  type: string | null;
+  author: string | null;
+  per_curiam: string | null;
+  joined_by_str: string | null;
+  url: string | null;
+  text: string | null;
+  /** Server-side allowlisted CourtListener HTML. */
+  html: string | null;
+}
+
+export async function getCourtlistenerOpinions(
+  clusterId: number,
+): Promise<CaseLawOpinion[]> {
+  const result = await apiRequest<{ opinions?: CaseLawOpinion[] }>(
+    "/case-law/case-opinions",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cluster_id: clusterId }),
+    },
+  );
+  return Array.isArray(result.opinions) ? result.opinions : [];
 }
 
 export async function downloadDocumentsZip(
@@ -703,6 +871,7 @@ export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
           .map((e) => (e as { type: "content"; text: string }).text)
           .join("") ?? "",
       annotations: m.annotations ?? undefined,
+      citations: m.citations ?? undefined,
       events:
         events ??
         (pending ? [{ type: "thinking" as const, isStreaming: true }] : undefined),
@@ -745,6 +914,7 @@ export async function streamChat(payload: {
   chat_id?: string;
   project_id?: string;
   model?: string;
+  ask_inputs_response?: DocketAskInputsResponse;
   signal?: AbortSignal;
 }): Promise<Response> {
   const { signal, ...body } = payload;
@@ -775,6 +945,7 @@ export async function streamProjectChat(payload: {
   model?: string;
   displayed_doc?: { filename: string; document_id: string };
   attached_documents?: { filename: string; document_id: string }[];
+  ask_inputs_response?: DocketAskInputsResponse;
   signal?: AbortSignal;
 }): Promise<Response> {
   const { projectId, signal, ...body } = payload;
@@ -1046,6 +1217,37 @@ export async function getWorkflow(workflowId: string): Promise<DocketWorkflow> {
   return apiRequest<DocketWorkflow>(`/workflows/${workflowId}`);
 }
 
+export async function downloadWorkflowZip(workflowId: string): Promise<{
+  blob: Blob;
+  filename: string;
+}> {
+  const authHeaders = await getAuthHeader(true);
+  const response = await fetch(`${API_BASE}/workflows/${workflowId}/export`, {
+    cache: "no-store",
+    headers: { Accept: "application/zip", ...authHeaders },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    let detail = body || `API error: ${response.status}`;
+    let code: string | undefined;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown; code?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+      if (typeof parsed.code === "string") code = parsed.code;
+    } catch {
+      // The status text is enough when a proxy returned a non-JSON response.
+    }
+    throw new DocketApiError(detail, response.status, code);
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFromDisposition(
+      response.headers.get("content-disposition"),
+      "docket-workflow.zip",
+    ),
+  };
+}
+
 export async function createWorkflow(payload: {
   title: string;
   type: "assistant" | "tabular";
@@ -1082,6 +1284,31 @@ export async function updateWorkflow(
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
   await apiRequest(`/workflows/${workflowId}`, { method: "DELETE" });
+}
+
+export async function submitWorkflowForOpenSourceReview(
+  workflowId: string,
+  payload: {
+    attribution: "named" | "docket-community";
+    public_name?: string;
+    confirmation: "SUBMIT DOCKET WORKFLOW";
+  },
+): Promise<DocketWorkflowContributionSubmission & { mode: "created" | "updated" }> {
+  return apiRequest(`/workflows/${workflowId}/open-source-submissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function withdrawWorkflowOpenSourceSubmission(
+  workflowId: string,
+  submissionId: string,
+): Promise<DocketWorkflowContributionSubmission> {
+  return apiRequest(
+    `/workflows/${workflowId}/open-source-submissions/${submissionId}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function listHiddenWorkflows(): Promise<string[]> {

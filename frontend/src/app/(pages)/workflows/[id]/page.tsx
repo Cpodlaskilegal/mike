@@ -3,17 +3,19 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ChevronDown, Plus, Users, X } from "lucide-react";
-import { getWorkflow, updateWorkflow } from "@/app/lib/docketApi";
+import { ChevronDown, Download, Globe2, Plus, Users, X } from "lucide-react";
+import {
+    downloadWorkflowZip,
+    getWorkflow,
+    submitWorkflowForOpenSourceReview,
+    updateWorkflow,
+    withdrawWorkflowOpenSourceSubmission,
+} from "@/app/lib/docketApi";
 import { ShareWorkflowModal } from "@/app/components/workflows/ShareWorkflowModal";
 import { WFEditColumnModal } from "@/app/components/workflows/WFEditColumnModal";
 import { WFColumnViewModal } from "@/app/components/workflows/WFColumnViewModal";
 import { AddColumnModal } from "@/app/components/tabular/AddColumnModal";
 import type { ColumnConfig, DocketWorkflow } from "@/app/components/shared/types";
-import {
-    BUILT_IN_IDS,
-    BUILT_IN_WORKFLOWS,
-} from "@/app/components/workflows/builtinWorkflows";
 import { formatIcon, formatLabel } from "@/app/components/tabular/columnFormat";
 import { RenameableTitle } from "@/app/components/shared/RenameableTitle";
 // dynamic import keeps Tiptap (browser-only) out of the SSR bundle
@@ -45,9 +47,7 @@ export default function WorkflowDetailPage({ params }: Props) {
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
 
-    const isBuiltin = BUILT_IN_IDS.has(id);
     const readOnly =
-        isBuiltin ||
         (workflow?.is_system ?? false) ||
         workflow?.allow_edit === false;
     const canShare = !readOnly && (workflow?.is_owner ?? true);
@@ -70,6 +70,17 @@ export default function WorkflowDetailPage({ params }: Props) {
 
     // Share popover
     const [shareOpen, setShareOpen] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const [contributionOpen, setContributionOpen] = useState(false);
+    const [contributionAttribution, setContributionAttribution] = useState<
+        "named" | "docket-community"
+    >("docket-community");
+    const [contributionName, setContributionName] = useState("");
+    const [contributionConfirmed, setContributionConfirmed] = useState(false);
+    const [contributionSaving, setContributionSaving] = useState(false);
+    const [contributionError, setContributionError] = useState<string | null>(
+        null,
+    );
 
     // Column actions dropdown
     const [colActionsOpen, setColActionsOpen] = useState(false);
@@ -89,19 +100,6 @@ export default function WorkflowDetailPage({ params }: Props) {
     // Load workflow
     // ---------------------------------------------------------------------------
     useEffect(() => {
-        if (isBuiltin) {
-            const wf = BUILT_IN_WORKFLOWS.find((w) => w.id === id) ?? null;
-            if (!wf) {
-                setNotFound(true);
-            } else {
-                setWorkflow(wf);
-                setPromptMd(wf.prompt_md ?? "");
-                setColumns(wf.columns_config ?? []);
-            }
-            setLoading(false);
-            return;
-        }
-
         getWorkflow(id)
             .then((wf) => {
                 setWorkflow(wf);
@@ -114,7 +112,7 @@ export default function WorkflowDetailPage({ params }: Props) {
             })
             .catch(() => setNotFound(true))
             .finally(() => setLoading(false));
-    }, [id, isBuiltin]);
+    }, [id]);
 
     // ---------------------------------------------------------------------------
     // Debounced auto-save for prompt
@@ -141,6 +139,89 @@ export default function WorkflowDetailPage({ params }: Props) {
         if (!newTitle || newTitle === workflow?.title) return;
         const updated = await updateWorkflow(id, { title: newTitle });
         setWorkflow(updated);
+    }
+
+    async function handleExport() {
+        setExporting(true);
+        try {
+            const { blob, filename } = await downloadWorkflowZip(id);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        } finally {
+            setExporting(false);
+        }
+    }
+
+    const canSubmitForReview =
+        !!workflow &&
+        !workflow.is_system &&
+        workflow.is_owner !== false &&
+        workflow.allow_edit !== false;
+
+    async function handleContributionSubmit() {
+        if (!workflow || !contributionConfirmed || contributionSaving) return;
+        if (contributionAttribution === "named" && !contributionName.trim()) {
+            setContributionError("Enter the name you want reviewers to use for public credit.");
+            return;
+        }
+        setContributionSaving(true);
+        setContributionError(null);
+        try {
+            const submission = await submitWorkflowForOpenSourceReview(id, {
+                attribution: contributionAttribution,
+                ...(contributionAttribution === "named"
+                    ? { public_name: contributionName.trim() }
+                    : {}),
+                confirmation: "SUBMIT DOCKET WORKFLOW",
+            });
+            setWorkflow((current) =>
+                current
+                    ? { ...current, open_source_submission: submission }
+                    : current,
+            );
+            setContributionOpen(false);
+            setContributionConfirmed(false);
+        } catch (error) {
+            setContributionError(
+                error instanceof Error
+                    ? error.message
+                    : "Unable to submit this workflow for review.",
+            );
+        } finally {
+            setContributionSaving(false);
+        }
+    }
+
+    async function handleContributionWithdraw() {
+        const submission = workflow?.open_source_submission;
+        if (!submission || contributionSaving) return;
+        setContributionSaving(true);
+        setContributionError(null);
+        try {
+            const withdrawn = await withdrawWorkflowOpenSourceSubmission(
+                id,
+                submission.id,
+            );
+            setWorkflow((current) =>
+                current
+                    ? { ...current, open_source_submission: withdrawn }
+                    : current,
+            );
+        } catch (error) {
+            setContributionError(
+                error instanceof Error
+                    ? error.message
+                    : "Unable to withdraw this submission.",
+            );
+        } finally {
+            setContributionSaving(false);
+        }
     }
 
     function handlePromptChange(val: string | undefined) {
@@ -278,6 +359,16 @@ export default function WorkflowDetailPage({ params }: Props) {
                               : ""}
                     </span>
 
+                    <button
+                        onClick={() => void handleExport()}
+                        disabled={exporting}
+                        aria-label="Export workflow ZIP"
+                        title="Export workflow ZIP"
+                        className="flex items-center text-gray-500 transition-colors hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        <Download className={`h-4 w-4 ${exporting ? "animate-pulse" : ""}`} />
+                    </button>
+
                     {/* Share button (custom workflows only) */}
                     {canShare && (
                         <button
@@ -287,6 +378,19 @@ export default function WorkflowDetailPage({ params }: Props) {
                             className="flex items-center text-gray-500 hover:text-gray-900 transition-colors"
                         >
                             <Users className="h-4 w-4" />
+                        </button>
+                    )}
+                    {canSubmitForReview && (
+                        <button
+                            onClick={() => {
+                                setContributionError(null);
+                                setContributionOpen((open) => !open);
+                            }}
+                            aria-label="Submit workflow for Docket review"
+                            title="Submit for Docket review"
+                            className="flex items-center text-gray-500 hover:text-gray-900 transition-colors"
+                        >
+                            <Globe2 className="h-4 w-4" />
                         </button>
                     )}
                     {shareOpen && (
@@ -299,10 +403,117 @@ export default function WorkflowDetailPage({ params }: Props) {
                 </div>
             </div>
 
-            {/* Read-only badge for built-in workflows */}
+            {/* Read-only badge for Docket system or shared view-only workflows */}
             {readOnly && (
                 <div className="flex items-center h-10 px-8 border-b border-gray-200">
                     <span className="text-xs text-gray-400">Read-only</span>
+                </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-8 py-2 text-xs text-gray-400">
+                <span>{workflow.practice || "General Transactions"}</span>
+                <span>{workflow.language || "English"}</span>
+                {(workflow.jurisdictions ?? ["General"]).map((jurisdiction) => (
+                    <span key={jurisdiction}>{jurisdiction}</span>
+                ))}
+                {workflow.is_system && workflow.version && (
+                    <span>Docket catalog {workflow.version}</span>
+                )}
+                {workflow.description && (
+                    <span className="w-full max-w-3xl text-gray-500">
+                        {workflow.description}
+                    </span>
+                )}
+            </div>
+
+            {canSubmitForReview && (
+                <div className="border-b border-gray-200 px-8 py-3">
+                    {workflow.open_source_submission ? (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                            <span className="font-medium text-gray-700">
+                                Open-source review: {workflow.open_source_submission.status.replaceAll("_", " ")}
+                            </span>
+                            <span className="text-gray-400">
+                                This remains a private Docket review artifact until an administrator separately publishes it.
+                            </span>
+                            {workflow.open_source_submission.status === "pending_review" && (
+                                <button
+                                    onClick={() => void handleContributionWithdraw()}
+                                    disabled={contributionSaving}
+                                    className="text-red-600 hover:text-red-700 disabled:opacity-50"
+                                >
+                                    Withdraw
+                                </button>
+                            )}
+                            {workflow.open_source_submission.review_notes && (
+                                <span className="w-full text-gray-500">
+                                    Reviewer note: {workflow.open_source_submission.review_notes}
+                                </span>
+                            )}
+                        </div>
+                    ) : contributionOpen ? (
+                        <div className="max-w-2xl space-y-3 text-xs text-gray-600">
+                            <div>
+                                <p className="font-medium text-gray-800">Submit for Docket review</p>
+                                <p className="mt-1 text-gray-500">
+                                    Your workflow is stored as a private review snapshot. Docket does not publish it automatically, and your Entra identity remains in the internal audit record.
+                                </p>
+                            </div>
+                            <label className="flex items-center gap-2">
+                                <input
+                                    type="radio"
+                                    checked={contributionAttribution === "docket-community"}
+                                    onChange={() => setContributionAttribution("docket-community")}
+                                />
+                                Credit Docket community publicly
+                            </label>
+                            <label className="flex items-center gap-2">
+                                <input
+                                    type="radio"
+                                    checked={contributionAttribution === "named"}
+                                    onChange={() => setContributionAttribution("named")}
+                                />
+                                Credit me publicly as
+                                <input
+                                    value={contributionName}
+                                    disabled={contributionAttribution !== "named"}
+                                    onChange={(event) => setContributionName(event.target.value)}
+                                    maxLength={120}
+                                    className="min-w-0 flex-1 border-b border-gray-300 bg-transparent px-1 py-0.5 outline-none focus:border-gray-600 disabled:opacity-50"
+                                    placeholder="Public contributor name"
+                                />
+                            </label>
+                            <label className="flex items-start gap-2 text-gray-500">
+                                <input
+                                    type="checkbox"
+                                    checked={contributionConfirmed}
+                                    onChange={(event) => setContributionConfirmed(event.target.checked)}
+                                    className="mt-0.5"
+                                />
+                                I confirm this workflow may be reviewed for a future open-source release.
+                            </label>
+                            {contributionError && <p className="text-red-600">{contributionError}</p>}
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => void handleContributionSubmit()}
+                                    disabled={!contributionConfirmed || contributionSaving}
+                                    className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                                >
+                                    {contributionSaving ? "Submitting…" : "Submit for review"}
+                                </button>
+                                <button
+                                    onClick={() => setContributionOpen(false)}
+                                    className="text-gray-500 hover:text-gray-700"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <p className="text-xs text-gray-500">
+                            Want to share this custom workflow? Submit it for Docket&apos;s manual open-source review.
+                        </p>
+                    )}
                 </div>
             )}
 

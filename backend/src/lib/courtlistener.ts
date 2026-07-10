@@ -86,16 +86,36 @@ function asNumber(value: unknown): number | null {
 function absoluteWebUrl(path: unknown): string | null {
     const value = asString(path);
     if (!value) return null;
-    return value.startsWith("http")
-        ? value
-        : `${COURTLISTENER_WEB_BASE}${value}`;
+    try {
+        const url = new URL(value, COURTLISTENER_WEB_BASE);
+        if (url.protocol !== "https:" || url.origin !== COURTLISTENER_WEB_BASE) {
+            return null;
+        }
+        return url.toString();
+    } catch {
+        return null;
+    }
 }
 
 function absoluteStorageUrl(path: unknown): string | null {
     const value = asString(path);
     if (!value) return null;
-    if (value.startsWith("http")) return value;
-    return `${COURTLISTENER_STORAGE_BASE}/${value.replace(/^\/+/, "")}`;
+    try {
+        const url = new URL(
+            value.startsWith("http")
+                ? value
+                : `${COURTLISTENER_STORAGE_BASE}/${value.replace(/^\/+/, "")}`,
+        );
+        if (
+            url.protocol !== "https:" ||
+            url.origin !== COURTLISTENER_STORAGE_BASE
+        ) {
+            return null;
+        }
+        return url.toString();
+    } catch {
+        return null;
+    }
 }
 
 function citationLabel(citation: unknown): string | null {
@@ -113,7 +133,16 @@ function citationLabel(citation: unknown): string | null {
 function truncate(value: string | null, maxChars: number): string | null {
     if (!value) return null;
     if (value.length <= maxChars) return value;
-    return `${value.slice(0, Math.max(0, maxChars - 1))}...`;
+    return `${value.slice(0, Math.max(0, maxChars - 1))}\u2026`;
+}
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -147,7 +176,160 @@ function stripOpinionMarkup(value: string | null): string | null {
     );
 }
 
-function compactOpinion(opinion: JsonRecord, maxChars: number) {
+/**
+ * CourtListener opinions include publisher-provided HTML. This compact,
+ * server-side allowlist means the API never sends executable or off-origin
+ * markup to the browser. The UI may render the returned `html` directly.
+ */
+function safeCourtlistenerHref(rawHref: string | null): string | null {
+    if (!rawHref) return null;
+    const href = decodeHtmlEntities(rawHref.trim());
+    if (!href) return null;
+    if (href.startsWith("#")) return href;
+    return absoluteWebUrl(href);
+}
+
+const SAFE_OPINION_HTML_TAGS = new Set([
+    "a",
+    "blockquote",
+    "br",
+    "code",
+    "div",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+]);
+
+const SAFE_OPINION_ATTRS = new Set([
+    "aria-label",
+    "class",
+    "colspan",
+    "href",
+    "id",
+    "rowspan",
+    "title",
+]);
+
+const VOID_OPINION_TAGS = new Set(["br"]);
+
+function sanitizeOpinionClassList(value: string): string | null {
+    const classes = decodeHtmlEntities(value)
+        .split(/\s+/)
+        .filter((className) => /^[a-z0-9_-]{1,80}$/i.test(className));
+    return classes.length ? classes.join(" ") : null;
+}
+
+function sanitizeOpinionHtmlAttrs(tagName: string, attrs: string): string {
+    const output: string[] = [];
+    const attrPattern =
+        /([^\s"'<>/=`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = attrPattern.exec(attrs))) {
+        const name = (match[1] ?? "").toLowerCase();
+        const rawValue = match[2] ?? match[3] ?? match[4] ?? "";
+        if (!SAFE_OPINION_ATTRS.has(name) || name.startsWith("on")) continue;
+
+        if (name === "href") {
+            if (tagName !== "a") continue;
+            const href = safeCourtlistenerHref(rawValue);
+            if (href) output.push(`href="${escapeHtml(href)}"`);
+            continue;
+        }
+
+        if (name === "class") {
+            const classList = sanitizeOpinionClassList(rawValue);
+            if (classList) output.push(`class="${escapeHtml(classList)}"`);
+            continue;
+        }
+
+        if (name === "id") {
+            const id = decodeHtmlEntities(rawValue).trim();
+            if (/^[a-z0-9_-]{1,120}$/i.test(id)) {
+                output.push(`id="${escapeHtml(id)}"`);
+            }
+            continue;
+        }
+
+        if (name === "colspan" || name === "rowspan") {
+            const value = Number.parseInt(rawValue, 10);
+            if (Number.isFinite(value) && value > 0 && value <= 100) {
+                output.push(`${name}="${value}"`);
+            }
+            continue;
+        }
+
+        const value = decodeHtmlEntities(rawValue).trim();
+        if (value) output.push(`${name}="${escapeHtml(value.slice(0, 300))}"`);
+    }
+
+    if (tagName === "a") {
+        output.push('target="_blank"', 'rel="noopener noreferrer"');
+    }
+
+    return output.length ? ` ${output.join(" ")}` : "";
+}
+
+export function sanitizeCourtlistenerOpinionHtml(value: string | null): string | null {
+    if (!value) return null;
+    const normalized = value
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(
+            /<(script|style|iframe|object|embed|form|svg|math)\b[\s\S]*?<\/\1>/gi,
+            "",
+        )
+        .replace(
+            /<(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi,
+            "",
+        )
+        .replace(
+            /<page-number\b[^>]*>([\s\S]*?)<\/page-number>/gi,
+            (_match, inner) =>
+                `<span class="case-page-number">${escapeHtml(stripOpinionMarkup(inner) ?? "")}</span>`,
+        );
+
+    const sanitized = normalized.replace(
+        /<\/?([a-z0-9-]+)\b([^>]*)>/gi,
+        (match, tag, attrs) => {
+            const name = String(tag).toLowerCase();
+            const closing = match.startsWith("</");
+            if (!SAFE_OPINION_HTML_TAGS.has(name)) return "";
+            if (closing) return VOID_OPINION_TAGS.has(name) ? "" : `</${name}>`;
+            if (VOID_OPINION_TAGS.has(name)) return `<${name}>`;
+            return `<${name}${sanitizeOpinionHtmlAttrs(name, String(attrs))}>`;
+        },
+    );
+
+    return sanitized.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function compactOpinion(
+    opinion: JsonRecord,
+    maxChars: number,
+    includeHtml = false,
+) {
     const rawHtml =
         asString(opinion.html_with_citations) ??
         asString(opinion.html) ??
@@ -164,6 +346,9 @@ function compactOpinion(opinion: JsonRecord, maxChars: number) {
         joined_by_str: asString(opinion.joined_by_str),
         url: absoluteWebUrl(opinion.absolute_url),
         text: truncate(stripOpinionMarkup(rawText), maxChars),
+        html: includeHtml
+            ? truncate(sanitizeCourtlistenerOpinionHtml(rawHtml), maxChars)
+            : null,
     };
 }
 
@@ -192,54 +377,166 @@ function compactSearchResult(raw: unknown) {
     };
 }
 
-function normalizeCitationLookupRow(raw: unknown) {
-    const row = raw && typeof raw === "object" ? (raw as JsonRecord) : {};
+function clusterUrl(cluster: JsonRecord): string | null {
+    const id = asNumber(cluster.id) ?? asNumber(cluster.cluster_id);
+    if (!id) return null;
+    const slug = asString(cluster.slug);
+    return slug
+        ? `${COURTLISTENER_WEB_BASE}/opinion/${id}/${encodeURIComponent(slug)}/`
+        : `${COURTLISTENER_WEB_BASE}/opinion/${id}/`;
+}
+
+type CitationCluster = {
+    clusterId: number | null;
+    caseName: string | null;
+    court: string | null;
+    dateFiled: string | null;
+    url: string | null;
+    pdfUrl: string | null;
+};
+
+type CitationLookupResult = {
+    citation: string | null;
+    status: string;
+    message: string | null;
+    clusters: CitationCluster[];
+};
+
+function compactCitationCluster(raw: unknown): CitationCluster {
     const cluster =
-        row.cluster && typeof row.cluster === "object"
-            ? (row.cluster as JsonRecord)
+        raw && typeof raw === "object" && !Array.isArray(raw)
+            ? (raw as JsonRecord)
             : {};
-    const citation =
-        asString(row.citation) ??
-        citationLabel(row.citation) ??
-        citationLabel(row.citations);
-    const status =
-        asString(row.status) ??
-        (asNumber(row.cluster_id) || asNumber(cluster.id) ? "found" : "not_found");
     return {
-        citation,
-        status,
-        clusterId: asNumber(row.cluster_id) ?? asNumber(cluster.id),
+        clusterId: asNumber(cluster.id) ?? asNumber(cluster.cluster_id),
         caseName:
-            asString(row.case_name) ??
-            asString(row.caseName) ??
             asString(cluster.case_name) ??
-            asString(cluster.caseName),
-        url:
-            absoluteWebUrl(row.absolute_url) ??
-            absoluteWebUrl(cluster.absolute_url),
+            asString(cluster.caseName) ??
+            asString(cluster.case_name_full) ??
+            asString(cluster.caseNameFull),
+        court:
+            asString((cluster.docket as JsonRecord | undefined)?.court_id) ??
+            asString(cluster.court) ??
+            asString(cluster.court_id) ??
+            null,
+        dateFiled:
+            asString(cluster.date_filed) ?? asString(cluster.dateFiled),
+        url: absoluteWebUrl(cluster.absolute_url) ?? clusterUrl(cluster),
         pdfUrl:
-            absoluteStorageUrl(row.filepath_pdf_harvard) ??
             absoluteStorageUrl(cluster.filepath_pdf_harvard) ??
             absoluteStorageUrl(cluster.filepath_pdf_scan),
-        dateFiled:
-            asString(row.date_filed) ??
-            asString(row.dateFiled) ??
-            asString(cluster.date_filed) ??
-            asString(cluster.dateFiled),
     };
 }
 
-function buildCitationLinks(results: ReturnType<typeof normalizeCitationLookupRow>[]) {
-    return results
-        .filter((result) => result.clusterId && result.url)
-        .map((result) => ({
-            clusterId: result.clusterId,
-            citation: result.citation,
-            caseName: result.caseName,
-            url: result.url,
-            pdfUrl: result.pdfUrl,
-            dateFiled: result.dateFiled,
-        }));
+function citationTextFromRow(row: JsonRecord): string | null {
+    const normalized = Array.isArray(row.normalized_citations)
+        ? row.normalized_citations
+              .map((citation) => citationLabel(citation))
+              .filter((citation): citation is string => !!citation)
+        : [];
+    return (
+        asString(row.citation) ??
+        citationLabel(row.citation) ??
+        citationLabel(row.citations) ??
+        normalized[0] ??
+        null
+    );
+}
+
+function citationStatus(row: JsonRecord, clusters: CitationCluster[]): string {
+    const status = row.status;
+    if (typeof status === "number" && Number.isFinite(status)) {
+        return status >= 200 && status < 300 && clusters.length > 0
+            ? "found"
+            : status === 404
+              ? "not_found"
+              : String(status);
+    }
+    const named = asString(status);
+    if (named) return named;
+    return clusters.length > 0 ? "found" : "not_found";
+}
+
+function normalizeCitationLookupResult(raw: unknown): CitationLookupResult | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const row = raw as JsonRecord;
+    const rawClusters = Array.isArray(row.clusters)
+        ? row.clusters
+        : row.cluster && typeof row.cluster === "object"
+          ? [row.cluster]
+          : row.cluster_id
+            ? [row]
+            : [];
+    const clusters = rawClusters
+        .map(compactCitationCluster)
+        .filter((cluster) => cluster.clusterId !== null || cluster.url !== null);
+    return {
+        citation: citationTextFromRow(row),
+        status: citationStatus(row, clusters),
+        message:
+            asString(row.error_message) ??
+            asString(row.message) ??
+            asString(row.detail),
+        clusters,
+    };
+}
+
+function buildCitationLinks(results: CitationLookupResult[]) {
+    return results.flatMap((result) =>
+        result.clusters
+            .filter((cluster) => cluster.clusterId && cluster.url)
+            .map((cluster) => ({
+                clusterId: cluster.clusterId,
+                citation: result.citation,
+                caseName: cluster.caseName,
+                court: cluster.court,
+                url: cluster.url,
+                pdfUrl: cluster.pdfUrl,
+                dateFiled: cluster.dateFiled,
+                markdown: `[${[cluster.caseName, result.citation].filter(Boolean).join(", ") || cluster.url}](${cluster.url})`,
+            })),
+    );
+}
+
+function citationLookupRows(data: unknown): unknown[] {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== "object") return [];
+    const record = data as JsonRecord;
+    if (Array.isArray(record.results)) return record.results;
+    if (Array.isArray(record.citations)) return record.citations;
+    return [];
+}
+
+async function fetchCourtlistenerCitationLookup(args: {
+    text: string;
+    citationsSubmitted: number;
+    apiToken?: string | null;
+}) {
+    // CourtListener documents this endpoint as form data (`text=...`), not a
+    // JSON payload. Its response is normally an array but older deployments
+    // have wrapped it, so citationLookupRows accepts both forms.
+    const body = new URLSearchParams();
+    body.set("text", args.text.slice(0, 64_000));
+    const data = await courtlistenerFetch<unknown>(
+        "/citation-lookup/",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body,
+        },
+        args.apiToken,
+    );
+    const results = citationLookupRows(data)
+        .map(normalizeCitationLookupResult)
+        .filter((result): result is CitationLookupResult => !!result);
+    return {
+        citationsSubmitted: args.citationsSubmitted,
+        citationLinks: buildCitationLinks(results),
+        results,
+        source: "api",
+    };
 }
 
 export function courtlistenerApiTokenAvailable(apiToken?: string | null) {
@@ -264,27 +561,11 @@ export async function verifyCourtlistenerCitations(args: {
         return { error: "Provide at least one citation." };
     }
 
-    const data = await courtlistenerFetch<JsonRecord>(
-        "/citation-lookup/",
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: citations.join("\n") }),
-        },
-        args.apiToken,
-    );
-    const rawResults =
-        (Array.isArray(data.results) && data.results) ||
-        (Array.isArray(data.citations) && data.citations) ||
-        (Array.isArray(data) && data) ||
-        [];
-    const results = rawResults.map(normalizeCitationLookupRow);
-    return {
+    return fetchCourtlistenerCitationLookup({
+        text: citations.join("\n"),
         citationsSubmitted: citations.length,
-        citationLinks: buildCitationLinks(results),
-        results,
-        source: "api",
-    };
+        apiToken: args.apiToken,
+    });
 }
 
 export async function searchCourtlistenerCaseLaw(args: {
@@ -334,6 +615,7 @@ export async function getCourtlistenerCaseOpinions(args: {
     const clusterId = Math.floor(args.clusterId);
     const maxChars = Math.max(1000, Math.min(50000, args.maxChars ?? 12000));
     const opinions: ReturnType<typeof compactOpinion>[] = [];
+    const rawOpinions: JsonRecord[] = [];
     let nextUrl: string | null = `/opinions/?cluster=${clusterId}`;
     let pages = 0;
     let remainingChars = maxChars;
@@ -353,23 +635,35 @@ export async function getCourtlistenerCaseOpinions(args: {
                 !Array.isArray(opinion),
         );
         const opinionMaxChars = args.includeFullText
-            ? Math.max(500, Math.floor(remainingChars / Math.max(1, pageOpinions.length)))
+            ? Math.max(
+                  500,
+                  Math.floor(
+                      remainingChars / Math.max(1, pageOpinions.length * 2),
+                  ),
+              )
             : Math.min(3000, remainingChars);
         for (const opinion of pageOpinions) {
             if (remainingChars <= 0) break;
             const compacted = compactOpinion(
                 opinion,
                 Math.max(1, Math.min(opinionMaxChars, remainingChars)),
+                !!args.includeFullText,
             );
+            rawOpinions.push(opinion);
             opinions.push(compacted);
-            remainingChars -= compacted.text?.length ?? 0;
+            // The panel receives both plain text and safe HTML. Count both so
+            // one request cannot balloon its server-to-browser payload.
+            remainingChars -=
+                (compacted.text?.length ?? 0) + (compacted.html?.length ?? 0);
         }
         nextUrl = asString(data.next);
     }
 
     return {
         id: clusterId,
-        url: `${COURTLISTENER_WEB_BASE}/opinion/${clusterId}/`,
+        url:
+            absoluteWebUrl(rawOpinions[0]?.absolute_url) ??
+            `${COURTLISTENER_WEB_BASE}/opinion/${clusterId}/`,
         opinions,
         source: "api",
     };

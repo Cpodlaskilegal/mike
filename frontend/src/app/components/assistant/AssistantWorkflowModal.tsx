@@ -7,7 +7,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { DocketWorkflow } from "../shared/types";
 import { listWorkflows } from "@/app/lib/docketApi";
-import { BUILT_IN_WORKFLOWS } from "../workflows/builtinWorkflows";
 
 interface Props {
     open: boolean;
@@ -47,32 +46,18 @@ export function AssistantWorkflowModal({
             setSearch("");
             return;
         }
-        const builtins = BUILT_IN_WORKFLOWS.filter(
-            (w) => w.type === "assistant",
-        );
-        setWorkflows(builtins);
+        setWorkflows([]);
         setLoading(true);
         listWorkflows("assistant")
-            .then((custom) => {
-                const all = [...builtins, ...custom];
+            .then((all) => {
                 setWorkflows(all);
                 if (initialWorkflowId) {
                     const match = all.find((w) => w.id === initialWorkflowId);
                     if (match) setSelected(match);
                 }
             })
-            .catch(() => {
-                if (initialWorkflowId) {
-                    const match = builtins.find((w) => w.id === initialWorkflowId);
-                    if (match) setSelected(match);
-                }
-            })
+            .catch(() => setWorkflows([]))
             .finally(() => setLoading(false));
-        // Pre-select from builtins immediately if possible
-        if (initialWorkflowId) {
-            const match = builtins.find((w) => w.id === initialWorkflowId);
-            if (match) setSelected(match);
-        }
     }, [open, initialWorkflowId]);
 
     if (!open) return null;

@@ -5,6 +5,8 @@ create table if not exists public.app_users (
   id text primary key,
   email text not null default '',
   role text not null default 'user' check (role in ('user', 'admin')),
+  docket_data_status text not null default 'active'
+    check (docket_data_status in ('active', 'deleted')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -26,6 +28,37 @@ create table if not exists public.user_profiles (
 );
 
 create index if not exists idx_user_profiles_user on public.user_profiles(user_id);
+
+-- A Docket data-deletion request is reviewed against legal retention before
+-- any application data is removed. Microsoft Entra identities are never
+-- deleted from this application workflow.
+create table if not exists public.data_deletion_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null references public.app_users(id) on delete restrict,
+  requested_by_email text,
+  reason text,
+  status text not null default 'pending_legal_review'
+    check (status in ('pending_legal_review', 'approved', 'rejected', 'completed', 'cancelled')),
+  legal_hold boolean not null default false,
+  retention_until timestamptz,
+  decision_note text,
+  workflow_submission_disposition text not null default 'retain'
+    check (workflow_submission_disposition in ('retain', 'anonymize', 'delete')),
+  requested_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  completed_at timestamptz,
+  reviewed_by_user_id text,
+  executed_by_user_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists data_deletion_requests_user_requested_idx
+  on public.data_deletion_requests(user_id, requested_at desc);
+
+create unique index if not exists data_deletion_requests_one_active_request_per_user
+  on public.data_deletion_requests(user_id)
+  where status in ('pending_legal_review', 'approved');
 
 create table if not exists public.user_api_keys (
   id uuid primary key default gen_random_uuid(),
@@ -187,11 +220,16 @@ create index if not exists idx_documents_project_folder on public.documents(proj
 create table if not exists public.document_versions (
   id uuid primary key default gen_random_uuid(),
   document_id uuid not null references public.documents(id) on delete cascade,
-  storage_path text not null,
+  storage_path text,
   pdf_storage_path text,
   source text not null default 'upload',
   version_number integer,
   display_name text,
+  file_type text,
+  size_bytes integer,
+  page_count integer,
+  deleted_at timestamptz,
+  deleted_by text references public.app_users(id) on delete set null,
   created_at timestamptz not null default now(),
   constraint document_versions_source_check
     check (source = any (array[
@@ -206,6 +244,9 @@ create table if not exists public.document_versions (
 
 create index if not exists document_versions_document_id_idx on public.document_versions(document_id, created_at desc);
 create index if not exists document_versions_doc_vnum_idx on public.document_versions(document_id, version_number);
+create index if not exists document_versions_active_document_id_idx
+  on public.document_versions(document_id, created_at desc)
+  where deleted_at is null;
 
 alter table public.documents
   add column if not exists current_version_id uuid
@@ -240,7 +281,9 @@ create table if not exists public.workflows (
   type text not null,
   prompt_md text,
   columns_config jsonb,
-  practice text,
+  language text not null default 'English',
+  practice text default 'General Transactions',
+  jurisdictions text[] not null default array['General']::text[],
   is_system boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -270,6 +313,41 @@ create table if not exists public.workflow_shares (
 create index if not exists workflow_shares_workflow_id_idx on public.workflow_shares(workflow_id);
 create index if not exists workflow_shares_email_idx on public.workflow_shares(shared_with_email);
 
+-- Custom workflow submissions are private Docket review artifacts. System
+-- workflow definitions remain application-owned, not user-editable database
+-- rows; no anonymous/public database write path exists for this queue.
+create table if not exists public.workflow_open_source_submissions (
+  id uuid primary key default gen_random_uuid(),
+  workflow_id uuid references public.workflows(id) on delete set null,
+  submitted_by_user_id text not null references public.app_users(id) on delete restrict,
+  submitted_by_email text,
+  attribution text not null default 'docket-community'
+    check (attribution in ('named', 'docket-community')),
+  public_name text,
+  status text not null default 'pending_review'
+    check (status in ('pending_review', 'accepted', 'declined', 'withdrawn')),
+  snapshot jsonb not null,
+  submitted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  reviewed_by_user_id text references public.app_users(id) on delete set null,
+  withdrawn_at timestamptz,
+  review_notes text,
+  constraint workflow_open_source_submissions_named_attribution_check
+    check (
+      (attribution = 'named' and nullif(trim(coalesce(public_name, '')), '') is not null)
+      or (attribution = 'docket-community')
+    )
+);
+
+create unique index if not exists workflow_open_source_submissions_one_pending_per_workflow_user
+  on public.workflow_open_source_submissions(workflow_id, submitted_by_user_id)
+  where status = 'pending_review';
+create index if not exists workflow_open_source_submissions_reviewer_queue_idx
+  on public.workflow_open_source_submissions(status, submitted_at desc);
+create index if not exists workflow_open_source_submissions_submitter_idx
+  on public.workflow_open_source_submissions(submitted_by_user_id, submitted_at desc);
+
 create table if not exists public.chats (
   id uuid primary key default gen_random_uuid(),
   project_id uuid references public.projects(id) on delete cascade,
@@ -288,6 +366,7 @@ create table if not exists public.chat_messages (
   content jsonb,
   files jsonb,
   annotations jsonb,
+  citations jsonb,
   workflow jsonb,
   created_at timestamptz not null default now()
 );
@@ -296,6 +375,37 @@ alter table public.chat_messages
   add column if not exists workflow jsonb;
 
 create index if not exists idx_chat_messages_chat on public.chat_messages(chat_id);
+
+-- Rich assistant citations are kept apart from annotations so existing
+-- tracked-change edit metadata stays backwards compatible. Ask Inputs are
+-- durable, Entra-owned chat contracts rather than client-only pause state.
+create table if not exists public.assistant_input_requests (
+  id text primary key,
+  chat_id uuid not null references public.chats(id) on delete cascade,
+  assistant_message_id uuid not null references public.chat_messages(id) on delete cascade,
+  created_by_user_id text not null references public.app_users(id) on delete cascade,
+  request jsonb not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'resolved', 'dismissed', 'expired')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+
+create index if not exists assistant_input_requests_chat_status_idx
+  on public.assistant_input_requests(chat_id, status, created_at desc);
+create index if not exists assistant_input_requests_message_idx
+  on public.assistant_input_requests(assistant_message_id);
+
+create table if not exists public.assistant_input_responses (
+  id uuid primary key default gen_random_uuid(),
+  request_id text not null unique references public.assistant_input_requests(id) on delete cascade,
+  submitted_by_user_id text not null references public.app_users(id) on delete cascade,
+  response jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists assistant_input_responses_submitter_idx
+  on public.assistant_input_responses(submitted_by_user_id, created_at desc);
 
 do $$
 begin
@@ -321,6 +431,7 @@ create table if not exists public.tabular_reviews (
   columns_config jsonb,
   document_ids jsonb,
   workflow_id uuid references public.workflows(id) on delete set null,
+  system_workflow_id text,
   practice text,
   shared_with jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
@@ -329,6 +440,7 @@ create table if not exists public.tabular_reviews (
 
 create index if not exists idx_tabular_reviews_user on public.tabular_reviews(user_id);
 create index if not exists idx_tabular_reviews_project on public.tabular_reviews(project_id);
+create index if not exists tabular_reviews_system_workflow_id_idx on public.tabular_reviews(system_workflow_id) where system_workflow_id is not null;
 create index if not exists tabular_reviews_shared_with_idx on public.tabular_reviews using gin (shared_with);
 
 create table if not exists public.tabular_cells (
@@ -362,6 +474,7 @@ create table if not exists public.tabular_review_chat_messages (
   role text not null,
   content jsonb,
   annotations jsonb,
+  citations jsonb,
   created_at timestamptz not null default now()
 );
 

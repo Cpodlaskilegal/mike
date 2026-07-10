@@ -13,7 +13,6 @@ import {
     uploadStandaloneDocument,
 } from "@/app/lib/docketApi";
 import { FileDirectory } from "../shared/FileDirectory";
-import { BUILT_IN_WORKFLOWS } from "../workflows/builtinWorkflows";
 
 interface Props {
     open: boolean;
@@ -23,6 +22,7 @@ interface Props {
         projectId?: string,
         documentIds?: string[],
         columnsConfig?: DocketWorkflow["columns_config"],
+        workflowId?: string,
     ) => void;
     projects?: DocketProject[];
     /** When provided, skip the project/directory picker and show only these docs */
@@ -75,12 +75,9 @@ export function AddNewTRModal({
         if (!open) return;
 
         setLoadingWorkflows(true);
-        const builtinTabular = BUILT_IN_WORKFLOWS.filter(
-            (w) => w.type === "tabular",
-        );
         listWorkflows("tabular")
-            .then((custom) => setWorkflows([...builtinTabular, ...custom]))
-            .catch(() => setWorkflows(builtinTabular))
+            .then(setWorkflows)
+            .catch(() => setWorkflows([]))
             .finally(() => setLoadingWorkflows(false));
 
         if (isProjectMode) {
@@ -141,6 +138,7 @@ export function AddNewTRModal({
             underProject ? selectedProjectId : undefined,
             selectedDocIds.size > 0 ? [...selectedDocIds] : undefined,
             selectedWorkflow?.columns_config ?? undefined,
+            selectedWorkflow?.id,
         );
         handleClose();
     }
