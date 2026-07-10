@@ -512,6 +512,16 @@ async function deleteDocketRows(
   await client.query("delete from user_mcp_oauth_states where user_id = $1", [userId]);
   await client.query("delete from user_mcp_tool_audit_logs where user_id = $1", [userId]);
   await client.query("delete from user_api_keys where user_id = $1", [userId]);
+  // Keep aggregate accounting intact, but detach it from the deleted user's
+  // identity and their content-bearing chat/project records.
+  await client.query(
+    `update llm_usage_events
+        set user_id = null,
+            chat_id = null,
+            project_id = null
+      where user_id = $1`,
+    [userId],
+  );
   await client.query("delete from chats where user_id = $1", [userId]);
   await client.query("delete from tabular_review_chats where user_id = $1", [userId]);
   await client.query("delete from tabular_reviews where user_id = $1", [userId]);

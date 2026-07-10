@@ -339,24 +339,26 @@ export default function AccountPage() {
                 </Button>
             </div>
 
-            {/* Privacy & data */}
-            <div className="py-6">
-                <h2 className="text-2xl font-medium font-serif mb-1">
-                    Privacy & Data
-                </h2>
-                <p className="text-sm text-gray-500 mb-4">
-                    Export Docket data or request deletion through the legal-retention
-                    review workflow. These controls do not delete your Microsoft
-                    Entra account.
-                </p>
-                <Button
-                    variant="outline"
-                    onClick={() => router.push("/account/privacy-data")}
-                    className="w-full sm:w-auto"
-                >
-                    Manage privacy & data
-                </Button>
-            </div>
+            {profile?.role === "admin" && (
+                <div className="py-6">
+                    <h2 className="text-2xl font-medium font-serif mb-1">
+                        Privacy & Data
+                    </h2>
+                    <p className="text-sm text-gray-500 mb-4">
+                        Export Docket data, request deletion through the
+                        legal-retention review workflow, and review account spend
+                        reports. These controls do not delete Microsoft Entra
+                        accounts.
+                    </p>
+                    <Button
+                        variant="outline"
+                        onClick={() => router.push("/account/privacy-data")}
+                        className="w-full sm:w-auto"
+                    >
+                        Manage privacy & data
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }

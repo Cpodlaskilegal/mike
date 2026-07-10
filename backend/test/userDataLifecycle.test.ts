@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 // userDataLifecycle imports the Azure/Postgres adapter, which validates that a
@@ -117,4 +119,17 @@ test("workflow submission retention needs an explicit safe disposition", async (
         "workflowSubmissionDisposition must be retain, anonymize, or delete when supplied",
     },
   );
+});
+
+test("data deletion anonymizes usage-ledger attribution while retaining spend totals", () => {
+  const source = readFileSync(
+    join(new URL("..", import.meta.url).pathname, "src/lib/userDataLifecycle.ts"),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /update\s+llm_usage_events\s+set\s+user_id\s*=\s*null,/i,
+  );
+  assert.match(source, /chat_id\s*=\s*null,\s*project_id\s*=\s*null/i);
 });

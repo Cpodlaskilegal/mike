@@ -72,6 +72,7 @@ POSTHOG_KEY=phc_your_posthog_project_api_key
 POSTHOG_HOST=https://us.i.posthog.com
 POSTHOG_AI_CAPTURE_CONTENT=false
 RESEND_API_KEY=your-resend-key
+SPEND_REPORT_FROM=Docket <reports@your-domain.com>
 USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
 MCP_CONNECTORS_ENCRYPTION_SECRET=your-long-random-secret
 API_PUBLIC_URL=http://localhost:3001
@@ -104,6 +105,8 @@ Entra values come from the Microsoft Entra app registrations. The backend valida
 PostHog is optional. When `NEXT_PUBLIC_POSTHOG_KEY` is unset, the frontend does not initialize PostHog. Set `NEXT_PUBLIC_POSTHOG_HOST` to your PostHog region host, such as `https://us.i.posthog.com` or `https://eu.i.posthog.com`. The frontend starts session replay with inputs masked and supports `ph-no-capture` / `ph-mask` CSS classes for sensitive UI.
 
 Backend AI observability uses `POSTHOG_KEY` and `POSTHOG_HOST`. OpenAI calls are captured as PostHog `$ai_generation` events with model, latency, token counts, route, user, chat, and project metadata. Prompt and completion text are redacted by default; set `POSTHOG_AI_CAPTURE_CONTENT=true` only in an environment where full AI trace content is acceptable.
+
+The admin spend report ledger tracks Docket-managed GPT and Claude calls at published model pricing and creates a report when account spend crosses each $100 milestone. Set both `RESEND_API_KEY` and `SPEND_REPORT_FROM` to email each current admin; without both, the report remains in the admin dashboard with a `not_configured` delivery status. Administrators can retry a persisted report from Settings after fixing mail configuration or an email-provider outage. User-supplied provider-key usage is retained as usage metadata but excluded from Docket account spend totals.
 
 For the Azure Container Apps frontend, `NEXT_PUBLIC_*` values are baked into
 the Next.js client bundle during the Docker build. To roll out PostHog to

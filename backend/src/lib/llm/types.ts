@@ -102,6 +102,14 @@ export type UserApiKeys = {
     courtlistener?: string | null;
     gemini?: string | null;
     openai?: string | null;
+    /** Server-only attribution metadata; never sent to a provider. */
+    ownerUserId?: string;
+    sources?: Partial<
+        Record<
+            "claude" | "gemini" | "openai",
+            "account" | "user_api_key"
+        >
+    >;
 };
 
 export type ReasoningEffort =
