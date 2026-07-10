@@ -17,13 +17,28 @@ export interface ModelOption {
     id: string;
     label: string;
     group: "Anthropic" | "Google" | "OpenAI";
+    description?: string;
 }
 
 export const MODELS: ModelOption[] = [
-    { id: "gpt-5.5-pro", label: "GPT-5.5 Pro", group: "OpenAI" },
-    { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
-    { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", group: "OpenAI" },
+    {
+        id: "gpt-5.6-sol",
+        label: "GPT-5.6 Sol",
+        group: "OpenAI",
+        description: "Frontier quality",
+    },
+    {
+        id: "gpt-5.6-terra",
+        label: "GPT-5.6 Terra",
+        group: "OpenAI",
+        description: "Balanced quality and cost",
+    },
+    {
+        id: "gpt-5.6-luna",
+        label: "GPT-5.6 Luna",
+        group: "OpenAI",
+        description: "Efficient high-volume work",
+    },
     { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
     { id: "claude-mythos-5", label: "Claude Mythos 5", group: "Anthropic" },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
@@ -49,7 +64,7 @@ export const TABULAR_MODELS: ModelOption[] = [
     },
 ];
 
-export const DEFAULT_MODEL_ID = "gpt-5.5";
+export const DEFAULT_MODEL_ID = "gpt-5.6-sol";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
@@ -60,9 +75,16 @@ interface Props {
     onChange: (id: string) => void | Promise<boolean>;
     apiKeys?: ApiKeyState;
     models?: ModelOption[];
+    disabled?: boolean;
 }
 
-export function ModelToggle({ value, onChange, apiKeys, models = MODELS }: Props) {
+export function ModelToggle({
+    value,
+    onChange,
+    apiKeys,
+    models = MODELS,
+    disabled = false,
+}: Props) {
     const [isOpen, setIsOpen] = useState(false);
     const [pendingId, setPendingId] = useState<string | null>(null);
     const [error, setError] = useState(false);
@@ -73,7 +95,7 @@ export function ModelToggle({ value, onChange, apiKeys, models = MODELS }: Props
         : true;
 
     async function handleSelect(id: string) {
-        if (pendingId || id === value) return;
+        if (disabled || pendingId || id === value) return;
         setError(false);
         setPendingId(id);
         try {
@@ -97,7 +119,7 @@ export function ModelToggle({ value, onChange, apiKeys, models = MODELS }: Props
             <DropdownMenuTrigger asChild>
                 <button
                     type="button"
-                    disabled={!!pendingId}
+                    disabled={disabled || !!pendingId}
                     data-tour="docket-model-picker"
                     className={`flex items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors cursor-pointer text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait disabled:opacity-70 ${isOpen ? "bg-gray-100 text-gray-700" : ""}`}
                     title={
@@ -138,13 +160,18 @@ export function ModelToggle({ value, onChange, apiKeys, models = MODELS }: Props
                                     <DropdownMenuItem
                                         key={m.id}
                                         className="cursor-pointer"
-                                        disabled={!!pendingId}
+                                        disabled={disabled || !!pendingId}
                                         onSelect={() => void handleSelect(m.id)}
                                     >
                                         <span
-                                            className={`flex-1 ${available ? "" : "text-gray-400"}`}
+                                            className={`flex flex-1 flex-col ${available ? "" : "text-gray-400"}`}
                                         >
-                                            {m.label}
+                                            <span>{m.label}</span>
+                                            {m.description && (
+                                                <span className="text-[11px] text-gray-400">
+                                                    {m.description}
+                                                </span>
+                                            )}
                                         </span>
                                         {pendingId === m.id && (
                                             <span className="ml-1 text-xs text-gray-500">

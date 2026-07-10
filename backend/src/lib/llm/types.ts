@@ -118,9 +118,28 @@ export type ReasoningEffort =
     | "low"
     | "medium"
     | "high"
-    | "xhigh";
+    | "xhigh"
+    | "max";
+
+export type ReasoningMode = "standard" | "pro";
 
 export type TextVerbosity = "low" | "medium" | "high";
+
+export type AiObservabilityMetadata = Record<
+    string,
+    string | number | boolean | null | undefined
+> & {
+    requested_model?: string | null;
+    resolved_model?: string | null;
+    model_resolution_status?:
+        | "direct"
+        | "defaulted"
+        | "legacy_mapped"
+        | "unknown_fallback";
+    reasoning_effort?: ReasoningEffort | null;
+    reasoning_mode?: ReasoningMode | null;
+    streaming?: boolean | null;
+};
 
 export type AiObservabilityContext = {
     distinctId?: string;
@@ -130,7 +149,7 @@ export type AiObservabilityContext = {
     route?: string;
     chatId?: string | null;
     projectId?: string | null;
-    metadata?: Record<string, string | number | boolean | null | undefined>;
+    metadata?: AiObservabilityMetadata;
 };
 
 export type JsonSchemaTextFormat = {
@@ -163,6 +182,7 @@ export type StreamChatParams = {
      * equivalent knobs later.
      */
     reasoningEffort?: ReasoningEffort;
+    reasoningMode?: ReasoningMode;
     textVerbosity?: TextVerbosity;
     textFormat?: JsonSchemaTextFormat;
     aiObservability?: AiObservabilityContext;

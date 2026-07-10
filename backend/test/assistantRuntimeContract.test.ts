@@ -33,6 +33,8 @@ function writeFixtureFile(root: string, relativePath: string, source: string) {
 function writeRuntimeFixture(
   root: string,
   options: {
+    defaultMainModel?: string;
+    explicitRuntimeModel?: boolean;
     frontendMainModels?: string[];
     geminiHonorsAbort?: boolean;
     includeCitationEvent?: boolean;
@@ -47,10 +49,21 @@ function writeRuntimeFixture(
     includeAskInputsClientResume?: boolean;
     includeRichCitationContract?: boolean;
     includeTurnReadSuppression?: boolean;
+    mainRequestAfterPlaceholder?: boolean;
+    mainRequestPropagation?: boolean;
+    openAiMainModels?: string[];
+    tabularModelBinding?: boolean;
+    tabularProfileContainment?: boolean;
   } = {},
 ) {
+  const openAiMainModels = options.openAiMainModels ?? [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ];
+  const defaultMainModel = options.defaultMainModel ?? "gpt-5.6-sol";
   const frontendMainModels = options.frontendMainModels ?? [
-    "gpt-main",
+    ...openAiMainModels,
     "claude-main",
     "gemini-main",
   ];
@@ -144,8 +157,21 @@ res.on("close", () => {
 `;
   const tabularChatCall =
     options.tabularCancellation === false
-      ? "await runLLMStream({});"
-      : "await runLLMStream({ signal: streamAbort.signal });";
+      ? options.tabularModelBinding === false
+        ? "await runLLMStream({});"
+        : "await runLLMStream({ model: tabularModel, apiKeys });"
+      : options.tabularModelBinding === false
+        ? "await runLLMStream({ signal: streamAbort.signal });"
+        : "await runLLMStream({ model: tabularModel, apiKeys, signal: streamAbort.signal });";
+  const tabularChatModelSettings =
+    options.tabularModelBinding === false
+      ? "const apiKeys = await getUserApiKeys(userId, db);"
+      : `
+const {
+  tabular_model: tabularModel,
+  api_keys: apiKeys,
+} = await getUserModelSettings(userId, db);
+`;
   const tabularGenerationAbortCleanup =
     options.tabularGenerationCleanup === false
       ? `
@@ -349,6 +375,71 @@ export type DocketCitationAnnotation = {
 };
 export type DocketCaseCitation = { kind: "case"; cluster_id: number };
 `;
+  const mainRequestSetup =
+    options.mainRequestPropagation === false
+      ? ""
+      : `
+const parsedMainModel = parseMainModelRequest(req.body);
+if (!parsedMainModel.ok) {
+  return void res.status(400).json({ detail: parsedMainModel.detail });
+}
+const mainModelRequest = parsedMainModel.value;
+`;
+  const mainRequestBeforePlaceholder = options.mainRequestAfterPlaceholder
+    ? ""
+    : mainRequestSetup;
+  const mainRequestAfterPlaceholder = options.mainRequestAfterPlaceholder
+    ? mainRequestSetup
+    : "";
+  const mainRequestStreamArgs =
+    options.mainRequestPropagation === false
+      ? ""
+      : `
+  model: mainModelRequest.providerModel,
+  reasoningEffort: mainModelRequest.reasoningEffort,
+  reasoningMode: mainModelRequest.reasoningMode,
+  modelResolution: {
+    requestedModel: mainModelRequest.requestedModel,
+    resolvedModel: mainModelRequest.providerModel,
+    status: mainModelRequest.status,
+  },
+`;
+  const runLlmStreamSignature =
+    options.explicitRuntimeModel === false
+      ? "params: { model?: string; signal?: AbortSignal }"
+      : `params: {
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+  reasoningMode?: ReasoningMode;
+  modelResolution?: {
+    requestedModel: string | null;
+    resolvedModel: string;
+    status: MainModelResolutionStatus;
+  };
+  signal?: AbortSignal;
+}`;
+  const runtimeModelSetup =
+    options.explicitRuntimeModel === false
+      ? "const selectedModel = resolveModel(params.model, DEFAULT_MAIN_MODEL);"
+      : "";
+  const runtimeModel =
+    options.explicitRuntimeModel === false ? "selectedModel" : "params.model";
+  const runtimeGenerationSettings =
+    options.explicitRuntimeModel === false
+      ? ""
+      : `
+    reasoningEffort: params.reasoningEffort,
+    reasoningMode: params.reasoningMode,
+    aiObservability: {
+      metadata: {
+        requested_model: params.modelResolution?.requestedModel,
+        resolved_model: params.modelResolution?.resolvedModel,
+        model_resolution_status: params.modelResolution?.status,
+        reasoning_effort: params.reasoningEffort,
+        reasoning_mode: params.reasoningMode,
+      },
+    },
+`;
 
   writeFixtureFile(
     root,
@@ -356,14 +447,14 @@ export type DocketCaseCitation = { kind: "case"; cluster_id: number };
     `
 export const CLAUDE_MAIN_MODELS = ["claude-main"] as const;
 export const GEMINI_MAIN_MODELS = ["gemini-main"] as const;
-export const OPENAI_MAIN_MODELS = ["gpt-main"] as const;
+export const OPENAI_MAIN_MODELS = [${openAiMainModels.map((model) => `"${model}"`).join(", ")}] as const;
 export const CLAUDE_MID_MODELS = ["claude-mid"] as const;
 export const GEMINI_MID_MODELS = ["gemini-mid"] as const;
 export const OPENAI_MID_MODELS = ["gpt-mid"] as const;
 export const CLAUDE_LOW_MODELS = ["claude-low"] as const;
 export const GEMINI_LOW_MODELS = ["gemini-low"] as const;
 export const OPENAI_LOW_MODELS = ["gpt-low"] as const;
-export const DEFAULT_MAIN_MODEL = "gpt-main";
+export const DEFAULT_MAIN_MODEL = "${defaultMainModel}";
 export function providerForModel(model: string) {
   if (model.startsWith("claude")) return "claude";
   if (model.startsWith("gemini")) return "gemini";
@@ -430,7 +521,7 @@ export async function runToolCalls(toolCalls: unknown[], turnReadState: TurnRead
   }
   return { docsRead: [], askInputsEvents };
 }
-export async function runLLMStream(params: { signal?: AbortSignal }) {
+export async function runLLMStream(${runLlmStreamSignature}) {
   write(JSON.stringify({ type: "content_delta" }));
   write(JSON.stringify({ type: "reasoning_delta" }));
   ${citationEvent}
@@ -441,10 +532,15 @@ export async function runLLMStream(params: { signal?: AbortSignal }) {
   const tabularStore = null;
   ${askInputsRuntime}
   ${turnReadInitialization}
+  ${runtimeModelSetup}
   runTools: async () => {
     ${toolEventCapture}
   };
-  return streamChatWithTools({ abortSignal: params.signal }).catch((error) => {
+  return streamChatWithTools({
+    model: ${runtimeModel},
+    abortSignal: params.signal,
+    ${runtimeGenerationSettings}
+  }).catch((error) => {
     if (error instanceof AskInputsPauseError) {
       flushText();
       return;
@@ -464,10 +560,18 @@ const chatId = "chat-id";
 const userId = "user-id";
 const assistantMessageId = "assistant-id";
 ${askInputsRouteResume}
+${mainRequestBeforePlaceholder}
+await db.from("chat_messages").insert({ role: "assistant", content: null });
+${mainRequestAfterPlaceholder}
 res.setHeader("Content-Type", "text/event-stream");
+res.flushHeaders();
 const streamAbort = new AbortController();
 res.on("close", () => streamAbort.abort());
-await runLLMStream({ assistantMessageId, signal: streamAbort.signal });
+await runLLMStream({
+  assistantMessageId,
+  ${mainRequestStreamArgs}
+  signal: streamAbort.signal,
+});
 ${richCitationRouteSupport}
 catch (err) {
   ${abortPersistence}
@@ -488,10 +592,18 @@ const chatId = "chat-id";
 const userId = "user-id";
 const assistantMessageId = "assistant-id";
 ${askInputsRouteResume}
+${mainRequestBeforePlaceholder}
+await db.from("chat_messages").insert({ role: "assistant", content: null });
+${mainRequestAfterPlaceholder}
 res.setHeader("Content-Type", "text/event-stream");
+res.flushHeaders();
 const streamAbort = new AbortController();
 res.on("close", () => streamAbort.abort());
-await runLLMStream({ assistantMessageId, signal: streamAbort.signal });
+await runLLMStream({
+  assistantMessageId,
+  ${mainRequestStreamArgs}
+  signal: streamAbort.signal,
+});
 ${richCitationRouteSupport}
 catch (err) {
   ${abortPersistence}
@@ -518,7 +630,7 @@ export const TABULAR_MODELS = [
   { id: "gpt-low" },
   { id: "gemini-main" },
 ];
-export const DEFAULT_MODEL_ID = "gpt-main";
+export const DEFAULT_MODEL_ID = "${defaultMainModel}";
 `,
   );
   writeFixtureFile(
@@ -539,9 +651,11 @@ tabularRouter.post("/:reviewId/generate", async (req, res) => {
 });
 tabularRouter.get("/:reviewId/chats", async () => {});
 tabularRouter.post("/:reviewId/chat", async (req, res) => {
+  const userId = "user-id";
   res.setHeader("Content-Type", "text/event-stream");
   ${tabularChatSetup}
   try {
+    ${tabularChatModelSettings}
     ${tabularChatCall}
   } catch (err) {
     if (isAbortError(err)) {
@@ -573,6 +687,38 @@ async function queryGeminiAllColumns(params: { signal?: AbortSignal }) {
     throw err;
   }
 }
+`,
+  );
+  writeFixtureFile(
+    root,
+    "backend/src/lib/userSettings.ts",
+    options.tabularProfileContainment === false
+      ? `
+export async function getUserModelSettings() {
+  return { tabular_model: resolveModel(data?.tabular_model, DEFAULT_TABULAR_MODEL) };
+}
+`
+      : `
+export async function getUserModelSettings() {
+  return { tabular_model: resolveTabularModel(data?.tabular_model) };
+}
+`,
+  );
+  writeFixtureFile(
+    root,
+    "backend/src/routes/user.ts",
+    options.tabularProfileContainment === false
+      ? `
+const tabularModel = resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL);
+const resolved = resolveModel(raw.tabularModel, "");
+update.tabular_model = resolved;
+`
+      : `
+const tabularModel = resolveTabularModel(row.tabular_model);
+if (!isTabularModelId(raw.tabularModel)) {
+  return { ok: false, detail: "Unsupported tabularModel" };
+}
+update.tabular_model = raw.tabularModel;
 `,
   );
   writeFixtureFile(
@@ -659,6 +805,10 @@ test("assistant-runtime-check validates this checkout without contacting service
   assert.match(output, /main model picker matches backend canonical models/);
   assert.match(output, /provider adapters honor AbortSignal/);
   assert.match(output, /SSE routes cancel provider work on disconnect/);
+  assert.match(output, /GPT-5\.6 main model literals are exact/);
+  assert.match(output, /main assistant requests resolve before SSE/);
+  assert.match(output, /runLLMStream consumes explicit model settings/);
+  assert.match(output, /tabular chat and profiles stay on tabular models/);
 });
 
 test("tabular picker exposes the backend-supported Gemini 3.1 Pro model", () => {
@@ -855,8 +1005,88 @@ test("assistant-runtime fixture satisfies the full expanded assistant contract",
       /rich citation streaming and locator contract is complete: PASS/,
     );
     assert.match(output, /turn-scoped document read suppression is safe: PASS/);
+    assert.match(output, /GPT-5\.6 main model literals are exact: PASS/);
+    assert.match(output, /main assistant requests resolve before SSE: PASS/);
+    assert.match(output, /runLLMStream consumes explicit model settings: PASS/);
+    assert.match(
+      output,
+      /tabular chat and profiles stay on tabular models: PASS/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects legacy OpenAI main-model literals even when the picker matches", () => {
+  const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+  try {
+    const legacyModels = ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+    writeRuntimeFixture(root, {
+      openAiMainModels: legacyModels,
+      defaultMainModel: "gpt-5.5",
+      frontendMainModels: [...legacyModels, "claude-main", "gemini-main"],
+    });
+    const result = runHarness(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 1, output);
+    assert.match(output, /GPT-5\.6 main model literals are exact: FAIL/);
+    assert.match(output, /gpt-5\.6-sol|gpt-5\.5/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects main routes that resolve after streaming begins", () => {
+  const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+  try {
+    writeRuntimeFixture(root, { mainRequestAfterPlaceholder: true });
+    const result = runHarness(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 1, output);
+    assert.match(output, /main assistant requests resolve before SSE: FAIL/);
+    assert.match(output, /chat route|project chat route/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects an optional or internally defaulted assistant model", () => {
+  const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+  try {
+    writeRuntimeFixture(root, { explicitRuntimeModel: false });
+    const result = runHarness(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 1, output);
+    assert.match(output, /runLLMStream consumes explicit model settings: FAIL/);
+    assert.match(output, /required model|resolveModel|generation settings/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects tabular chat or profiles that admit main-only models", () => {
+  for (const options of [
+    { tabularModelBinding: false },
+    { tabularProfileContainment: false },
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+    try {
+      writeRuntimeFixture(root, options);
+      const result = runHarness(root);
+      const output = `${result.stdout}${result.stderr}`;
+
+      assert.equal(result.status, 1, output);
+      assert.match(
+        output,
+        /tabular chat and profiles stay on tabular models: FAIL/,
+      );
+      assert.match(output, /tabular/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -945,4 +1175,40 @@ test("assistant-runtime-check rejects duplicate-read suppression without edit in
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("OpenAI Standard and Pro preserve Docket's provider-neutral callback contract", () => {
+  const source = readFileSync(
+    join(backendRoot, "src/lib/llm/openai.ts"),
+    "utf8",
+  );
+
+  assert.match(source, /ResponseCreateParamsStreaming/);
+  assert.match(source, /ResponseCreateParamsNonStreaming/);
+  assert.match(source, /buildOpenAIStandardStreamingRequest/);
+  assert.match(source, /buildOpenAIProNonStreamingRequest/);
+  assert.match(source, /buildOpenAIStandardNonStreamingRequest/);
+  assert.match(source, /reasoning:\s*\{\s*effort:\s*reasoningEffort,?\s*\}/);
+  assert.match(
+    source,
+    /reasoning:\s*\{\s*effort:\s*reasoningEffort,\s*mode:\s*["']pro["']\s*\}/,
+  );
+  assert.doesNotMatch(source, /isProModel|gpt-5\.5-pro/);
+  assert.match(source, /strict:\s*false/);
+  assert.match(source, /parallel_tool_calls:\s*true/);
+  assert.match(
+    source,
+    /OPENAI_STREAM_ERROR[\s\S]*?event\.message[\s\S]*?OpenAI stream failed/,
+  );
+
+  for (const callback of [
+    "onContentDelta",
+    "onReasoningDelta",
+    "onReasoningBlockEnd",
+    "onToolCallStart",
+  ]) {
+    assert.match(source, new RegExp(`callbacks\\.${callback}|params\\.${callback}`));
+  }
+  assert.match(source, /buildToolContinuationInput\(response, results\)/);
+  assert.match(source, /extractCompletedOpenAIOutput\(response\)/);
 });

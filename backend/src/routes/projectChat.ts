@@ -16,6 +16,7 @@ import {
     appendCancellationMarker,
     AssistantStreamAbortError,
     isAbortError,
+    parseMainModelRequest,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
@@ -57,9 +58,9 @@ function createSafeStreamWriter(res: Response) {
     };
 }
 
-function parseChatMessages(value: unknown):
-    | { ok: true; messages: ChatMessage[] }
-    | { ok: false; detail: string } {
+function parseChatMessages(
+    value: unknown,
+): { ok: true; messages: ChatMessage[] } | { ok: false; detail: string } {
     if (!Array.isArray(value) || value.length === 0) {
         return { ok: false, detail: "messages must be a non-empty array" };
     }
@@ -86,24 +87,15 @@ function parseChatMessages(value: unknown):
     return { ok: true, messages: value as ChatMessage[] };
 }
 
-function parseOptionalChatId(value: unknown):
-    | { ok: true; chatId: string | null }
-    | { ok: false; detail: string } {
-    if (value === undefined || value === null) return { ok: true, chatId: null };
+function parseOptionalChatId(
+    value: unknown,
+): { ok: true; chatId: string | null } | { ok: false; detail: string } {
+    if (value === undefined || value === null)
+        return { ok: true, chatId: null };
     if (typeof value !== "string" || !value.trim()) {
         return { ok: false, detail: "chat_id must be a non-empty string" };
     }
     return { ok: true, chatId: value.trim() };
-}
-
-function parseOptionalModel(value: unknown):
-    | { ok: true; model: string | undefined }
-    | { ok: false; detail: string } {
-    if (value === undefined) return { ok: true, model: undefined };
-    if (typeof value !== "string" || !value.trim()) {
-        return { ok: false, detail: "model must be a non-empty string" };
-    }
-    return { ok: true, model: value.trim() };
 }
 
 function replaceLatestUserMessage(
@@ -127,7 +119,9 @@ type RequestDocumentRef = { filename: string; document_id: string };
 function parseOptionalDocumentRef(
     value: unknown,
     fieldName: string,
-): { ok: true; value: RequestDocumentRef | undefined } | { ok: false; detail: string } {
+):
+    | { ok: true; value: RequestDocumentRef | undefined }
+    | { ok: false; detail: string } {
     if (value === undefined || value === null) {
         return { ok: true, value: undefined };
     }
@@ -156,7 +150,9 @@ function parseOptionalDocumentRef(
     };
 }
 
-function parseOptionalDocumentRefs(value: unknown):
+function parseOptionalDocumentRefs(
+    value: unknown,
+):
     | { ok: true; value: RequestDocumentRef[] | undefined }
     | { ok: false; detail: string } {
     if (value === undefined || value === null) {
@@ -197,10 +193,6 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     if (!parsedChatId.ok) {
         return void res.status(400).json({ detail: parsedChatId.detail });
     }
-    const parsedModel = parseOptionalModel(body.model);
-    if (!parsedModel.ok) {
-        return void res.status(400).json({ detail: parsedModel.detail });
-    }
     const parsedAskInputsResponse = parseAskInputsResponsePayload(
         body.ask_inputs_response,
     );
@@ -229,10 +221,14 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             .status(400)
             .json({ detail: parsedAttachedDocuments.detail });
     }
+    const parsedMainModel = parseMainModelRequest(req.body);
+    if (!parsedMainModel.ok) {
+        return void res.status(400).json({ detail: parsedMainModel.detail });
+    }
+    const mainModelRequest = parsedMainModel.value;
 
     const messages = parsedMessages.messages;
     const chat_id = parsedChatId.chatId;
-    const model = parsedModel.model;
     const displayed_doc = parsedDisplayedDoc.value;
     const attached_documents = parsedAttachedDocuments.value;
 
@@ -244,7 +240,9 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         userId,
         userEmail,
         db,
-        { allowAdmin: true },
+        {
+            allowAdmin: true,
+        },
     );
     if (!projectAccess.ok)
         return void res.status(404).json({ detail: "Project not found" });
@@ -261,13 +259,10 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         const canUse = !!existing && existing.project_id === projectId;
         if (!canUse) {
             if (parsedAskInputsResponse.response) {
-                return void res
-                    .status(404)
-                    .json({ detail: "Chat not found" });
+                return void res.status(404).json({ detail: "Chat not found" });
             }
             chatId = null;
-        }
-        else chatTitle = existing!.title;
+        } else chatTitle = existing!.title;
     }
 
     if (!chatId) {
@@ -393,10 +388,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             systemPromptExtra += `\n\nUSER-ATTACHED DOCUMENTS FOR THIS TURN:\nThe user has attached the following document(s) directly to their latest message. Treat these as the primary focus of the request unless their message clearly says otherwise.\n${lines.join("\n")}`;
         }
 
-        const {
-            api_keys: apiKeys,
-            legal_research_us: legalResearchUs,
-        } = await getUserModelSettings(userId, db);
+        const { api_keys: apiKeys, legal_research_us: legalResearchUs } =
+            await getUserModelSettings(userId, db);
         const apiMessages = buildMessages(
             messagesForLLM,
             docAvailability,
@@ -416,7 +409,14 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             write: citationSse.write,
             extraTools: PROJECT_EXTRA_TOOLS,
             workflowStore,
-            model,
+            model: mainModelRequest.providerModel,
+            reasoningEffort: mainModelRequest.reasoningEffort,
+            reasoningMode: mainModelRequest.reasoningMode,
+            modelResolution: {
+                requestedModel: mainModelRequest.requestedModel,
+                resolvedModel: mainModelRequest.providerModel,
+                status: mainModelRequest.status,
+            },
             apiKeys,
             includeResearchTools: legalResearchUs,
             chatId,

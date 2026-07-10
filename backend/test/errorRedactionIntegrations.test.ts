@@ -17,6 +17,19 @@ test("OpenAI failure telemetry passes a redacted error value", async () => {
     (openai.match(/error:\s*safeErrorMessage\(error\),/g) ?? []).length,
     2,
   );
+  assert.ok(
+    openai.includes("buildOpenAIGenerationIdentity"),
+    "OpenAI telemetry must construct an allowlisted model identity",
+  );
+  assert.ok(
+    openai.includes("actual_response_model"),
+    "OpenAI telemetry must explicitly distinguish actual response models",
+  );
+  assert.doesNotMatch(
+    openai,
+    /\.\.\.params\.aiObservability\?\.metadata/,
+    "OpenAI telemetry must not spread arbitrary caller metadata into generation events",
+  );
 });
 
 test("PostHog capture failures redact their console warning", async () => {

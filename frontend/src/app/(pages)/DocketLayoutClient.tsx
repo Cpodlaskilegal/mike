@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { ChatHistoryProvider } from "@/app/contexts/ChatHistoryContext";
+import { AssistantGenerationSettingsProvider } from "@/app/contexts/AssistantGenerationSettingsContext";
 import { SidebarContext } from "@/app/contexts/SidebarContext";
 import { AppSidebar } from "@/app/components/shared/AppSidebar";
 import { DocketTutorial } from "@/app/components/tutorial/DocketTutorial";
@@ -77,37 +78,39 @@ export function DocketLayoutClient({
 
     return (
         <ChatHistoryProvider>
-            <SidebarContext.Provider
-                value={{
-                    setSidebarOpen: (open) => {
-                        setIsSidebarOpen(open);
-                        setIsSidebarOpenDesktop(open);
-                    },
-                }}
-            >
-                <div className="h-dvh bg-white flex flex-col">
-                    <div className="flex-1 flex overflow-hidden">
-                        <AppSidebar
-                            isOpen={isSidebarOpen}
-                            onToggle={handleSidebarToggle}
-                        />
-                        <DocketTutorial />
-                        <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
-                            <div className="flex md:hidden items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
-                                <button
-                                    onClick={handleSidebarToggle}
-                                    className="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100 text-gray-500 transition-colors"
-                                >
-                                    <Menu className="h-5 w-5" />
-                                </button>
+            <AssistantGenerationSettingsProvider>
+                <SidebarContext.Provider
+                    value={{
+                        setSidebarOpen: (open) => {
+                            setIsSidebarOpen(open);
+                            setIsSidebarOpenDesktop(open);
+                        },
+                    }}
+                >
+                    <div className="h-dvh bg-white flex flex-col">
+                        <div className="flex-1 flex overflow-hidden">
+                            <AppSidebar
+                                isOpen={isSidebarOpen}
+                                onToggle={handleSidebarToggle}
+                            />
+                            <DocketTutorial />
+                            <div className="flex-1 flex flex-col h-dvh md:overflow-hidden relative w-full">
+                                <div className="flex md:hidden items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
+                                    <button
+                                        onClick={handleSidebarToggle}
+                                        className="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100 text-gray-500 transition-colors"
+                                    >
+                                        <Menu className="h-5 w-5" />
+                                    </button>
+                                </div>
+                                <main className="flex-1 overflow-y-auto md:overflow-hidden w-full h-full">
+                                    {children}
+                                </main>
                             </div>
-                            <main className="flex-1 overflow-y-auto md:overflow-hidden w-full h-full">
-                                {children}
-                            </main>
                         </div>
                     </div>
-                </div>
-            </SidebarContext.Provider>
+                </SidebarContext.Provider>
+            </AssistantGenerationSettingsProvider>
         </ChatHistoryProvider>
     );
 }

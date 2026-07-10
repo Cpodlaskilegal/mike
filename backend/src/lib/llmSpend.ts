@@ -26,6 +26,21 @@ function usdPerMillion(value: string): bigint {
 }
 
 const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
+  "gpt-5.6-sol": {
+    input: usdPerMillion("5"),
+    cachedInput: usdPerMillion("0.5"),
+    output: usdPerMillion("30"),
+  },
+  "gpt-5.6-terra": {
+    input: usdPerMillion("2.5"),
+    cachedInput: usdPerMillion("0.25"),
+    output: usdPerMillion("15"),
+  },
+  "gpt-5.6-luna": {
+    input: usdPerMillion("1"),
+    cachedInput: usdPerMillion("0.1"),
+    output: usdPerMillion("6"),
+  },
   "gpt-5.5": {
     input: usdPerMillion("5"),
     cachedInput: usdPerMillion("0.5"),
@@ -145,7 +160,13 @@ export function calculateLlmCostNanos(input: LlmCostInput): LlmCost {
 
   const regularInputTokens =
     input.provider === "openai"
-      ? Math.max(inputTokens - cachedInputTokens, 0)
+      ? Math.max(
+          inputTokens -
+            cachedInputTokens -
+            cacheCreation5mTokens -
+            cacheCreation1hTokens,
+          0,
+        )
       : inputTokens;
   const inputCostNanos = tokenCost(regularInputTokens, pricing.input);
   const cachedInputCostNanos =
