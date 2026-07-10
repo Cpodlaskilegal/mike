@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getChat, streamChat, streamProjectChat } from "@/app/lib/docketApi";
 import { describeChatError } from "@/app/lib/chatErrors";
+import { buildAssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
+import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
 import type {
     AssistantEvent,
@@ -62,14 +64,31 @@ export function useAssistantChat({
         saveChat,
         setNewChatMessages,
     } = useChatHistoryContext();
+    const {
+        activateSession,
+        adoptCreatedChat,
+        effectiveSettings,
+        hydrated,
+    } =
+        useAssistantGenerationSettings();
     const { generate: generateTitle } = useGenerateChatTitle();
+
+    const sessionIdentity = projectId
+        ? `project:${projectId}:${initialChatId ?? "new"}`
+        : initialChatId
+          ? `assistant:${initialChatId}`
+          : "new:assistant";
 
     const [messages, setMessages] = useState<DocketMessage[]>(initialMessages);
     const [isResponseLoading, setIsResponseLoading] = useState(false);
     const [isLoadingCitations, setIsLoadingCitations] = useState(false);
     const [chatId, setChatId] = useState<string | undefined>(initialChatId);
+    const [activatedSessionKey, setActivatedSessionKey] = useState<
+        string | null
+    >(null);
 
     const abortControllerRef = useRef<AbortController | null>(null);
+    const adoptedCreatedChatRef = useRef(false);
     const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(
         null,
     );
@@ -79,6 +98,14 @@ export function useAssistantChat({
     const dripDisplayLenRef = useRef<number>(0);
     const eventsRef = useRef<AssistantEvent[]>([]);
     const DRIP_CHARS_PER_TICK = 8;
+    const sessionReady = activatedSessionKey === sessionIdentity;
+
+    useEffect(() => {
+        if (!hydrated) return;
+        adoptedCreatedChatRef.current = false;
+        activateSession(sessionIdentity);
+        setActivatedSessionKey(sessionIdentity);
+    }, [activateSession, hydrated, sessionIdentity]);
 
     const stopDrip = () => {
         if (dripIntervalRef.current !== null) {
@@ -385,7 +412,7 @@ export function useAssistantChat({
             askInputsResponse?: DocketAskInputsResponse;
         },
     ): Promise<string | null> => {
-        if (!message.content.trim()) return null;
+        if (!sessionReady || !message.content.trim()) return null;
 
         setIsResponseLoading(true);
 
@@ -431,7 +458,9 @@ export function useAssistantChat({
                         currentMessage.content.trim().length > 0,
                 );
 
-            const model = message.model;
+            const generationPayload = buildAssistantGenerationPayload(
+                effectiveSettings,
+            );
 
             const displayedDoc = opts?.displayedDoc ?? null;
 
@@ -452,7 +481,7 @@ export function useAssistantChat({
                       projectId,
                       messages: apiMessages,
                       chat_id: chatId,
-                      model,
+                      ...generationPayload,
                       displayed_doc: displayedDoc
                           ? {
                                 filename: displayedDoc.filename,
@@ -467,7 +496,7 @@ export function useAssistantChat({
                 : streamChat({
                       messages: apiMessages,
                       chat_id: chatId,
-                      model,
+                      ...generationPayload,
                       ask_inputs_response: opts?.askInputsResponse,
                       signal: controller.signal,
                   }));
@@ -514,6 +543,16 @@ export function useAssistantChat({
 
                         if (data.type === "chat_id") {
                             streamedChatId = data.chatId;
+                            if (
+                                !projectId &&
+                                !initialChatId &&
+                                !adoptedCreatedChatRef.current
+                            ) {
+                                adoptedCreatedChatRef.current = true;
+                                adoptCreatedChat(
+                                    `assistant:${data.chatId as string}`,
+                                );
+                            }
                             setChatId(data.chatId);
                             setCurrentChatId(data.chatId);
                             replaceBrowserUrlForChat(data.chatId, projectId);
@@ -1172,7 +1211,7 @@ export function useAssistantChat({
 
     return {
         messages,
-        isResponseLoading,
+        isResponseLoading: isResponseLoading || !sessionReady,
         setIsResponseLoading,
         isLoadingCitations,
         handleChat,

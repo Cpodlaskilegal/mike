@@ -9,6 +9,8 @@ import {
   GPT56_REASONING_EFFORTS,
   LEGACY_ASSISTANT_MODEL_STORAGE_KEY,
   PRO_REASONING_EFFORTS,
+  activateAssistantSession,
+  adoptCreatedAssistantChat,
   defaultAssistantGenerationSettings,
   deserializeAssistantGenerationSettings,
   effectiveAssistantGenerationSettings,
@@ -20,6 +22,7 @@ import {
   serializeAssistantGenerationSettings,
   setAssistantReasoningMode,
 } from "../src/app/lib/assistantGenerationSettings";
+import { buildAssistantGenerationPayload } from "../src/app/lib/assistantChatPayload";
 
 test("exports the exact GPT-5.6 model and effort contracts", () => {
   assert.deepEqual(GPT56_MODEL_IDS, [
@@ -314,5 +317,134 @@ test("resetting a session changes only mode and keeps persisted preferences", ()
   assert.deepEqual(
     JSON.parse(serializeAssistantGenerationSettings(reset)),
     JSON.parse(serializeAssistantGenerationSettings(state)),
+  );
+});
+
+test("first activation of the general new-chat identity starts Standard", () => {
+  const pro = setAssistantReasoningMode(
+    defaultAssistantGenerationSettings(),
+    "pro",
+  );
+  const activated = activateAssistantSession(pro, "new:assistant");
+
+  assert.equal(activated.sessionKey, "new:assistant");
+  assert.equal(activated.reasoningMode, "standard");
+});
+
+test("changing between existing chat identities resets Pro", () => {
+  const first = {
+    ...setAssistantReasoningMode(defaultAssistantGenerationSettings(), "pro"),
+    sessionKey: "assistant:first",
+  };
+  const second = activateAssistantSession(first, "assistant:second");
+
+  assert.equal(second.sessionKey, "assistant:second");
+  assert.equal(second.reasoningMode, "standard");
+});
+
+test("entering a project new-chat identity resets Pro", () => {
+  const pro = {
+    ...setAssistantReasoningMode(defaultAssistantGenerationSettings(), "pro"),
+    sessionKey: "assistant:old",
+  };
+  const projectNew = activateAssistantSession(pro, "project:project-1:new");
+
+  assert.equal(projectNew.sessionKey, "project:project-1:new");
+  assert.equal(projectNew.reasoningMode, "standard");
+});
+
+test("a pre-created project chat resets once before auto-send and same-key activation is idempotent", () => {
+  const prior = {
+    ...setAssistantReasoningMode(defaultAssistantGenerationSettings(), "pro"),
+    sessionKey: "assistant:prior",
+  };
+  const precreated = activateAssistantSession(
+    prior,
+    "project:project-1:chat-created-before-mount",
+  );
+  const userSelectedPro = setAssistantReasoningMode(precreated, "pro");
+  const repeatedActivation = activateAssistantSession(
+    userSelectedPro,
+    "project:project-1:chat-created-before-mount",
+  );
+
+  assert.equal(precreated.reasoningMode, "standard");
+  assert.equal(repeatedActivation.reasoningMode, "pro");
+  assert.equal(
+    repeatedActivation.sessionKey,
+    "project:project-1:chat-created-before-mount",
+  );
+});
+
+test("adopting the first server-created general chat ID preserves active Pro", () => {
+  const newSession = activateAssistantSession(
+    defaultAssistantGenerationSettings(),
+    "new:assistant",
+  );
+  const pro = setAssistantReasoningMode(newSession, "pro");
+  const adopted = adoptCreatedAssistantChat(pro, "assistant:created-1");
+
+  assert.equal(adopted.sessionKey, "assistant:created-1");
+  assert.equal(adopted.reasoningMode, "pro");
+});
+
+test("a second adoption or different existing activation resets to Standard", () => {
+  const newSession = activateAssistantSession(
+    defaultAssistantGenerationSettings(),
+    "new:assistant",
+  );
+  const firstAdoption = adoptCreatedAssistantChat(
+    setAssistantReasoningMode(newSession, "pro"),
+    "assistant:created-1",
+  );
+  const secondAdoption = adoptCreatedAssistantChat(
+    firstAdoption,
+    "assistant:created-1",
+  );
+  const switched = activateAssistantSession(
+    setAssistantReasoningMode(firstAdoption, "pro"),
+    "assistant:other",
+  );
+
+  assert.equal(secondAdoption.reasoningMode, "standard");
+  assert.equal(switched.reasoningMode, "standard");
+});
+
+test("a recreated page state is Standard even with persisted model and effort", () => {
+  const hydrated = deserializeAssistantGenerationSettings({
+    versioned: JSON.stringify({
+      version: 1,
+      model: "gpt-5.6-terra",
+      standardEffort: "high",
+    }),
+    legacy: null,
+  });
+
+  assert.equal(hydrated.model, "gpt-5.6-terra");
+  assert.equal(hydrated.standardEffort, "high");
+  assert.equal(hydrated.reasoningMode, "standard");
+  assert.equal(hydrated.sessionKey, null);
+});
+
+test("builds exact GPT generation fields and omits them for other providers", () => {
+  assert.deepEqual(
+    buildAssistantGenerationPayload({
+      model: "gpt-5.6-terra",
+      reasoningEffort: "max",
+      reasoningMode: "pro",
+    }),
+    {
+      model: "gpt-5.6-terra",
+      reasoning_effort: "max",
+      reasoning_mode: "pro",
+    },
+  );
+  assert.deepEqual(
+    buildAssistantGenerationPayload({
+      model: "claude-sonnet-4-6",
+      reasoningEffort: "medium",
+      reasoningMode: "standard",
+    }),
+    { model: "claude-sonnet-4-6" },
   );
 });

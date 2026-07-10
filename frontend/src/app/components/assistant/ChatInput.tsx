@@ -22,7 +22,10 @@ import { AddDocumentsModal } from "../shared/AddDocumentsModal";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
 import { ModelToggle } from "./ModelToggle";
-import { useSelectedModel } from "@/app/hooks/useSelectedModel";
+import { ReasoningEffortToggle } from "./ReasoningEffortToggle";
+import { ReasoningModeToggle } from "./ReasoningModeToggle";
+import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
+import { isGpt56Model } from "@/app/lib/assistantGenerationSettings";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
@@ -65,7 +68,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         id: string;
         title: string;
     } | null>(null);
-    const [model, setModel] = useSelectedModel();
+    const {
+        state: generationSettings,
+        hydrated,
+        selectModel,
+        selectEffort,
+        setReasoningMode,
+    } = useAssistantGenerationSettings();
+    const model = generationSettings.model;
+    const generationControlsDisabled = !hydrated || isLoading;
+    const activeEffort =
+        generationSettings.reasoningMode === "pro"
+            ? generationSettings.proEffort
+            : generationSettings.standardEffort;
     const { profile } = useUserProfile();
     const apiKeys = profile?.apiKeys;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -112,7 +127,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
 
     const handleSubmit = () => {
         const query = value.trim();
-        if (!query || isLoading) return;
+        if (!query || isLoading || !hydrated) return;
         if (apiKeys && !isModelAvailable(model, apiKeys)) {
             setApiKeyModalProvider(getModelProvider(model));
             return;
@@ -135,7 +150,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             content: query,
             files: files.length > 0 ? files : undefined,
             workflow: wf ?? undefined,
-            model,
         });
     };
 
@@ -228,7 +242,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                     </div>
 
                     {/* Controls */}
-                    <div className="flex items-center justify-between md:p-2.5 p-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 md:p-2.5 p-2">
                         <div className="flex items-center gap-1">
                             {!hideAddDocButton && (
                                 <AddDocButton
@@ -271,17 +285,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                             )}
                         </div>
 
-                        <div className="flex items-center gap-1">
+                        <div className="flex flex-wrap items-center justify-end gap-1">
                             <ModelToggle
                                 value={model}
-                                onChange={setModel}
+                                onChange={selectModel}
                                 apiKeys={apiKeys}
+                                disabled={generationControlsDisabled}
                             />
+                            {isGpt56Model(model) && (
+                                <>
+                                    <ReasoningEffortToggle
+                                        value={activeEffort}
+                                        mode={generationSettings.reasoningMode}
+                                        onChange={selectEffort}
+                                        disabled={generationControlsDisabled}
+                                    />
+                                    <ReasoningModeToggle
+                                        value={generationSettings.reasoningMode}
+                                        onChange={setReasoningMode}
+                                        disabled={generationControlsDisabled}
+                                    />
+                                </>
+                            )}
                             <button
                                 type="button"
                                 className="relative bg-gradient-to-b from-neutral-700 to-black text-white rounded-[10px] h-8 w-8 flex items-center justify-center cursor-pointer disabled:cursor-default disabled:from-neutral-600 disabled:to-black backdrop-blur-xl border border-white/30 active:enabled:scale-95 transition-all duration-150"
                                 onClick={handleActionClick}
-                                disabled={!isLoading && !value.trim()}
+                                disabled={
+                                    !hydrated ||
+                                    (!isLoading && !value.trim())
+                                }
                             >
                                 {isLoading ? (
                                     <Square

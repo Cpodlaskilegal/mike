@@ -258,6 +258,30 @@ export function resetAssistantSession(
     return { ...state, reasoningMode: "standard" };
 }
 
+export function activateAssistantSession(
+    state: AssistantGenerationSettingsState,
+    nextSessionKey: string,
+): AssistantGenerationSettingsState {
+    if (state.sessionKey === nextSessionKey) return state;
+    return {
+        ...resetAssistantSession(state),
+        sessionKey: nextSessionKey,
+    };
+}
+
+export function adoptCreatedAssistantChat(
+    state: AssistantGenerationSettingsState,
+    createdChatKey: string,
+): AssistantGenerationSettingsState {
+    if (state.sessionKey === "new:assistant") {
+        return { ...state, sessionKey: createdChatKey };
+    }
+    return {
+        ...resetAssistantSession(state),
+        sessionKey: createdChatKey,
+    };
+}
+
 export function effectiveAssistantGenerationSettings(
     state: AssistantGenerationSettingsState,
 ): EffectiveAssistantGenerationSettings {

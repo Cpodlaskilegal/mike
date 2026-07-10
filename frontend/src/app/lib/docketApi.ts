@@ -20,6 +20,7 @@ import type {
   TabularReview,
   TabularReviewDetailOut,
 } from "@/app/components/shared/types";
+import type { AssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
 
 // Server-side shape before mapping
 interface ServerMessage {
@@ -946,7 +947,7 @@ export async function generateChatTitle(
   });
 }
 
-export async function streamChat(payload: {
+export async function streamChat(payload: AssistantGenerationPayload & {
   messages: {
     role: string;
     content: string;
@@ -955,7 +956,6 @@ export async function streamChat(payload: {
   }[];
   chat_id?: string;
   project_id?: string;
-  model?: string;
   ask_inputs_response?: DocketAskInputsResponse;
   signal?: AbortSignal;
 }): Promise<Response> {
@@ -980,11 +980,10 @@ type StreamChatMessage = {
   workflow?: { id: string; title: string };
 };
 
-export async function streamProjectChat(payload: {
+export async function streamProjectChat(payload: AssistantGenerationPayload & {
   projectId: string;
   messages: StreamChatMessage[];
   chat_id?: string;
-  model?: string;
   displayed_doc?: { filename: string; document_id: string };
   attached_documents?: { filename: string; document_id: string }[];
   ask_inputs_response?: DocketAskInputsResponse;
