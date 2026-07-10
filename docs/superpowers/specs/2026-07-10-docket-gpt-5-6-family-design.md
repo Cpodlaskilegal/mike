@@ -1,7 +1,7 @@
 # Docket GPT-5.6 Family and Reasoning Controls Design
 
 **Date:** 2026-07-10
-**Status:** Conversational design approved; written specification awaiting review
+**Status:** Approved for implementation planning
 
 ## Outcome
 
