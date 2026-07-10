@@ -257,6 +257,28 @@ export function extractCompletedOpenAIOutput(
     );
 }
 
+export function emitCompletedOpenAIContent(
+    response: Response,
+    onContentDelta?: (delta: string) => void,
+): CompletedOpenAIOutput {
+    const output = extractCompletedOpenAIOutput(response);
+    if (output.text) onContentDelta?.(output.text);
+    return output;
+}
+
+export function emitOpenAIToolCallStarts(
+    response: Response,
+    onToolCallStart?: (call: NormalizedToolCall) => void,
+): NormalizedToolCall[] {
+    const calls = extractFunctionCalls(response).map((call) => ({
+        id: call.call_id,
+        name: call.name,
+        input: parseToolArguments(call.arguments),
+    }));
+    for (const call of calls) onToolCallStart?.(call);
+    return calls;
+}
+
 export function buildToolContinuationInput(
     response: Response,
     results: NormalizedToolResult[],
@@ -283,6 +305,78 @@ export function buildToolContinuationInput(
 
 function elapsedSeconds(startedAt: number): number {
     return (Date.now() - startedAt) / 1000;
+}
+
+export async function consumeOpenAIStandardStream(
+    stream: AsyncIterable<ResponseStreamEvent>,
+    params: {
+        enableThinking?: boolean;
+        onDelta?: (delta: string) => void;
+        onReasoningDelta?: (delta: string) => void;
+        onReasoningBlockEnd?: () => void;
+        abortSignal?: AbortSignal;
+        startedAt?: number;
+    },
+): Promise<{
+    response: Response;
+    timeToFirstTokenSeconds?: number;
+}> {
+    const startedAt = params.startedAt ?? Date.now();
+    let final: Response | null = null;
+    let reasoningOpen = false;
+    let timeToFirstTokenSeconds: number | undefined;
+
+    for await (const event of stream) {
+        throwIfAborted(params.abortSignal);
+        if (event.type === "response.output_text.delta") {
+            timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
+            params.onDelta?.(event.delta);
+        } else if (
+            params.enableThinking &&
+            (event.type === "response.reasoning_summary_text.delta" ||
+                event.type === "response.reasoning_text.delta")
+        ) {
+            reasoningOpen = true;
+            params.onReasoningDelta?.(event.delta);
+        } else if (
+            params.enableThinking &&
+            (event.type === "response.reasoning_summary_text.done" ||
+                event.type === "response.reasoning_text.done")
+        ) {
+            if (reasoningOpen) {
+                params.onReasoningBlockEnd?.();
+                reasoningOpen = false;
+            }
+        } else if (event.type === "response.completed") {
+            final = event.response;
+        } else if (event.type === "response.failed") {
+            throw namedResponseError(
+                "OPENAI_RESPONSE_FAILED",
+                event.response.error?.message,
+                "OpenAI response failed",
+            );
+        } else if (event.type === "response.incomplete") {
+            throw namedResponseError(
+                "OPENAI_RESPONSE_INCOMPLETE",
+                event.response.incomplete_details?.reason,
+                "OpenAI response incomplete",
+            );
+        } else if (event.type === "error") {
+            throw namedResponseError(
+                "OPENAI_STREAM_ERROR",
+                event.message,
+                "OpenAI stream failed",
+            );
+        }
+    }
+    if (!final) {
+        throw new NamedOpenAIError(
+            "OPENAI_STREAM_INCOMPLETE",
+            "OpenAI stream ended without a completed response.",
+        );
+    }
+    extractCompletedOpenAIOutput(final);
+    return { response: final, timeToFirstTokenSeconds };
 }
 
 function aiInputMessages(
@@ -392,64 +486,21 @@ async function createStreamingResponse(
     const stream = await openai.responses.create(request, {
         signal: params.abortSignal,
     });
-
-    let final: Response | null = null;
-    let reasoningOpen = false;
-    let timeToFirstTokenSeconds: number | undefined;
-    for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
-        throwIfAborted(params.abortSignal);
-        if (event.type === "response.output_text.delta") {
-            timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
-            params.onDelta?.(event.delta);
-        } else if (
-            params.enableThinking &&
-            (event.type === "response.reasoning_summary_text.delta" ||
-                event.type === "response.reasoning_text.delta")
-        ) {
-            reasoningOpen = true;
-            params.onReasoningDelta?.(event.delta);
-        } else if (
-            params.enableThinking &&
-            (event.type === "response.reasoning_summary_text.done" ||
-                event.type === "response.reasoning_text.done")
-        ) {
-            if (reasoningOpen) {
-                params.onReasoningBlockEnd?.();
-                reasoningOpen = false;
-            }
-        } else if (event.type === "response.completed") {
-            final = event.response;
-        } else if (event.type === "response.failed") {
-            throw namedResponseError(
-                "OPENAI_RESPONSE_FAILED",
-                event.response.error?.message,
-                "OpenAI response failed",
-            );
-        } else if (event.type === "response.incomplete") {
-            throw namedResponseError(
-                "OPENAI_RESPONSE_INCOMPLETE",
-                event.response.incomplete_details?.reason,
-                "OpenAI response incomplete",
-            );
-        } else if (event.type === "error") {
-            throw namedResponseError(
-                "OPENAI_STREAM_ERROR",
-                event.message,
-                "OpenAI stream failed",
-            );
-        }
-    }
-    if (!final) {
-        throw new NamedOpenAIError(
-            "OPENAI_STREAM_INCOMPLETE",
-            "OpenAI stream ended without a completed response.",
-        );
-    }
-    extractCompletedOpenAIOutput(final);
+    const consumed = await consumeOpenAIStandardStream(
+        stream as AsyncIterable<ResponseStreamEvent>,
+        {
+            enableThinking: params.enableThinking,
+            onDelta: params.onDelta,
+            onReasoningDelta: params.onReasoningDelta,
+            onReasoningBlockEnd: params.onReasoningBlockEnd,
+            abortSignal: params.abortSignal,
+            startedAt,
+        },
+    );
     return {
-        response: final,
+        response: consumed.response,
         latencySeconds: elapsedSeconds(startedAt),
-        timeToFirstTokenSeconds,
+        timeToFirstTokenSeconds: consumed.timeToFirstTokenSeconds,
     };
 }
 
@@ -599,15 +650,17 @@ export async function streamOpenAI(
 
         const { response } = result;
         throwIfAborted(params.abortSignal);
-        const completedOutput = extractCompletedOpenAIOutput(response);
-
-        if (!streaming || fullText.length === beforeLength) {
-            const text = completedOutput.text;
-            if (text) {
-                iterationText += text;
-                fullText += text;
-                callbacks.onContentDelta?.(text);
-            }
+        const shouldEmitCompletedContent =
+            !streaming || fullText.length === beforeLength;
+        const completedOutput = shouldEmitCompletedContent
+            ? emitCompletedOpenAIContent(
+                  response,
+                  callbacks.onContentDelta,
+              )
+            : extractCompletedOpenAIOutput(response);
+        if (shouldEmitCompletedContent && completedOutput.text) {
+            iterationText += completedOutput.text;
+            fullText += completedOutput.text;
         }
 
         const usage = await recordOpenAIUsage({
@@ -652,12 +705,10 @@ export async function streamOpenAI(
         const calls = extractFunctionCalls(response);
         if (!calls.length || !runTools) break;
 
-        const normalizedCalls: NormalizedToolCall[] = calls.map((call) => ({
-            id: call.call_id,
-            name: call.name,
-            input: parseToolArguments(call.arguments),
-        }));
-        for (const call of normalizedCalls) callbacks.onToolCallStart?.(call);
+        const normalizedCalls = emitOpenAIToolCallStarts(
+            response,
+            callbacks.onToolCallStart,
+        );
 
         throwIfAborted(params.abortSignal);
         const results = await runTools(normalizedCalls);

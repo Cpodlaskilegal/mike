@@ -4,6 +4,7 @@ import type {
   Response,
   ResponseFunctionToolCall,
   ResponseOutputItem,
+  ResponseStreamEvent,
 } from "openai/resources/responses/responses";
 
 process.env.DATABASE_URL ??= "postgres://docket:unused@127.0.0.1:5432/docket";
@@ -238,4 +239,146 @@ test("keeps failed and incomplete completed-response errors explicit and sanitiz
     (error: unknown) =>
       error instanceof Error && error.name === "OPENAI_RESPONSE_INCOMPLETE",
   );
+});
+
+test("executes Standard stream callbacks using Docket's browser-facing event vocabulary", async () => {
+  const final = responseFixture({ outputText: "Hello world" });
+  const events = [
+    { type: "response.output_text.delta", delta: "Hello " },
+    {
+      type: "response.reasoning_summary_text.delta",
+      delta: "Checking the record",
+    },
+    { type: "response.reasoning_summary_text.done", text: "Checking the record" },
+    { type: "response.output_text.delta", delta: "world" },
+    { type: "response.completed", response: final },
+  ] as ResponseStreamEvent[];
+  const browserEvents: Array<{ type: string; text?: string }> = [];
+
+  const result = await adapter.consumeOpenAIStandardStream(
+    (async function* () {
+      yield* events;
+    })(),
+    {
+      enableThinking: true,
+      onDelta: (text) =>
+        browserEvents.push({ type: "content_delta", text }),
+      onReasoningDelta: (text) =>
+        browserEvents.push({ type: "reasoning_delta", text }),
+      onReasoningBlockEnd: () =>
+        browserEvents.push({ type: "reasoning_block_end" }),
+    },
+  );
+
+  assert.equal(result.response, final);
+  assert.deepEqual(browserEvents, [
+    { type: "content_delta", text: "Hello " },
+    { type: "reasoning_delta", text: "Checking the record" },
+    { type: "reasoning_block_end" },
+    { type: "content_delta", text: "world" },
+  ]);
+});
+
+test("emits Pro final text and refusal content through the existing content callback", () => {
+  const emitted: string[] = [];
+  const text = adapter.emitCompletedOpenAIContent(
+    responseFixture({ outputText: "Final answer" }),
+    (delta) => emitted.push(delta),
+  );
+  const refusal = adapter.emitCompletedOpenAIContent(
+    responseFixture({
+      output: [
+        {
+          id: "msg_refusal",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "refusal", refusal: "Cannot comply" }],
+        },
+      ],
+    }),
+    (delta) => emitted.push(delta),
+  );
+
+  assert.deepEqual(text, { kind: "text", text: "Final answer" });
+  assert.deepEqual(refusal, { kind: "refusal", text: "Cannot comply" });
+  assert.deepEqual(emitted, ["Final answer", "Cannot comply"]);
+});
+
+test("emits distinct normalized tool-call starts from completed output", () => {
+  const started: Array<{ id: string; name: string }> = [];
+  const response = responseFixture({
+    output: [
+      functionCall("call_a", "read_document", '{"doc_id":"d1"}'),
+      functionCall("call_b", "find_in_document", '{"query":"rent"}'),
+    ],
+  });
+
+  const calls = adapter.emitOpenAIToolCallStarts(response, (call) =>
+    started.push({ id: call.id, name: call.name }),
+  );
+
+  assert.deepEqual(started, [
+    { id: "call_a", name: "read_document" },
+    { id: "call_b", name: "find_in_document" },
+  ]);
+  assert.deepEqual(
+    calls.map((call) => call.id),
+    ["call_a", "call_b"],
+  );
+});
+
+test("sanitizes Standard stream errors before they escape the adapter", async () => {
+  const secret = "sk-proj-streamsecretsecret";
+  const events = [
+    {
+      type: "error",
+      code: "server_error",
+      message: `authorization: Bearer ${secret}`,
+      param: null,
+      sequence_number: 1,
+    },
+  ] as ResponseStreamEvent[];
+
+  await assert.rejects(
+    adapter.consumeOpenAIStandardStream(
+      (async function* () {
+        yield* events;
+      })(),
+      {},
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === "OPENAI_STREAM_ERROR" &&
+      !error.message.includes(secret),
+  );
+});
+
+test("propagates aborts during a Standard stream without emitting later deltas", async () => {
+  const controller = new AbortController();
+  const emitted: string[] = [];
+
+  await assert.rejects(
+    adapter.consumeOpenAIStandardStream(
+      (async function* () {
+        yield {
+          type: "response.output_text.delta",
+          delta: "first",
+        } as ResponseStreamEvent;
+        controller.abort();
+        yield {
+          type: "response.output_text.delta",
+          delta: "second",
+        } as ResponseStreamEvent;
+      })(),
+      {
+        abortSignal: controller.signal,
+        onDelta: (delta) => emitted.push(delta),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof Error && error.name === "AbortError",
+  );
+
+  assert.deepEqual(emitted, ["first"]);
 });
