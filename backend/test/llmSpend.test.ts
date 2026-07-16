@@ -111,6 +111,31 @@ test("calculates Claude cache reads separately from standard input", async () =>
   assert.equal(result.totalCostNanos, 18_150_000_000n);
 });
 
+test("applies the dated Claude Sonnet 5 introductory and standard prices", async () => {
+  const spend = await loadSpend();
+  const input = {
+    provider: "claude" as const,
+    model: "claude-sonnet-5",
+    inputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  };
+
+  const introductory = spend.calculateLlmCostNanos(
+    input,
+    new Date("2026-08-31T23:59:59Z"),
+  );
+  assert.equal(introductory.pricingStatus, "priced");
+  assert.equal(introductory.totalCostNanos, 12_200_000_000n);
+
+  const standard = spend.calculateLlmCostNanos(
+    input,
+    new Date("2026-09-01T00:00:00Z"),
+  );
+  assert.equal(standard.pricingStatus, "priced");
+  assert.equal(standard.totalCostNanos, 18_300_000_000n);
+});
+
 test("does not turn an unpriced provider response into account spend", async () => {
   const spend = await loadSpend();
   const result = spend.calculateLlmCostNanos({

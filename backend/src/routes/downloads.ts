@@ -51,7 +51,9 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     if (!doc)
         return void res.status(404).json({ detail: "File not found" });
 
-    const access = await ensureDocAccess(doc, userId, userEmail, db);
+    const access = await ensureDocAccess(doc, userId, userEmail, db, {
+        allowAdmin: true,
+    });
     if (!access.ok)
         return void res.status(404).json({ detail: "File not found" });
 

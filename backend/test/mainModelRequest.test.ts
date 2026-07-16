@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+    CLAUDE_MAIN_MODELS,
     DEFAULT_MAIN_MODEL,
     DEFAULT_TABULAR_MODEL,
     DEFAULT_TITLE_MODEL,
@@ -48,6 +49,16 @@ test("defines the canonical GPT-5.6 main-model contract", () => {
         "high",
         "xhigh",
         "max",
+    ]);
+});
+
+test("defines only the production-account-accessible Claude main models", () => {
+    assert.deepEqual(CLAUDE_MAIN_MODELS, [
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
     ]);
 });
 
@@ -169,7 +180,7 @@ test("rejects malformed reasoning fields for canonical and fallback OpenAI reque
 
 test("retains Claude and Gemini selections while stripping GPT-only fields", () => {
     const cases = [
-        ["claude-fable-5", "claude"],
+        ["claude-sonnet-5", "claude"],
         ["gemini-3.1-pro-preview", "gemini"],
     ] as const;
 
@@ -190,6 +201,26 @@ test("retains Claude and Gemini selections while stripping GPT-only fields", () 
             });
         }
     }
+});
+
+test("maps stale Mythos selections to account-accessible Sonnet 5", () => {
+    assert.deepEqual(
+        parseMainModelRequest({
+            model: "claude-mythos-5",
+            reasoning_effort: "max",
+            reasoning_mode: "pro",
+        }),
+        {
+            ok: true,
+            value: {
+                requestedModel: "claude-mythos-5",
+                selectionModel: "claude-sonnet-5",
+                providerModel: "claude-sonnet-5",
+                provider: "claude",
+                status: "legacy_mapped",
+            },
+        },
+    );
 });
 
 test("falls back unknown non-empty model strings to Sol with observability status", () => {

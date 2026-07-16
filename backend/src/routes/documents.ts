@@ -180,7 +180,9 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     .single();
   if (!doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocAccess(doc, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -236,7 +238,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
     .in("id", document_ids);
 
   if (error) return void res.status(500).json({ detail: error.message });
-  // Filter to docs the user actually has access to (own + shared-project).
+  // Filter to docs the user can read (own + shared-project + explicit admin).
   const accessChecks = await Promise.all(
     (rawDocs ?? []).map(async (d) => ({
       doc: d,
@@ -245,6 +247,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
         userId,
         userEmail,
         db,
+        { allowAdmin: true },
       ),
     })),
   );
@@ -290,7 +293,9 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     .single();
   if (error || !doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocAccess(doc, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -341,7 +346,9 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
     .single();
   if (error || !doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocAccess(doc, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -424,7 +431,9 @@ documentsRouter.get("/:documentId/versions", requireAuth, async (req, res) => {
     .single();
   if (!doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocAccess(doc, userId, userEmail, db, {
+    allowAdmin: true,
+  });
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -1116,7 +1125,9 @@ documentsRouter.get(
       .single();
     if (!doc)
       return void res.status(404).json({ detail: "Document not found" });
-    const access = await ensureDocAccess(doc, userId, userEmail, db);
+    const access = await ensureDocAccess(doc, userId, userEmail, db, {
+      allowAdmin: true,
+    });
     if (!access.ok)
       return void res.status(404).json({ detail: "Document not found" });
 

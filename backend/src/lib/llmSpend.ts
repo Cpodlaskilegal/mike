@@ -18,6 +18,9 @@ type PricePerMillion = {
 };
 
 const MILLION = 1_000_000n;
+const CLAUDE_SONNET_5_STANDARD_PRICING_START = new Date(
+  "2026-09-01T00:00:00Z",
+);
 
 function usdPerMillion(value: string): bigint {
   const [whole, fraction = ""] = value.split(".");
@@ -71,6 +74,11 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("1"),
     output: usdPerMillion("50"),
   },
+  "claude-sonnet-5": {
+    input: usdPerMillion("3"),
+    cachedInput: usdPerMillion("0.3"),
+    output: usdPerMillion("15"),
+  },
   "claude-mythos-5": {
     input: usdPerMillion("10"),
     cachedInput: usdPerMillion("1"),
@@ -101,6 +109,12 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("0.1"),
     output: usdPerMillion("5"),
   },
+};
+
+const CLAUDE_SONNET_5_INTRODUCTORY_PRICE: PricePerMillion = {
+  input: usdPerMillion("2"),
+  cachedInput: usdPerMillion("0.2"),
+  output: usdPerMillion("10"),
 };
 
 export type LlmCostInput = {
@@ -139,8 +153,15 @@ export function providerCategory(provider: SpendProvider): "gpt" | "claude" {
   return provider === "openai" ? "gpt" : "claude";
 }
 
-export function calculateLlmCostNanos(input: LlmCostInput): LlmCost {
-  const pricing = PRICE_PER_MILLION[input.model];
+export function calculateLlmCostNanos(
+  input: LlmCostInput,
+  at: Date = new Date(),
+): LlmCost {
+  const pricing =
+    input.model === "claude-sonnet-5" &&
+    at < CLAUDE_SONNET_5_STANDARD_PRICING_START
+      ? CLAUDE_SONNET_5_INTRODUCTORY_PRICE
+      : PRICE_PER_MILLION[input.model];
   if (!pricing) {
     return {
       pricingStatus: "unpriced",

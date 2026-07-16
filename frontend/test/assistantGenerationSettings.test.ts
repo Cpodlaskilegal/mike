@@ -50,8 +50,8 @@ test("exports the exact GPT-5.6 model and effort contracts", () => {
 
 test("keeps the existing Claude and Gemini main-model inventories", () => {
   assert.deepEqual(CLAUDE_MAIN_MODEL_IDS, [
+    "claude-sonnet-5",
     "claude-fable-5",
-    "claude-mythos-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -65,6 +65,24 @@ test("keeps the existing Claude and Gemini main-model inventories", () => {
     ...CLAUDE_MAIN_MODEL_IDS,
     ...GEMINI_MAIN_MODEL_IDS,
   ]));
+});
+
+test("migrates retired Mythos selections to account-accessible Sonnet 5", () => {
+  for (const snapshot of [
+    {
+      versioned: JSON.stringify({
+        version: 1,
+        model: "claude-mythos-5",
+        standardEffort: "high",
+      }),
+      legacy: null,
+    },
+    { versioned: null, legacy: "claude-mythos-5" },
+  ]) {
+    const migrated = deserializeAssistantGenerationSettings(snapshot);
+    assert.equal(migrated.model, "claude-sonnet-5");
+    assert.equal(migrated.reasoningMode, "standard");
+  }
 });
 
 test("defaults to Sol, Medium, and Standard", () => {
