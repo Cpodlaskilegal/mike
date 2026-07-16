@@ -66,22 +66,30 @@ export async function checkProjectAccess(
 /**
  * Check whether the current user can access a document the caller has
  * already loaded (saves a round-trip vs. having the helper re-fetch).
- * Owner-of-doc passes immediately; otherwise we fall through to a
- * project-membership check via `shared_with`.
+ * Owner-of-doc passes immediately. Explicit admin-enabled read callers may
+ * grant access to a foreign project or standalone chat document; all other
+ * callers fall through to the normal project-membership check.
  */
 export async function ensureDocAccess(
     doc: { user_id: string; project_id: string | null },
     userId: string,
     userEmail: string | null | undefined,
     db: Db,
+    options: { allowAdmin?: boolean } = {},
 ): Promise<{ ok: true; isOwner: boolean } | { ok: false }> {
     if (doc.user_id === userId) return { ok: true, isOwner: true };
-    if (!doc.project_id) return { ok: false };
+    if (!doc.project_id) {
+        if (options.allowAdmin && (await isAdminUser(db, userId))) {
+            return { ok: true, isOwner: false };
+        }
+        return { ok: false };
+    }
     const access = await checkProjectAccess(
         doc.project_id,
         userId,
         userEmail,
         db,
+        options,
     );
     if (access.ok) return { ok: true, isOwner: false };
     return { ok: false };
