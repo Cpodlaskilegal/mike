@@ -42,7 +42,7 @@ function thinkingOptions(
 ): Record<string, unknown> {
     if (!enableThinking) return {};
 
-    if (model === "claude-fable-5" || model === "claude-mythos-5") {
+    if (model === "claude-sonnet-5" || model === "claude-fable-5") {
         return { output_config: { effort: "high" } };
     }
 

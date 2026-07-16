@@ -21,8 +21,8 @@ export const PRO_REASONING_EFFORTS = [
 ] as const;
 
 export const CLAUDE_MAIN_MODEL_IDS = [
+    "claude-sonnet-5",
     "claude-fable-5",
-    "claude-mythos-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -84,6 +84,10 @@ const LEGACY_GPT_SETTINGS: Record<
     "gpt-5.4-mini": { model: "gpt-5.6-terra", effort: "low" },
 };
 
+const LEGACY_NON_OPENAI_MODELS: Record<string, string> = {
+    "claude-mythos-5": "claude-sonnet-5",
+};
+
 function isReasoningEffort(value: unknown): value is Gpt56ReasoningEffort {
     return typeof value === "string" && EFFORT_SET.has(value);
 }
@@ -94,6 +98,12 @@ function isProReasoningEffort(value: unknown): value is ProReasoningEffort {
 
 function isAllowedMainModel(value: unknown): value is string {
     return typeof value === "string" && ALLOWED_MAIN_MODEL_IDS.has(value);
+}
+
+function storedMainModel(value: unknown): string | null {
+    if (isAllowedMainModel(value)) return value;
+    if (typeof value !== "string") return null;
+    return LEGACY_NON_OPENAI_MODELS[value] ?? null;
 }
 
 function proEffortFor(
@@ -133,14 +143,15 @@ function parseVersionedSettings(
             return null;
         }
         const record = parsed as Record<string, unknown>;
+        const model = storedMainModel(record.model);
         if (
             record.version !== 1 ||
-            !isAllowedMainModel(record.model) ||
+            !model ||
             !isReasoningEffort(record.standardEffort)
         ) {
             return null;
         }
-        return hydratedState(record.model, record.standardEffort);
+        return hydratedState(model, record.standardEffort);
     } catch {
         return null;
     }
@@ -152,7 +163,8 @@ function migrateLegacySettings(
     if (!raw) return null;
     const mapped = LEGACY_GPT_SETTINGS[raw];
     if (mapped) return hydratedState(mapped.model, mapped.effort);
-    if (isAllowedMainModel(raw)) return hydratedState(raw, DEFAULT_EFFORT);
+    const model = storedMainModel(raw);
+    if (model) return hydratedState(model, DEFAULT_EFFORT);
     return null;
 }
 

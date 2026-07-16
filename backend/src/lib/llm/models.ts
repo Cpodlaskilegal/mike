@@ -5,8 +5,8 @@ import type { Provider, ReasoningMode } from "./types";
 // ---------------------------------------------------------------------------
 // Main-chat tier (top-end) — user picks one of these per message.
 export const CLAUDE_MAIN_MODELS = [
+    "claude-sonnet-5",
     "claude-fable-5",
-    "claude-mythos-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -208,6 +208,20 @@ const NON_OPENAI_MAIN_MODELS = new Set<string>([
     ...GEMINI_MAIN_MODELS,
 ]);
 
+const LEGACY_NON_OPENAI_MAIN_MODEL_MAP: Record<string, string> = {
+    // Mythos 5 is limited-access and is not available to Docket's Anthropic
+    // account. Preserve stale browser selections by moving them to the
+    // account-accessible Sonnet 5 model instead of falling back to OpenAI.
+    "claude-mythos-5": "claude-sonnet-5",
+};
+
+function isNonOpenAiMainRequestModel(model: string): boolean {
+    return (
+        NON_OPENAI_MAIN_MODELS.has(model) ||
+        hasOwn(LEGACY_NON_OPENAI_MAIN_MODEL_MAP, model)
+    );
+}
+
 function isGpt56MainModel(model: string): model is Gpt56MainModelId {
     return hasOwn(GPT_5_6_MAIN_MODEL_REGISTRY, model);
 }
@@ -224,6 +238,20 @@ export function resolveMainModelRequest(
             providerModel: request.model,
             provider: providerForModel(request.model),
             status: "direct",
+        };
+    }
+
+    if (
+        request.model &&
+        hasOwn(LEGACY_NON_OPENAI_MAIN_MODEL_MAP, request.model)
+    ) {
+        const mappedModel = LEGACY_NON_OPENAI_MAIN_MODEL_MAP[request.model];
+        return {
+            requestedModel,
+            selectionModel: mappedModel,
+            providerModel: mappedModel,
+            provider: providerForModel(mappedModel),
+            status: "legacy_mapped",
         };
     }
 
@@ -303,7 +331,7 @@ export function parseMainModelRequest(
         model = raw.model.trim();
     }
 
-    if (model && NON_OPENAI_MAIN_MODELS.has(model)) {
+    if (model && isNonOpenAiMainRequestModel(model)) {
         return { ok: true, value: resolveMainModelRequest({ model }) };
     }
 
