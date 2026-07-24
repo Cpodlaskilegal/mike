@@ -1604,6 +1604,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             docStore: new Map(),
             docIndex: {},
             userId,
+            userEmail,
             db,
             write,
             extraTools: TABULAR_TOOLS,
@@ -1613,6 +1614,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             model: tabularModel,
             apiKeys,
             chatId,
+            assistantMessageId,
             signal: streamAbort.signal,
         });
 

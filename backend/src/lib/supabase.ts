@@ -22,6 +22,8 @@ const JSONB_COLUMNS: Record<string, Set<string>> = {
   assistant_input_responses: new Set(["response"]),
   user_mcp_connectors: new Set(["tool_policy"]),
   user_mcp_connector_tools: new Set(["input_schema", "output_schema", "annotations"]),
+  user_mcp_tool_audit_logs: new Set(["target_refs"]),
+  user_mcp_tool_approvals: new Set(["arguments_preview", "result_event"]),
   workflow_open_source_submissions: new Set(["snapshot"]),
 };
 

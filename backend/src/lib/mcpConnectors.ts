@@ -2,6 +2,7 @@ export type {
   McpAuthType,
   McpConnectorAuthConfig,
   McpConnectorSummary,
+  McpExecutionContext,
   McpToolEvent,
   McpToolSummary,
   McpTransport,
@@ -12,7 +13,11 @@ export {
   completeUserMcpConnectorOAuth,
   createUserMcpConnector,
   deleteUserMcpConnector,
+  executeMcpToolApproval,
   executeMcpToolCall,
+  mcpApprovalTerminalEvent,
+  persistMcpApprovalTerminalEvent,
+  reconcileMcpApprovalTerminalEventsForMessage,
   getUserMcpConnector,
   listUserMcpConnectors,
   refreshUserMcpConnectorTools,
@@ -21,6 +26,14 @@ export {
   updateUserMcpConnector,
   validateRemoteMcpUrl,
 } from "./mcp/servers";
+export {
+  getMcpApprovalForUser,
+  McpApprovalError,
+  rejectMcpApproval,
+  serializeMcpApproval,
+  type McpApprovalRow,
+  type McpApprovalSummary,
+} from "./mcp/approvals";
 export {
   createUserMcpConnectorFromPreset,
   listUserMcpConnectorPresets,

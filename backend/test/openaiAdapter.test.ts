@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type OpenAI from "openai";
 import type {
   Response,
   ResponseFunctionToolCall,
@@ -98,9 +99,9 @@ test("builds separately typed Standard streaming requests for every GPT-5.6 fami
   }
 });
 
-test("builds Pro as a non-streaming mode without inventing a model slug", () => {
+test("builds Pro as a stored background request without inventing a model slug", () => {
   for (const model of GPT_5_6_MODELS) {
-    const request = adapter.buildOpenAIProNonStreamingRequest({
+    const request = adapter.buildOpenAIProBackgroundRequest({
       model,
       input: "Hello",
       tools: [docketTool],
@@ -110,6 +111,8 @@ test("builds Pro as a non-streaming mode without inventing a model slug", () => 
 
     assert.equal(request.model, model);
     assert.equal(request.stream, false);
+    assert.equal(request.background, true);
+    assert.equal(request.store, true);
     assert.deepEqual(request.reasoning, {
       effort: "medium",
       mode: "pro",
@@ -133,6 +136,157 @@ test("keeps one-shot Standard requests non-streaming and mode-free", () => {
 test("selects streaming solely from reasoning mode", () => {
   assert.equal(adapter.shouldStreamOpenAI("standard"), true);
   assert.equal(adapter.shouldStreamOpenAI("pro"), false);
+});
+
+test("uses background execution for every Pro request and every Max request", () => {
+  assert.equal(adapter.shouldUseOpenAIBackground("pro", "medium"), true);
+  assert.equal(adapter.shouldUseOpenAIBackground("pro", "max"), true);
+  assert.equal(adapter.shouldUseOpenAIBackground("standard", "max"), true);
+  assert.equal(adapter.shouldUseOpenAIBackground("standard", "xhigh"), false);
+});
+
+test("polls a background response and records provider IDs before completion", async () => {
+  const queued = responseFixture({ status: "queued" });
+  queued.id = "resp_background";
+  const inProgress = responseFixture({ status: "in_progress" });
+  inProgress.id = queued.id;
+  const completed = responseFixture({ status: "completed", outputText: "Done" });
+  completed.id = queued.id;
+  const pending = [inProgress, completed];
+  const progress: Array<{
+    phase: string;
+    responseId: string | null | undefined;
+    requestId: string | null | undefined;
+    status: string | null | undefined;
+  }> = [];
+  let retrieveCount = 0;
+
+  const openai = {
+    responses: {
+      retrieve() {
+        const data = pending[retrieveCount++];
+        return {
+          withResponse: async () => ({
+            data,
+            request_id: `req_poll_${retrieveCount}`,
+          }),
+        };
+      },
+      cancel: async () => queued,
+    },
+  } as unknown as Pick<OpenAI, "responses">;
+
+  const result = await adapter.waitForOpenAIBackgroundResponse(openai, queued, {
+    providerRequestId: "req_create",
+    pollIntervalMs: 0,
+    maxWaitMs: 1_000,
+    onProviderProgress: (update) => {
+      progress.push({
+        phase: update.phase,
+        responseId: update.providerResponseId,
+        requestId: update.providerRequestId,
+        status: update.providerStatus,
+      });
+    },
+  });
+
+  assert.equal(result.response, completed);
+  assert.equal(result.providerRequestId, "req_poll_2");
+  assert.equal(retrieveCount, 2);
+  assert.deepEqual(progress, [
+    {
+      phase: "started",
+      responseId: "resp_background",
+      requestId: "req_create",
+      status: "queued",
+    },
+    {
+      phase: "polling",
+      responseId: "resp_background",
+      requestId: "req_poll_1",
+      status: "in_progress",
+    },
+    {
+      phase: "polling",
+      responseId: "resp_background",
+      requestId: "req_poll_2",
+      status: "completed",
+    },
+    {
+      phase: "completed",
+      responseId: "resp_background",
+      requestId: "req_poll_2",
+      status: "completed",
+    },
+  ]);
+});
+
+test("cancels the provider background response on an explicit abort", async () => {
+  const queued = responseFixture({ status: "queued" });
+  queued.id = "resp_cancel";
+  const controller = new AbortController();
+  controller.abort();
+  const cancelledIds: string[] = [];
+  const openai = {
+    responses: {
+      retrieve() {
+        throw new Error("retrieve should not run after abort");
+      },
+      cancel: async (responseId: string) => {
+        cancelledIds.push(responseId);
+        return queued;
+      },
+    },
+  } as unknown as Pick<OpenAI, "responses">;
+
+  await assert.rejects(
+    adapter.waitForOpenAIBackgroundResponse(openai, queued, {
+      abortSignal: controller.signal,
+      providerRequestId: "req_cancel",
+      pollIntervalMs: 0,
+    }),
+    (error: unknown) => {
+      const candidate = error as Error & {
+        providerResponseId?: string;
+        providerRequestId?: string;
+      };
+      return (
+        candidate.name === "AbortError" &&
+        candidate.providerResponseId === "resp_cancel" &&
+        candidate.providerRequestId === "req_cancel"
+      );
+    },
+  );
+  assert.deepEqual(cancelledIds, ["resp_cancel"]);
+});
+
+test("cancels an assigned background response when durable ID persistence fails", async () => {
+  const queued = responseFixture({ status: "queued" });
+  queued.id = "resp_persistence_failure";
+  const cancelledIds: string[] = [];
+  const openai = {
+    responses: {
+      retrieve() {
+        throw new Error("retrieve should not run after persistence failure");
+      },
+      cancel: async (responseId: string) => {
+        cancelledIds.push(responseId);
+        return queued;
+      },
+    },
+  } as unknown as Pick<OpenAI, "responses">;
+
+  await assert.rejects(
+    adapter.waitForOpenAIBackgroundResponse(openai, queued, {
+      providerRequestId: "req_persistence_failure",
+      pollIntervalMs: 0,
+      onProviderProgress: () => {
+        throw new Error("database unavailable");
+      },
+    }),
+    /database unavailable/,
+  );
+  assert.deepEqual(cancelledIds, ["resp_persistence_failure"]);
 });
 
 test("replays all response output before matching function call outputs", () => {
@@ -280,6 +434,102 @@ test("executes Standard stream callbacks using Docket's browser-facing event voc
     { type: "reasoning_block_end" },
     { type: "content_delta", text: "world" },
   ]);
+});
+
+test("resumes an incomplete response stream exactly once from its last sequence", async () => {
+  const created = responseFixture({ status: "in_progress" });
+  created.id = "resp_resume";
+  const final = responseFixture({ outputText: "Hello world" });
+  final.id = "resp_resume";
+  const emitted: string[] = [];
+  const resumeCalls: Array<{ responseId: string; startingAfter: number | null }> = [];
+
+  const result = await adapter.consumeOpenAIStreamWithSingleResume(
+    (async function* () {
+      yield {
+        type: "response.created",
+        response: created,
+        sequence_number: 0,
+      } as ResponseStreamEvent;
+      yield {
+        type: "response.output_text.delta",
+        delta: "Hello ",
+        sequence_number: 1,
+      } as ResponseStreamEvent;
+    })(),
+    {
+      onDelta: (delta) => emitted.push(delta),
+      resume: async (responseId, startingAfter) => {
+        resumeCalls.push({ responseId, startingAfter });
+        return (async function* () {
+          yield {
+            type: "response.output_text.delta",
+            delta: "world",
+            sequence_number: 2,
+          } as ResponseStreamEvent;
+          yield {
+            type: "response.completed",
+            response: final,
+            sequence_number: 3,
+          } as ResponseStreamEvent;
+        })();
+      },
+    },
+  );
+
+  assert.equal(result.response, final);
+  assert.equal(result.providerResponseId, "resp_resume");
+  assert.equal(result.lastSequenceNumber, 3);
+  assert.equal(result.recoveryAttempted, true);
+  assert.deepEqual(resumeCalls, [
+    { responseId: "resp_resume", startingAfter: 1 },
+  ]);
+  assert.deepEqual(emitted, ["Hello ", "world"]);
+});
+
+test("records the response cursor when the one allowed stream resume also ends early", async () => {
+  const created = responseFixture({ status: "in_progress" });
+  created.id = "resp_still_incomplete";
+  let resumeCount = 0;
+
+  await assert.rejects(
+    adapter.consumeOpenAIStreamWithSingleResume(
+      (async function* () {
+        yield {
+          type: "response.created",
+          response: created,
+          sequence_number: 4,
+        } as ResponseStreamEvent;
+      })(),
+      {
+        resume: async () => {
+          resumeCount += 1;
+          return (async function* () {
+            yield {
+              type: "response.in_progress",
+              response: created,
+              sequence_number: 5,
+            } as ResponseStreamEvent;
+          })();
+        },
+      },
+    ),
+    (error: unknown) => {
+      const candidate = error as Error & {
+        providerResponseId?: string;
+        lastSequenceNumber?: number;
+        recoveryAttempted?: boolean;
+      };
+      return (
+        candidate.name === "OPENAI_STREAM_INCOMPLETE" &&
+        candidate.providerResponseId === "resp_still_incomplete" &&
+        candidate.lastSequenceNumber === 5 &&
+        candidate.recoveryAttempted === true
+      );
+    },
+  );
+
+  assert.equal(resumeCount, 1);
 });
 
 test("emits Pro final text and refusal content through the existing content callback", () => {
@@ -477,6 +727,7 @@ test("builds approved success metadata with actual response model as primary", (
       reasoning_mode: "pro",
       reasoning_effort: "high",
       model_resolution_status: "direct",
+      assistant_run_id: "019f7170-9f04-72c1-8364-45f504ca2153",
     },
   });
 
@@ -490,6 +741,7 @@ test("builds approved success metadata with actual response model as primary", (
       reasoning_effort: "high",
       streaming: false,
       model_resolution_status: "direct",
+      assistant_run_id: "019f7170-9f04-72c1-8364-45f504ca2153",
     },
   });
 });

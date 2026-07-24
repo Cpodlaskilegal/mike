@@ -2,9 +2,28 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getChat, streamChat, streamProjectChat } from "@/app/lib/docketApi";
+import {
+    cancelAssistantStream,
+    getChat,
+    getAssistantRunStatus,
+    streamChat,
+    streamProjectChat,
+} from "@/app/lib/docketApi";
 import { describeChatError } from "@/app/lib/chatErrors";
-import { buildAssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
+import {
+    assistantRequestContinuesAfterDisconnect,
+    buildAssistantGenerationPayload,
+} from "@/app/lib/assistantChatPayload";
+import {
+    createAssistantStreamRequestId,
+    parseAssistantStreamTerminalStatus,
+    requireAssistantStreamDone,
+} from "@/app/lib/assistantSse";
+import {
+    ASSISTANT_CANCELLATION_PENDING_MESSAGE,
+    findHydratedAssistantRun,
+    markAssistantCancellationPending,
+} from "@/app/lib/assistantRunHydration";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
@@ -51,6 +70,66 @@ function assistantMessageText(message: DocketMessage): string {
     );
 }
 
+function appendAssistantMarker(
+    messages: DocketMessage[],
+    marker: string,
+): DocketMessage[] {
+    const last = messages[messages.length - 1];
+    if (last?.role !== "assistant") {
+        return [
+            ...messages,
+            {
+                role: "assistant",
+                content: "",
+                events: [{ type: "content", text: marker }],
+                pending: false,
+            },
+        ];
+    }
+
+    const events = last.events ?? [];
+    if (
+        events.some(
+            (event) => event.type === "content" && event.text.includes(marker),
+        )
+    ) {
+        return messages;
+    }
+    const contentIndex = findLastContentIndex(events);
+    const nextEvents = [...events];
+    if (contentIndex >= 0) {
+        const contentEvent = nextEvents[contentIndex] as Extract<
+            AssistantEvent,
+            { type: "content" }
+        >;
+        nextEvents[contentIndex] = {
+            type: "content",
+            text: contentEvent.text
+                ? `${contentEvent.text}\n\n${marker}`
+                : marker,
+        };
+    } else {
+        nextEvents.push({ type: "content", text: marker });
+    }
+    const updated = [...messages];
+    updated[updated.length - 1] = {
+        ...last,
+        events: nextEvents,
+        pending: false,
+    };
+    return updated;
+}
+
+type ActiveAssistantStream = {
+    streamRequestId: string;
+    projectId?: string;
+    chatId?: string;
+    controller: AbortController | null;
+    backgroundPending: boolean;
+    cancelRequested: boolean;
+    continuingAfterDisconnect: boolean;
+};
+
 export function useAssistantChat({
     initialMessages = [],
     chatId: initialChatId,
@@ -88,6 +167,7 @@ export function useAssistantChat({
     >(null);
 
     const abortControllerRef = useRef<AbortController | null>(null);
+    const activeStreamRef = useRef<ActiveAssistantStream | null>(null);
     const adoptedCreatedChatRef = useRef(false);
     const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(
         null,
@@ -121,6 +201,7 @@ export function useAssistantChat({
         return () => {
             abortControllerRef.current?.abort();
             abortControllerRef.current = null;
+            activeStreamRef.current = null;
             const r = readerRef.current;
             readerRef.current = null;
             if (r) {
@@ -274,6 +355,34 @@ export function useAssistantChat({
     ).length;
 
     useEffect(() => {
+        const hydratedRun = findHydratedAssistantRun(messages);
+        if (!hydratedRun) return;
+
+        const existing = activeStreamRef.current;
+        if (existing?.controller) return;
+        if (existing?.streamRequestId === hydratedRun.streamRequestId) {
+            existing.projectId = hydratedRun.projectId ?? projectId;
+            existing.chatId = chatId;
+            existing.backgroundPending = true;
+            existing.cancelRequested =
+                existing.cancelRequested ||
+                hydratedRun.status === "cancel_requested";
+            existing.continuingAfterDisconnect = true;
+            return;
+        }
+
+        activeStreamRef.current = {
+            streamRequestId: hydratedRun.streamRequestId,
+            projectId: hydratedRun.projectId ?? projectId,
+            chatId,
+            controller: null,
+            backgroundPending: true,
+            cancelRequested: hydratedRun.status === "cancel_requested",
+            continuingAfterDisconnect: true,
+        };
+    }, [chatId, messages, projectId]);
+
+    useEffect(() => {
         if (!chatId || pendingAssistantCount === 0) return;
 
         let cancelled = false;
@@ -292,6 +401,7 @@ export function useAssistantChat({
                     timeout = setTimeout(poll, 2000);
                     return;
                 }
+                activeStreamRef.current = null;
                 setIsResponseLoading(false);
                 setIsLoadingCitations(false);
                 void loadChats();
@@ -310,12 +420,35 @@ export function useAssistantChat({
     }, [chatId, pendingAssistantCount, loadChats]);
 
     const cancel = () => {
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-            abortControllerRef.current = null;
-            setIsResponseLoading(false);
-            setIsLoadingCitations(false);
-        }
+        const active = activeStreamRef.current;
+        if (!active || active.cancelRequested) return;
+        active.cancelRequested = true;
+
+        void cancelAssistantStream({
+            streamRequestId: active.streamRequestId,
+            projectId: active.projectId,
+        })
+            .then(() => {
+                setMessages((prev) =>
+                    markAssistantCancellationPending(
+                        prev,
+                        active.streamRequestId,
+                    ),
+                );
+            })
+            .catch(() => {
+                active.cancelRequested = false;
+                setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last?.role !== "assistant") return prev;
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                        ...last,
+                        error: "Docket could not confirm cancellation. The response may still be running.",
+                    };
+                    return updated;
+                });
+            });
     };
 
     // Transient placeholder events (tool_call_start, thinking) fill the
@@ -432,15 +565,39 @@ export function useAssistantChat({
         ]);
 
         let streamedChatId: string | null = null;
+        const streamRequestId = createAssistantStreamRequestId();
+        let backgroundPending = false;
+        let terminalStreamError: Error | null = null;
+        let terminalStatus:
+            | "completed"
+            | "background_pending"
+            | "cancellation_pending"
+            | "cancelled"
+            | "error"
+            | null = null;
 
         stopDrip();
         dripTargetRef.current = "";
         dripDisplayLenRef.current = 0;
         eventsRef.current = [];
+        const generationPayload = buildAssistantGenerationPayload(
+            effectiveSettings,
+        );
+        const continuingAfterDisconnect =
+            assistantRequestContinuesAfterDisconnect(generationPayload);
 
         try {
             const controller = new AbortController();
             abortControllerRef.current = controller;
+            activeStreamRef.current = {
+                streamRequestId,
+                projectId,
+                chatId,
+                controller,
+                backgroundPending: false,
+                cancelRequested: false,
+                continuingAfterDisconnect,
+            };
 
             const apiMessages = newMessages
                 .map((currentMessage) => ({
@@ -457,10 +614,6 @@ export function useAssistantChat({
                         currentMessage.role !== "assistant" ||
                         currentMessage.content.trim().length > 0,
                 );
-
-            const generationPayload = buildAssistantGenerationPayload(
-                effectiveSettings,
-            );
 
             const displayedDoc = opts?.displayedDoc ?? null;
 
@@ -491,6 +644,7 @@ export function useAssistantChat({
                       attached_documents:
                           attachedDocs.length > 0 ? attachedDocs : undefined,
                       ask_inputs_response: opts?.askInputsResponse,
+                      stream_request_id: streamRequestId,
                       signal: controller.signal,
                   })
                 : streamChat({
@@ -498,6 +652,7 @@ export function useAssistantChat({
                       chat_id: chatId,
                       ...generationPayload,
                       ask_inputs_response: opts?.askInputsResponse,
+                      stream_request_id: streamRequestId,
                       signal: controller.signal,
                   }));
 
@@ -512,8 +667,10 @@ export function useAssistantChat({
 
             const decoder = new TextDecoder();
             let buffer = "";
+            let sawTerminalDone = false;
+            let sawTerminalEvent = false;
 
-            while (true) {
+            streamLoop: while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
@@ -526,7 +683,10 @@ export function useAssistantChat({
                     if (!trimmed || !trimmed.startsWith("data:")) continue;
 
                     const dataStr = trimmed.slice(5).trim();
-                    if (dataStr === "[DONE]") continue;
+                    if (dataStr === "[DONE]") {
+                        sawTerminalDone = true;
+                        break streamLoop;
+                    }
 
                     try {
                         const data = JSON.parse(dataStr);
@@ -538,11 +698,72 @@ export function useAssistantChat({
                                     : "The assistant failed before it could finish.",
                             );
                             streamError.name = "DocketStreamError";
-                            throw streamError;
+                            terminalStreamError = streamError;
+                            continue;
+                        }
+
+                        if (data.type === "stream_start") {
+                            const serverRunId =
+                                typeof data.runId === "string"
+                                    ? data.runId
+                                    : streamRequestId;
+                            const active = activeStreamRef.current;
+                            if (active?.streamRequestId === streamRequestId) {
+                                active.streamRequestId = serverRunId;
+                                active.continuingAfterDisconnect =
+                                    data.continuingAfterDisconnect === true;
+                            }
+                            continue;
+                        }
+
+                        if (data.type === "stream_terminal") {
+                            const status =
+                                parseAssistantStreamTerminalStatus(data.status);
+                            if (!status) {
+                                terminalStreamError = new Error(
+                                    "Docket received an invalid assistant completion marker.",
+                                );
+                                terminalStreamError.name = "DocketStreamError";
+                                continue;
+                            }
+                            sawTerminalEvent = true;
+                            terminalStatus = status;
+                            if (
+                                status === "background_pending" ||
+                                status === "cancellation_pending"
+                            ) {
+                                backgroundPending = true;
+                                const active = activeStreamRef.current;
+                                if (active) active.backgroundPending = true;
+                                if (status === "cancellation_pending") {
+                                    setMessages((prev) => {
+                                        const last = prev[prev.length - 1];
+                                        if (last?.role !== "assistant") {
+                                            return prev;
+                                        }
+                                        const updated = [...prev];
+                                        updated[updated.length - 1] = {
+                                            ...last,
+                                            pending: true,
+                                            error: ASSISTANT_CANCELLATION_PENDING_MESSAGE,
+                                        };
+                                        return updated;
+                                    });
+                                }
+                            }
+                            if (status === "error" && !terminalStreamError) {
+                                terminalStreamError = new Error(
+                                    "The assistant failed before it could finish.",
+                                );
+                                terminalStreamError.name = "DocketStreamError";
+                            }
+                            continue;
                         }
 
                         if (data.type === "chat_id") {
                             streamedChatId = data.chatId;
+                            const active = activeStreamRef.current;
+                            if (active) active.chatId = data.chatId;
                             if (
                                 !projectId &&
                                 !initialChatId &&
@@ -556,6 +777,36 @@ export function useAssistantChat({
                             setChatId(data.chatId);
                             setCurrentChatId(data.chatId);
                             replaceBrowserUrlForChat(data.chatId, projectId);
+                            continue;
+                        }
+
+                        if (data.type === "background_pending") {
+                            backgroundPending = true;
+                            const active = activeStreamRef.current;
+                            if (active) active.backgroundPending = true;
+                            flushDrip();
+                            finalizeStreamingReasoning();
+                            const message =
+                                typeof data.message === "string"
+                                    ? data.message
+                                    : "This response is still running in the background. Docket will refresh this chat when it finishes.";
+                            setMessages((prev) => {
+                                const last = prev[prev.length - 1];
+                                if (last?.role !== "assistant") return prev;
+                                const updated = [...prev];
+                                updated[updated.length - 1] = {
+                                    ...last,
+                                    pending: true,
+                                    error: message,
+                                };
+                                return updated;
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "stream_cancelled") {
+                            // Wait for the authoritative terminal event so a
+                            // truncated stream is never reported as cancelled.
                             continue;
                         }
 
@@ -1034,9 +1285,6 @@ export function useAssistantChat({
                             continue;
                         }
                     } catch (e) {
-                        if (e instanceof Error && e.name === "DocketStreamError") {
-                            throw e;
-                        }
                         console.warn(
                             "[useAssistantChat] failed to parse SSE line:",
                             trimmed,
@@ -1044,6 +1292,17 @@ export function useAssistantChat({
                         );
                     }
                 }
+            }
+
+            requireAssistantStreamDone({
+                sawDone: sawTerminalDone,
+                sawTerminalEvent,
+            });
+            if (terminalStreamError) throw terminalStreamError;
+            if (terminalStatus === "cancelled") {
+                setMessages((prev) =>
+                    appendAssistantMarker(prev, "Cancelled by user"),
+                );
             }
 
             flushDrip();
@@ -1089,76 +1348,77 @@ export function useAssistantChat({
 
             return streamedChatId || null;
         } catch (error: unknown) {
-            if (error instanceof Error && error.name === "AbortError") {
-                flushDrip();
-                setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === "assistant") {
-                        const updated = [...prev];
-                        const events = last.events ?? [];
-                        const idx = findLastContentIndex(events);
-                        const cancelText = "Cancelled by user";
-                        if (idx >= 0) {
-                            const newEvents = [...events];
-                            const existing = newEvents[idx] as {
-                                type: "content";
-                                text: string;
-                            };
-                            newEvents[idx] = {
-                                type: "content",
-                                text: existing.text
-                                    ? `${existing.text}\n\nCancelled by user`
-                                    : cancelText,
-                            };
-                            updated[updated.length - 1] = {
-                                ...last,
-                                events: newEvents,
-                            };
-                        } else {
-                            updated[updated.length - 1] = {
-                                ...last,
-                                events: [
-                                    ...events,
-                                    { type: "content", text: cancelText },
-                                ],
-                            };
-                        }
-                        return updated;
+            const active = activeStreamRef.current;
+            let recoverableChatId = active?.chatId || streamedChatId || chatId;
+            if (
+                terminalStatus === null &&
+                active?.continuingAfterDisconnect === true &&
+                !recoverableChatId
+            ) {
+                try {
+                    const durableRun = await getAssistantRunStatus(
+                        active.streamRequestId,
+                    );
+                    recoverableChatId = durableRun.chat_id;
+                    streamedChatId = durableRun.chat_id;
+                    active.chatId = durableRun.chat_id;
+                    if (
+                        !projectId &&
+                        !initialChatId &&
+                        !adoptedCreatedChatRef.current
+                    ) {
+                        adoptedCreatedChatRef.current = true;
+                        adoptCreatedChat(`assistant:${durableRun.chat_id}`);
                     }
-                    return [
-                        ...prev,
-                        {
-                            role: "assistant",
-                            content: "",
-                            events: [
-                                { type: "content", text: "Cancelled by user" },
-                            ],
-                        },
-                    ];
-                });
+                    setChatId(durableRun.chat_id);
+                    setCurrentChatId(durableRun.chat_id);
+                    replaceBrowserUrlForChat(durableRun.chat_id, projectId);
+                } catch {
+                    // The original error remains authoritative when the
+                    // authenticated durable-run lookup is also unavailable.
+                }
+            }
+            const continuingRunNeedsPolling =
+                terminalStatus === null &&
+                active?.continuingAfterDisconnect === true &&
+                Boolean(recoverableChatId);
+            if (continuingRunNeedsPolling) {
+                backgroundPending = true;
+                active.backgroundPending = true;
+                flushDrip();
+                finalizeStreamingReasoning();
             } else {
                 stopDrip();
-                const errorMessage = describeChatError(error);
-                setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === "assistant") {
-                        const updated = [...prev];
-                        updated[updated.length - 1] = {
-                            ...last,
-                            error: errorMessage,
-                        };
-                        return updated;
-                    }
-                    return [
-                        ...prev,
-                        {
-                            role: "assistant",
-                            content: "",
-                            error: errorMessage,
-                        },
-                    ];
-                });
             }
+            const errorMessage = describeChatError(
+                error instanceof Error && error.name === "AbortError"
+                    ? new Error(
+                          "The assistant connection was interrupted before it finished. Retry the request.",
+                      )
+                    : error,
+            );
+            setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last?.role === "assistant") {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                        ...last,
+                        error: errorMessage,
+                        ...(continuingRunNeedsPolling
+                            ? { pending: true }
+                            : {}),
+                    };
+                    return updated;
+                }
+                return [
+                    ...prev,
+                    {
+                        role: "assistant",
+                        content: "",
+                        error: errorMessage,
+                    },
+                ];
+            });
 
             setIsResponseLoading(false);
             setIsLoadingCitations(false);
@@ -1174,6 +1434,19 @@ export function useAssistantChat({
                 }
             }
             abortControllerRef.current = null;
+            const active = activeStreamRef.current;
+            if (
+                active &&
+                (active.streamRequestId === streamRequestId ||
+                    active.chatId === streamedChatId)
+            ) {
+                if (backgroundPending) {
+                    active.controller = null;
+                    active.backgroundPending = true;
+                } else {
+                    activeStreamRef.current = null;
+                }
+            }
         }
     };
 

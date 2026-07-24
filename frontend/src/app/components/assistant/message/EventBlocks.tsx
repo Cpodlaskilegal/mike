@@ -7,6 +7,7 @@ import { ChevronDown, Download, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { AssistantEvent } from "../../shared/types";
 import { safeCourtlistenerHref } from "./citationUtils";
+import { McpApprovalCard } from "./McpApprovalCard";
 
 const THINKING_PHRASES = [
     "Thinking...",
@@ -535,11 +536,25 @@ export function McpEventBlock({
     event: Extract<AssistantEvent, { type: "mcp_tool_call" }>;
     showConnector: boolean;
 }) {
+    if (event.status === "approval_required" && event.approval_id) {
+        return (
+            <McpApprovalCard
+                approvalId={event.approval_id}
+                connectorName={event.connector_name}
+                toolName={event.tool_name || event.openai_tool_name}
+            />
+        );
+    }
     const label =
         event.status === "ok"
-            ? `Ran ${event.connector_name || "connector"} tool`
+            ? event.action_kind === "mutation" && event.actor_email
+                ? `Ran ${event.connector_name || "connector"} change as ${event.actor_email}`
+                : `Ran ${event.connector_name || "connector"} tool`
             : "Connector tool failed";
     const detail = event.tool_name || event.openai_tool_name;
+    const auditDetail = event.practicepanther_audit_note_id
+        ? `PP audit note ${event.practicepanther_audit_note_id}`
+        : null;
     return (
         <EventBlock
             showConnector={showConnector}
@@ -547,6 +562,14 @@ export function McpEventBlock({
         >
             <span className="font-medium">{label}</span>
             {detail && <span className="ml-1 text-gray-400">{detail}</span>}
+            {auditDetail && (
+                <span className="ml-1 text-gray-400">{auditDetail}</span>
+            )}
+            {event.attribution_warning && (
+                <span className="ml-1 text-amber-600">
+                    {event.attribution_warning}
+                </span>
+            )}
             {event.error && <span className="ml-1 text-red-500">{event.error}</span>}
         </EventBlock>
     );

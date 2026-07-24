@@ -18,13 +18,14 @@ import type {
     JsonSchemaTextFormat,
     NormalizedToolCall,
     NormalizedToolResult,
+    ProviderRunProgress,
     ReasoningEffort,
     ReasoningMode,
     StreamChatParams,
     StreamChatResult,
     TextVerbosity,
 } from "./types";
-import { throwIfAborted } from "./types";
+import { isAbortError, throwIfAborted } from "./types";
 import type { Gpt56ReasoningEffort } from "./models";
 import { captureAiGeneration } from "../posthog";
 import {
@@ -38,11 +39,22 @@ import {
 import { safeErrorMessage } from "../safeError";
 
 const MAX_OUTPUT_TOKENS = 16384;
+const BACKGROUND_POLL_INTERVAL_MS = 2_000;
+const BACKGROUND_MAX_WAIT_MS = 20 * 60 * 1_000;
+const BACKGROUND_REQUEST_TIMEOUT_MS = 30_000;
+
+type OpenAIProviderRunUpdate = Omit<
+    ProviderRunProgress,
+    "provider" | "iteration"
+>;
 
 type OpenAIResponseResult = {
     response: Response;
     latencySeconds: number;
     timeToFirstTokenSeconds?: number;
+    providerRequestId?: string | null;
+    background: boolean;
+    recoveryAttempted: boolean;
 };
 
 export type OpenAIRequestBuilderInput = Omit<
@@ -62,11 +74,59 @@ export type CompletedOpenAIOutput =
     | { kind: "refusal"; text: string }
     | { kind: "tool_calls"; text: "" };
 
+type OpenAIProviderIdentifiers = {
+    providerResponseId?: string | null;
+    providerRequestId?: string | null;
+    lastSequenceNumber?: number | null;
+    recoveryAttempted?: boolean;
+};
+
 class NamedOpenAIError extends Error {
-    constructor(name: string, message: string) {
+    readonly providerResponseId: string | null;
+    readonly providerRequestId: string | null;
+    readonly lastSequenceNumber: number | null;
+    readonly recoveryAttempted: boolean;
+
+    constructor(
+        name: string,
+        message: string,
+        identifiers: OpenAIProviderIdentifiers = {},
+    ) {
         super(message);
         this.name = name;
+        this.providerResponseId = identifiers.providerResponseId ?? null;
+        this.providerRequestId = identifiers.providerRequestId ?? null;
+        this.lastSequenceNumber = identifiers.lastSequenceNumber ?? null;
+        this.recoveryAttempted = identifiers.recoveryAttempted ?? false;
     }
+}
+
+function providerIdentifiers(error: unknown): OpenAIProviderIdentifiers {
+    if (!error || typeof error !== "object") return {};
+    const candidate = error as {
+        providerResponseId?: unknown;
+        providerRequestId?: unknown;
+        lastSequenceNumber?: unknown;
+        recoveryAttempted?: unknown;
+        request_id?: unknown;
+    };
+    return {
+        providerResponseId:
+            typeof candidate.providerResponseId === "string"
+                ? candidate.providerResponseId
+                : null,
+        providerRequestId:
+            typeof candidate.providerRequestId === "string"
+                ? candidate.providerRequestId
+                : typeof candidate.request_id === "string"
+                  ? candidate.request_id
+                  : null,
+        lastSequenceNumber:
+            typeof candidate.lastSequenceNumber === "number"
+                ? candidate.lastSequenceNumber
+                : null,
+        recoveryAttempted: candidate.recoveryAttempted === true,
+    };
 }
 
 function client(apiKeyOverride?: string | null): OpenAI {
@@ -112,6 +172,13 @@ export function shouldStreamOpenAI(reasoningMode: ReasoningMode): boolean {
     return reasoningMode !== "pro";
 }
 
+export function shouldUseOpenAIBackground(
+    reasoningMode: ReasoningMode,
+    reasoningEffort?: ReasoningEffort,
+): boolean {
+    return reasoningMode === "pro" || reasoningEffort === "max";
+}
+
 export function buildOpenAIStandardStreamingRequest(
     input: OpenAIRequestBuilderInput,
 ): ResponseCreateParamsStreaming {
@@ -123,7 +190,7 @@ export function buildOpenAIStandardStreamingRequest(
     };
 }
 
-export function buildOpenAIProNonStreamingRequest(
+export function buildOpenAIProBackgroundRequest(
     input: Omit<OpenAIRequestBuilderInput, "reasoningEffort"> & {
         reasoningEffort: Gpt56ProReasoningEffort;
     },
@@ -132,9 +199,15 @@ export function buildOpenAIProNonStreamingRequest(
     return {
         ...request,
         reasoning: { effort: reasoningEffort, mode: "pro" },
+        background: true,
+        store: true,
         stream: false,
     };
 }
+
+/** @deprecated Use buildOpenAIProBackgroundRequest. */
+export const buildOpenAIProNonStreamingRequest =
+    buildOpenAIProBackgroundRequest;
 
 export function buildOpenAIStandardNonStreamingRequest(
     input: OpenAIRequestBuilderInput,
@@ -207,8 +280,13 @@ function namedResponseError(
     name: string,
     unsafeMessage: unknown,
     fallback: string,
+    identifiers: OpenAIProviderIdentifiers = {},
 ): NamedOpenAIError {
-    return new NamedOpenAIError(name, safeErrorMessage(unsafeMessage, fallback));
+    return new NamedOpenAIError(
+        name,
+        safeErrorMessage(unsafeMessage, fallback),
+        identifiers,
+    );
 }
 
 export function extractCompletedOpenAIOutput(
@@ -219,6 +297,7 @@ export function extractCompletedOpenAIOutput(
             "OPENAI_RESPONSE_FAILED",
             response.error?.message,
             "OpenAI response failed",
+            { providerResponseId: response.id },
         );
     }
     if (response.status === "incomplete") {
@@ -226,6 +305,7 @@ export function extractCompletedOpenAIOutput(
             "OPENAI_RESPONSE_INCOMPLETE",
             response.incomplete_details?.reason,
             "OpenAI response incomplete",
+            { providerResponseId: response.id },
         );
     }
 
@@ -256,6 +336,7 @@ export function extractCompletedOpenAIOutput(
     throw new NamedOpenAIError(
         "OPENAI_EMPTY_RESPONSE",
         "OpenAI completed without usable output.",
+        { providerResponseId: response.id },
     );
 }
 
@@ -309,76 +390,207 @@ function elapsedSeconds(startedAt: number): number {
     return (Date.now() - startedAt) / 1000;
 }
 
-export async function consumeOpenAIStandardStream(
-    stream: AsyncIterable<ResponseStreamEvent>,
-    params: {
-        enableThinking?: boolean;
-        onDelta?: (delta: string) => void;
-        onReasoningDelta?: (delta: string) => void;
-        onReasoningBlockEnd?: () => void;
-        abortSignal?: AbortSignal;
-        startedAt?: number;
-    },
-): Promise<{
-    response: Response;
-    timeToFirstTokenSeconds?: number;
-}> {
-    const startedAt = params.startedAt ?? Date.now();
-    let final: Response | null = null;
-    let reasoningOpen = false;
-    let timeToFirstTokenSeconds: number | undefined;
+type OpenAIStreamConsumeParams = {
+    enableThinking?: boolean;
+    onDelta?: (delta: string) => void;
+    onReasoningDelta?: (delta: string) => void;
+    onReasoningBlockEnd?: () => void;
+    abortSignal?: AbortSignal;
+    startedAt?: number;
+    onResponseId?: (responseId: string) => void | Promise<void>;
+};
 
+type OpenAIStreamState = {
+    final: Response | null;
+    reasoningOpen: boolean;
+    timeToFirstTokenSeconds?: number;
+    providerResponseId: string | null;
+    lastSequenceNumber: number | null;
+};
+
+function responseIdFromEvent(event: ResponseStreamEvent): string | null {
+    if (!("response" in event)) return null;
+    const response = event.response as { id?: unknown } | undefined;
+    return typeof response?.id === "string" ? response.id : null;
+}
+
+async function consumeOpenAIStreamSegment(
+    stream: AsyncIterable<ResponseStreamEvent>,
+    params: OpenAIStreamConsumeParams,
+    state: OpenAIStreamState,
+): Promise<void> {
+    const startedAt = params.startedAt ?? Date.now();
     for await (const event of stream) {
         throwIfAborted(params.abortSignal);
+        const sequenceNumber = (event as { sequence_number?: unknown })
+            .sequence_number;
+        if (typeof sequenceNumber === "number") {
+            state.lastSequenceNumber = sequenceNumber;
+        }
+        const eventResponseId = responseIdFromEvent(event);
+        if (eventResponseId && eventResponseId !== state.providerResponseId) {
+            state.providerResponseId = eventResponseId;
+            await params.onResponseId?.(eventResponseId);
+        }
+
         if (event.type === "response.output_text.delta") {
-            timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
+            state.timeToFirstTokenSeconds ??= elapsedSeconds(startedAt);
             params.onDelta?.(event.delta);
         } else if (
             params.enableThinking &&
             (event.type === "response.reasoning_summary_text.delta" ||
                 event.type === "response.reasoning_text.delta")
         ) {
-            reasoningOpen = true;
+            state.reasoningOpen = true;
             params.onReasoningDelta?.(event.delta);
         } else if (
             params.enableThinking &&
             (event.type === "response.reasoning_summary_text.done" ||
                 event.type === "response.reasoning_text.done")
         ) {
-            if (reasoningOpen) {
+            if (state.reasoningOpen) {
                 params.onReasoningBlockEnd?.();
-                reasoningOpen = false;
+                state.reasoningOpen = false;
             }
         } else if (event.type === "response.completed") {
-            final = event.response;
+            state.final = event.response;
         } else if (event.type === "response.failed") {
             throw namedResponseError(
                 "OPENAI_RESPONSE_FAILED",
                 event.response.error?.message,
                 "OpenAI response failed",
+                {
+                    providerResponseId: state.providerResponseId,
+                    lastSequenceNumber: state.lastSequenceNumber,
+                },
             );
         } else if (event.type === "response.incomplete") {
             throw namedResponseError(
                 "OPENAI_RESPONSE_INCOMPLETE",
                 event.response.incomplete_details?.reason,
                 "OpenAI response incomplete",
+                {
+                    providerResponseId: state.providerResponseId,
+                    lastSequenceNumber: state.lastSequenceNumber,
+                },
             );
         } else if (event.type === "error") {
             throw namedResponseError(
                 "OPENAI_STREAM_ERROR",
                 event.message,
                 "OpenAI stream failed",
+                {
+                    providerResponseId: state.providerResponseId,
+                    lastSequenceNumber: state.lastSequenceNumber,
+                },
             );
         }
     }
-    if (!final) {
+}
+
+function incompleteStreamError(
+    state: OpenAIStreamState,
+    recoveryAttempted: boolean,
+): NamedOpenAIError {
+    return new NamedOpenAIError(
+        "OPENAI_STREAM_INCOMPLETE",
+        "OpenAI stream ended without a completed response.",
+        {
+            providerResponseId: state.providerResponseId,
+            lastSequenceNumber: state.lastSequenceNumber,
+            recoveryAttempted,
+        },
+    );
+}
+
+export async function consumeOpenAIStandardStream(
+    stream: AsyncIterable<ResponseStreamEvent>,
+    params: OpenAIStreamConsumeParams,
+): Promise<{
+    response: Response;
+    timeToFirstTokenSeconds?: number;
+    providerResponseId: string | null;
+    lastSequenceNumber: number | null;
+}> {
+    const state: OpenAIStreamState = {
+        final: null,
+        reasoningOpen: false,
+        providerResponseId: null,
+        lastSequenceNumber: null,
+    };
+    await consumeOpenAIStreamSegment(stream, params, state);
+    if (!state.final) {
+        throw incompleteStreamError(state, false);
+    }
+    extractCompletedOpenAIOutput(state.final);
+    return {
+        response: state.final,
+        timeToFirstTokenSeconds: state.timeToFirstTokenSeconds,
+        providerResponseId: state.providerResponseId,
+        lastSequenceNumber: state.lastSequenceNumber,
+    };
+}
+
+export async function consumeOpenAIStreamWithSingleResume(
+    stream: AsyncIterable<ResponseStreamEvent>,
+    params: OpenAIStreamConsumeParams & {
+        resume: (
+            responseId: string,
+            startingAfter: number | null,
+        ) => Promise<AsyncIterable<ResponseStreamEvent>>;
+        onResume?: (
+            responseId: string,
+            startingAfter: number | null,
+        ) => void | Promise<void>;
+    },
+): Promise<{
+    response: Response;
+    timeToFirstTokenSeconds?: number;
+    providerResponseId: string | null;
+    lastSequenceNumber: number | null;
+    recoveryAttempted: boolean;
+}> {
+    const state: OpenAIStreamState = {
+        final: null,
+        reasoningOpen: false,
+        providerResponseId: null,
+        lastSequenceNumber: null,
+    };
+    await consumeOpenAIStreamSegment(stream, params, state);
+    let recoveryAttempted = false;
+
+    if (!state.final && state.providerResponseId) {
+        recoveryAttempted = true;
+        await params.onResume?.(
+            state.providerResponseId,
+            state.lastSequenceNumber,
+        );
+        const resumed = await params.resume(
+            state.providerResponseId,
+            state.lastSequenceNumber,
+        );
+        await consumeOpenAIStreamSegment(resumed, params, state);
+    }
+
+    if (!state.final) {
         throw new NamedOpenAIError(
             "OPENAI_STREAM_INCOMPLETE",
             "OpenAI stream ended without a completed response.",
+            {
+                providerResponseId: state.providerResponseId,
+                lastSequenceNumber: state.lastSequenceNumber,
+                recoveryAttempted,
+            },
         );
     }
-    extractCompletedOpenAIOutput(final);
-    return { response: final, timeToFirstTokenSeconds };
+    extractCompletedOpenAIOutput(state.final);
+    return {
+        response: state.final,
+        timeToFirstTokenSeconds: state.timeToFirstTokenSeconds,
+        providerResponseId: state.providerResponseId,
+        lastSequenceNumber: state.lastSequenceNumber,
+        recoveryAttempted,
+    };
 }
 
 function aiInputMessages(
@@ -457,6 +669,7 @@ export type OpenAIGenerationMetadata = {
     model_resolution_status:
         | NonNullable<AiObservabilityMetadata["model_resolution_status"]>
         | null;
+    assistant_run_id?: string;
 };
 
 export function buildOpenAIGenerationIdentity(input: {
@@ -478,6 +691,10 @@ export function buildOpenAIGenerationIdentity(input: {
             streaming: input.streaming,
             model_resolution_status:
                 input.metadata?.model_resolution_status ?? "direct",
+            ...(typeof input.metadata?.assistant_run_id === "string" &&
+            input.metadata.assistant_run_id
+                ? { assistant_run_id: input.metadata.assistant_run_id }
+                : {}),
         },
     };
 }
@@ -534,10 +751,15 @@ async function createStreamingResponse(
         reasoningEffort?: ReasoningEffort;
         textVerbosity?: TextVerbosity;
         textFormat?: JsonSchemaTextFormat;
+        metadata?: ResponseCreateParamsBase["metadata"];
         onDelta?: (delta: string) => void;
         onReasoningDelta?: (delta: string) => void;
         onReasoningBlockEnd?: () => void;
         abortSignal?: AbortSignal;
+        background?: boolean;
+        onProviderProgress?: (
+            progress: OpenAIProviderRunUpdate,
+        ) => void | Promise<void>;
     },
 ): Promise<OpenAIResponseResult> {
     throwIfAborted(params.abortSignal);
@@ -557,26 +779,312 @@ async function createStreamingResponse(
             ),
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
+        ...(params.metadata ? { metadata: params.metadata } : {}),
+        ...(params.background ? { background: true, store: true } : {}),
     });
-    const stream = await openai.responses.create(request, {
-        signal: params.abortSignal,
-    });
-    const consumed = await consumeOpenAIStandardStream(
-        stream as AsyncIterable<ResponseStreamEvent>,
-        {
+    const created = await openai.responses
+        .create(request, {
+            signal: params.abortSignal,
+            ...(params.background
+                ? {
+                      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+                      maxRetries: 2,
+                  }
+                : {}),
+        })
+        .withResponse();
+    let providerRequestId = created.request_id;
+    let providerResponseId: string | null = null;
+    let consumed: Awaited<
+        ReturnType<typeof consumeOpenAIStreamWithSingleResume>
+    >;
+    try {
+        consumed = await consumeOpenAIStreamWithSingleResume(
+            created.data as AsyncIterable<ResponseStreamEvent>,
+            {
             enableThinking: params.enableThinking,
             onDelta: params.onDelta,
             onReasoningDelta: params.onReasoningDelta,
             onReasoningBlockEnd: params.onReasoningBlockEnd,
-            abortSignal: params.abortSignal,
-            startedAt,
-        },
-    );
+                abortSignal: params.abortSignal,
+                startedAt,
+                onResponseId: async (responseId) => {
+                    providerResponseId = responseId;
+                    await params.onProviderProgress?.({
+                        phase: "started",
+                        background: params.background ?? false,
+                        providerResponseId,
+                        providerRequestId,
+                        providerStatus: params.background
+                            ? "in_progress"
+                            : null,
+                        recoveryAttempted: false,
+                    });
+                },
+                onResume: async (responseId, startingAfter) => {
+                    console.warn("[openai] resuming incomplete response stream", {
+                        provider_response_id: responseId,
+                        provider_request_id: providerRequestId,
+                        starting_after: startingAfter,
+                    });
+                    await params.onProviderProgress?.({
+                        phase: "resuming",
+                        background: params.background ?? false,
+                        providerResponseId: responseId,
+                        providerRequestId,
+                        providerStatus: params.background
+                            ? "in_progress"
+                            : null,
+                        lastSequenceNumber: startingAfter,
+                        recoveryAttempted: true,
+                    });
+                },
+                resume: async (responseId, startingAfter) => {
+                    const resumed = await openai.responses
+                        .retrieve(
+                            responseId,
+                            {
+                                stream: true,
+                                ...(startingAfter === null
+                                    ? {}
+                                    : { starting_after: startingAfter }),
+                            },
+                            {
+                                signal: params.abortSignal,
+                                timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+                            },
+                        )
+                        .withResponse();
+                    providerRequestId = resumed.request_id ?? providerRequestId;
+                    return resumed.data as AsyncIterable<ResponseStreamEvent>;
+                },
+            },
+        );
+    } catch (error) {
+        if (
+            params.background &&
+            providerResponseId
+        ) {
+            await cancelBackgroundResponse(openai, providerResponseId);
+        }
+        if (error instanceof NamedOpenAIError && !error.providerRequestId) {
+            throw new NamedOpenAIError(error.name, error.message, {
+                providerResponseId:
+                    error.providerResponseId ?? providerResponseId,
+                providerRequestId,
+                lastSequenceNumber: error.lastSequenceNumber,
+                recoveryAttempted: error.recoveryAttempted,
+            });
+        }
+        throw error;
+    }
+    await params.onProviderProgress?.({
+        phase: "completed",
+        background: params.background ?? false,
+        providerResponseId:
+            consumed.providerResponseId ?? consumed.response.id,
+        providerRequestId,
+        providerStatus: consumed.response.status,
+        lastSequenceNumber: consumed.lastSequenceNumber,
+        recoveryAttempted: consumed.recoveryAttempted,
+    });
     return {
         response: consumed.response,
         latencySeconds: elapsedSeconds(startedAt),
         timeToFirstTokenSeconds: consumed.timeToFirstTokenSeconds,
+        providerRequestId,
+        background: params.background ?? false,
+        recoveryAttempted: consumed.recoveryAttempted,
     };
+}
+
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        const onAbort = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            const error = new Error("Stream aborted.");
+            error.name = "AbortError";
+            reject(error);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+async function requestBackgroundResponseCancellation(
+    openai: Pick<OpenAI, "responses">,
+    responseId: string,
+): Promise<void> {
+    await openai.responses.cancel(responseId, {
+        timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+        maxRetries: 2,
+    });
+    console.info("[openai] cancelled background response", {
+        provider_response_id: responseId,
+    });
+}
+
+async function cancelBackgroundResponse(
+    openai: Pick<OpenAI, "responses">,
+    responseId: string,
+): Promise<void> {
+    try {
+        await requestBackgroundResponseCancellation(openai, responseId);
+    } catch (error) {
+        console.warn("[openai] failed to cancel background response", {
+            provider_response_id: responseId,
+            error: safeErrorMessage(error, "OpenAI cancellation failed"),
+        });
+    }
+}
+
+export async function retrieveOpenAIBackgroundResponse(input: {
+    apiKey?: string | null;
+    responseId: string;
+    abortSignal?: AbortSignal;
+}): Promise<{ response: Response; providerRequestId: string | null }> {
+    const openai = client(input.apiKey);
+    const retrieved = await openai.responses
+        .retrieve(input.responseId, undefined, {
+            signal: input.abortSignal,
+            timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+            maxRetries: 2,
+        })
+        .withResponse();
+    return {
+        response: retrieved.data,
+        providerRequestId: retrieved.request_id ?? null,
+    };
+}
+
+export async function cancelOpenAIBackgroundResponse(input: {
+    apiKey?: string | null;
+    responseId: string;
+}): Promise<void> {
+    // Direct user/recovery cancellation must surface failure so the durable
+    // cancel_requested row remains retryable. Provider-cleanup calls inside the
+    // streaming adapter intentionally use the best-effort wrapper above.
+    await requestBackgroundResponseCancellation(
+        client(input.apiKey),
+        input.responseId,
+    );
+}
+
+export function openAIResponseHasFunctionCalls(response: Response): boolean {
+    return extractFunctionCalls(response).length > 0;
+}
+
+export async function waitForOpenAIBackgroundResponse(
+    openai: Pick<OpenAI, "responses">,
+    initial: Response,
+    params: {
+        abortSignal?: AbortSignal;
+        providerRequestId?: string | null;
+        onProviderProgress?: (
+            progress: OpenAIProviderRunUpdate,
+        ) => void | Promise<void>;
+        pollIntervalMs?: number;
+        maxWaitMs?: number;
+    },
+): Promise<{ response: Response; providerRequestId: string | null }> {
+    let response = initial;
+    let providerRequestId = params.providerRequestId ?? null;
+    const startedAt = Date.now();
+
+    console.info("[openai] background response started", {
+        provider_response_id: response.id,
+        provider_request_id: providerRequestId,
+        status: response.status,
+    });
+    try {
+        await params.onProviderProgress?.({
+            phase: "started",
+            background: true,
+            providerResponseId: response.id,
+            providerRequestId,
+            providerStatus: response.status,
+            recoveryAttempted: false,
+        });
+        while (response.status === "queued" || response.status === "in_progress") {
+            if (
+                Date.now() - startedAt >=
+                (params.maxWaitMs ?? BACKGROUND_MAX_WAIT_MS)
+            ) {
+                throw new NamedOpenAIError(
+                    "OPENAI_BACKGROUND_TIMEOUT",
+                    "The Pro response is still running after the background wait limit. Retry in Standard mode or try again later.",
+                    {
+                        providerResponseId: response.id,
+                        providerRequestId,
+                    },
+                );
+            }
+            await delayWithAbort(
+                params.pollIntervalMs ?? BACKGROUND_POLL_INTERVAL_MS,
+                params.abortSignal,
+            );
+            const retrieved = await openai.responses
+                .retrieve(response.id, undefined, {
+                    signal: params.abortSignal,
+                    timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+                    maxRetries: 2,
+                })
+                .withResponse();
+            response = retrieved.data;
+            providerRequestId = retrieved.request_id ?? providerRequestId;
+            await params.onProviderProgress?.({
+                phase: "polling",
+                background: true,
+                providerResponseId: response.id,
+                providerRequestId,
+                providerStatus: response.status,
+                recoveryAttempted: false,
+            });
+        }
+    } catch (error) {
+        if (isAbortError(error) || params.abortSignal?.aborted) {
+            await cancelBackgroundResponse(openai, response.id);
+            throw new NamedOpenAIError(
+                "AbortError",
+                "Stream aborted.",
+                {
+                    providerResponseId: response.id,
+                    providerRequestId,
+                },
+            );
+        }
+        if (
+            error instanceof NamedOpenAIError &&
+            error.name === "OPENAI_BACKGROUND_TIMEOUT"
+        ) {
+            await cancelBackgroundResponse(openai, response.id);
+        } else if (!isAbortError(error)) {
+            await cancelBackgroundResponse(openai, response.id);
+        }
+        throw error;
+    }
+
+    console.info("[openai] background response reached terminal state", {
+        provider_response_id: response.id,
+        provider_request_id: providerRequestId,
+        status: response.status,
+        latency_seconds: elapsedSeconds(startedAt),
+    });
+    await params.onProviderProgress?.({
+        phase: "completed",
+        background: true,
+        providerResponseId: response.id,
+        providerRequestId,
+        providerStatus: response.status,
+        recoveryAttempted: false,
+    });
+    return { response, providerRequestId };
 }
 
 async function createNonStreamingResponse(
@@ -593,7 +1101,11 @@ async function createNonStreamingResponse(
         reasoningMode?: ReasoningMode;
         textVerbosity?: TextVerbosity;
         textFormat?: JsonSchemaTextFormat;
+        metadata?: ResponseCreateParamsBase["metadata"];
         abortSignal?: AbortSignal;
+        onProviderProgress?: (
+            progress: OpenAIProviderRunUpdate,
+        ) => void | Promise<void>;
     },
 ): Promise<OpenAIResponseResult> {
     throwIfAborted(params.abortSignal);
@@ -613,27 +1125,44 @@ async function createNonStreamingResponse(
         max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
         text: textConfig(params.textVerbosity, params.textFormat),
         parallel_tool_calls: true,
+        ...(params.metadata ? { metadata: params.metadata } : {}),
     };
-    const response = params.reasoningMode === "pro"
-        ? await openai.responses.create(
-              buildOpenAIProNonStreamingRequest({
+    const isBackground = params.reasoningMode === "pro";
+    const created = await (isBackground
+        ? openai.responses.create(
+              buildOpenAIProBackgroundRequest({
                   ...requestBase,
                   reasoningEffort: proReasoningEffort(reasoningEffort),
               }),
-              { signal: params.abortSignal },
+              {
+                  signal: params.abortSignal,
+                  timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+                  maxRetries: 2,
+              },
           )
-        : await openai.responses.create(
+        : openai.responses.create(
               buildOpenAIStandardNonStreamingRequest({
                   ...requestBase,
                   reasoningEffort,
               }),
               { signal: params.abortSignal },
-          );
+          )).withResponse();
+    const backgroundResult = isBackground
+        ? await waitForOpenAIBackgroundResponse(openai, created.data, {
+              abortSignal: params.abortSignal,
+              providerRequestId: created.request_id,
+              onProviderProgress: params.onProviderProgress,
+          })
+        : { response: created.data, providerRequestId: created.request_id };
+    const response = backgroundResult.response;
     throwIfAborted(params.abortSignal);
     extractCompletedOpenAIOutput(response);
     return {
         response,
         latencySeconds: elapsedSeconds(startedAt),
+        providerRequestId: backgroundResult.providerRequestId,
+        background: isBackground,
+        recoveryAttempted: false,
     };
 }
 
@@ -652,10 +1181,23 @@ export async function streamOpenAI(
     const openaiTools = toOpenAITools(tools);
     const reasoningMode = params.reasoningMode ?? "standard";
     const streaming = shouldStreamOpenAI(reasoningMode);
+    const background = shouldUseOpenAIBackground(
+        reasoningMode,
+        params.reasoningEffort,
+    );
     let input = toInput(params.messages);
     let fullText = "";
     const traceId = params.aiObservability?.traceId || randomUUID();
     const parentId = traceId;
+    const assistantRunId =
+        params.aiObservability?.metadata?.assistant_run_id;
+    const responseMetadata =
+        typeof assistantRunId === "string" && assistantRunId
+            ? {
+                  docket_run_id: assistantRunId,
+                  docket_trace_id: traceId,
+              }
+            : undefined;
 
     for (let iter = 0; iter < maxIter; iter++) {
         throwIfAborted(params.abortSignal);
@@ -664,6 +1206,14 @@ export async function streamOpenAI(
         const requestStartedAt = Date.now();
         let iterationText = "";
         let result: OpenAIResponseResult;
+        const reportProviderProgress = params.onProviderRunProgress
+            ? (progress: OpenAIProviderRunUpdate) =>
+                  params.onProviderRunProgress?.({
+                      provider: "openai",
+                      iteration: iter + 1,
+                      ...progress,
+                  })
+            : undefined;
         try {
             result = streaming
                 ? await createStreamingResponse(openai, {
@@ -675,6 +1225,7 @@ export async function streamOpenAI(
                       reasoningEffort: params.reasoningEffort,
                       textVerbosity: params.textVerbosity,
                       textFormat: params.textFormat,
+                      metadata: responseMetadata,
                       onDelta: (delta) => {
                           iterationText += delta;
                           fullText += delta;
@@ -683,6 +1234,8 @@ export async function streamOpenAI(
                       onReasoningDelta: callbacks.onReasoningDelta,
                       onReasoningBlockEnd: callbacks.onReasoningBlockEnd,
                       abortSignal: params.abortSignal,
+                      background,
+                      onProviderProgress: reportProviderProgress,
                   })
                 : await createNonStreamingResponse(openai, {
                       model,
@@ -694,9 +1247,39 @@ export async function streamOpenAI(
                       reasoningMode,
                       textVerbosity: params.textVerbosity,
                       textFormat: params.textFormat,
+                      metadata: responseMetadata,
                       abortSignal: params.abortSignal,
+                      onProviderProgress: reportProviderProgress,
                   });
         } catch (error) {
+            const identifiers = providerIdentifiers(error);
+            if (params.onProviderRunProgress) {
+                try {
+                    await params.onProviderRunProgress({
+                        provider: "openai",
+                        iteration: iter + 1,
+                        phase: "failed",
+                        background,
+                        providerResponseId:
+                            identifiers.providerResponseId ?? null,
+                        providerRequestId:
+                            identifiers.providerRequestId ?? null,
+                        providerStatus: "failed",
+                        lastSequenceNumber:
+                            identifiers.lastSequenceNumber ?? null,
+                        recoveryAttempted:
+                            identifiers.recoveryAttempted ?? false,
+                    });
+                } catch (progressError) {
+                    console.error(
+                        "[openai] failed to persist provider failure state",
+                        safeErrorMessage(
+                            progressError,
+                            "Provider progress persistence failed",
+                        ),
+                    );
+                }
+            }
             const generationIdentity = buildOpenAIGenerationIdentity({
                 resolvedModel: model,
                 actualResponseModel: null,
@@ -723,6 +1306,14 @@ export async function streamOpenAI(
                 metadata: {
                     iteration: iter + 1,
                     tool_count: openaiTools.length,
+                    provider_response_id:
+                        identifiers.providerResponseId ?? null,
+                    provider_request_id:
+                        identifiers.providerRequestId ?? null,
+                    stream_last_sequence_number:
+                        identifiers.lastSequenceNumber ?? null,
+                    stream_recovery_attempted:
+                        identifiers.recoveryAttempted ?? false,
                     ...generationIdentity.metadata,
                 },
             });
@@ -781,6 +1372,10 @@ export async function streamOpenAI(
                 iteration: iter + 1,
                 tool_count: openaiTools.length,
                 function_call_count: extractFunctionCalls(response).length,
+                provider_response_id: response.id,
+                provider_request_id: result.providerRequestId ?? null,
+                background: result.background,
+                stream_recovery_attempted: result.recoveryAttempted,
                 ...generationIdentity.metadata,
             },
         });

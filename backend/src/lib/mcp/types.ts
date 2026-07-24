@@ -37,19 +37,57 @@ export type McpToolSummary = {
     readOnly: boolean;
     destructive: boolean;
     requiresConfirmation: boolean;
+    practicePantherPolicy?:
+        | "admin_only"
+        | "read_all"
+        | "write_with_approval"
+        | "deny";
     lastSeenAt: string;
 };
 
-export type McpToolEvent =
-    | {
-          type: "mcp_tool_call";
-          connector_id: string;
-          connector_name: string;
-          tool_name: string;
-          openai_tool_name: string;
-          status: "ok" | "error";
-          error?: string;
-      };
+export type McpToolEvent = {
+    type: "mcp_tool_call";
+    connector_id: string;
+    connector_name: string;
+    tool_name: string;
+    openai_tool_name: string;
+    status: "ok" | "error" | "approval_required";
+    action_kind?: "read" | "mutation";
+    execution_outcome?: "failed" | "indeterminate";
+    actor_email?: string;
+    docket_audit_id?: string;
+    approval_id?: string;
+    approval_status?:
+        | "pending"
+        | "executing"
+        | "succeeded"
+        | "failed"
+        | "indeterminate"
+        | "rejected"
+        | "expired";
+    approval_expires_at?: string;
+    policy_version?: string;
+    practicepanther_audit_note_id?: string;
+    practicepanther_audit_status?:
+        | "not_required"
+        | "pending"
+        | "created"
+        | "finalized"
+        | "failed";
+    attribution_warning?: string;
+    result_summary?: string;
+    error?: string;
+};
+
+export type McpExecutionContext = {
+    actorEmail?: string | null;
+    chatId?: string | null;
+    assistantMessageId?: string | null;
+    assistantRunId?: string | null;
+    traceId?: string | null;
+    projectId?: string | null;
+    toolCallId?: string | null;
+};
 
 export type ConnectorRow = {
     id: string;

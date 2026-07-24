@@ -366,6 +366,21 @@ test("citation SSE bridge preserves partial snapshots and replaces legacy final 
   assert.equal(lines[2], "data: [DONE]\n\n");
 });
 
+test("citation SSE bridge emits terminal JSON immediately before DONE", () => {
+  const lines: string[] = [];
+  const bridge = createCitationSseBridge((line) => lines.push(line));
+  bridge.finish([], {
+    type: "stream_terminal",
+    status: "completed",
+    runId: "019f7170-9f04-72c1-8364-45f504ca2153",
+  });
+
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /"type":"citations"/);
+  assert.match(lines[1], /"type":"stream_terminal"/);
+  assert.equal(lines[2], "data: [DONE]\n\n");
+});
+
 test("general and project chat routes validate/resume inputs and persist rich citations", () => {
   for (const relativePath of ["src/routes/chat.ts", "src/routes/projectChat.ts"]) {
     const route = readFileSync(resolve(backendRoot, relativePath), "utf8");

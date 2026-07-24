@@ -148,7 +148,9 @@ function routeCancelsProviderWork(source: string): boolean {
 }
 
 function cancelledStreamPersistenceProblems(source: string): string[] {
-  const abortBranchStart = source.indexOf("if (isAbortError(err))");
+  const abortCondition = source.indexOf("isAbortError(err)");
+  const abortBranchStart =
+    abortCondition >= 0 ? source.lastIndexOf("if (", abortCondition) : -1;
   if (abortBranchStart < 0) {
     return ["does not recognize isAbortError(err)"];
   }
@@ -718,7 +720,7 @@ function askInputsServerProblems(source: string): string[] {
     problems.push("runLLMStream was not found");
   } else {
     if (
-      !/if\s*\(\s*askInputsEvents\.length(?:\s*>\s*0)?\s*\)\s*\{[\s\S]*?throw\s+new\s+AskInputsPauseError\s*\(/.test(
+      !/if\s*\([\s\S]{0,500}?askInputsEvents\.length(?:\s*>\s*0)?[\s\S]{0,500}?\)\s*\{[\s\S]*?throw\s+new\s+AskInputsPauseError\s*\(/.test(
         runLlmStreamSource,
       )
     ) {
@@ -868,7 +870,7 @@ function richCitationProblems(
     if (
       !/createCitationSseBridge\s*\(\s*write\s*\)/.test(routeSource) ||
       !/extractRichCitations\s*\(/.test(routeSource) ||
-      !/citationSse\.finish\s*\(\s*citations\s*\)/.test(routeSource)
+      !/citationSse\.finish\s*\(\s*citations\s*(?:,|\))/.test(routeSource)
     ) {
       problems.push(
         `${routeName} route does not bridge and persist final rich citations`,

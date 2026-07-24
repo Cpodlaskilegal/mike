@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
   DocketApiError,
   type McpConnectorPresetSummary,
@@ -63,6 +64,8 @@ function parseHeaders(raw: string): Record<string, string> | undefined {
 }
 
 export default function ConnectorsPage() {
+  const { profile } = useUserProfile();
+  const isAdmin = profile?.role === "admin";
   const [connectors, setConnectors] = useState<McpConnectorSummary[]>([]);
   const [presets, setPresets] = useState<McpConnectorPresetSummary[]>([]);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -304,8 +307,8 @@ export default function ConnectorsPage() {
       <section>
         <h2 className="text-2xl font-medium font-serif mb-2">Connectors</h2>
         <p className="text-sm text-gray-500 max-w-xl">
-          Add remote HTTPS MCP servers. Docket can expose enabled, non-destructive
-          tools to chat after discovery.
+          PracticePanther access is enforced by Docket roles and one-time write
+          approvals. Custom MCP servers are managed by administrators.
         </p>
       </section>
 
@@ -405,6 +408,7 @@ export default function ConnectorsPage() {
         </section>
       )}
 
+      {isAdmin && (
       <section className="space-y-3 rounded-md border border-gray-200 bg-white p-4">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
@@ -512,6 +516,7 @@ export default function ConnectorsPage() {
           )}
         </Button>
       </section>
+      )}
 
       <section className="space-y-3">
         {loading ? (
@@ -526,6 +531,7 @@ export default function ConnectorsPage() {
             <ConnectorPanel
               key={connector.id}
               connector={connector}
+              isAdmin={isAdmin}
               busy={busy}
               onRefresh={handleRefresh}
               onDelete={handleDelete}
@@ -541,6 +547,7 @@ export default function ConnectorsPage() {
 
 function ConnectorPanel({
   connector,
+  isAdmin,
   busy,
   onRefresh,
   onDelete,
@@ -548,6 +555,7 @@ function ConnectorPanel({
   onToolEnabled,
 }: {
   connector: McpConnectorSummary;
+  isAdmin: boolean;
   busy: string | null;
   onRefresh: (connectorId: string) => Promise<void>;
   onDelete: (connectorId: string) => Promise<void>;
@@ -562,6 +570,14 @@ function ConnectorPanel({
   ) => Promise<void>;
 }) {
   const isBackendManaged = connector.managedBy !== null;
+  const displayedTools =
+    connector.managedBy === "practicepanther" && !isAdmin
+      ? connector.tools.filter(
+          (tool) =>
+            tool.practicePantherPolicy === "read_all" ||
+            tool.practicePantherPolicy === "write_with_approval",
+        )
+      : connector.tools;
 
   return (
     <div className="rounded-md border border-gray-200 bg-white p-4">
@@ -603,20 +619,22 @@ function ConnectorPanel({
             />
             Enabled
           </label>
-          <button
-            type="button"
-            onClick={() => void onRefresh(connector.id)}
-            disabled={busy === `refresh:${connector.id}`}
-            className="rounded-md border border-gray-200 p-2 text-gray-500 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
-            title="Refresh tools"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${
-                busy === `refresh:${connector.id}` ? "animate-spin" : ""
-              }`}
-            />
-          </button>
-          {!isBackendManaged && (
+          {(isBackendManaged || isAdmin) && (
+            <button
+              type="button"
+              onClick={() => void onRefresh(connector.id)}
+              disabled={busy === `refresh:${connector.id}`}
+              className="rounded-md border border-gray-200 p-2 text-gray-500 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
+              title="Refresh tools"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${
+                  busy === `refresh:${connector.id}` ? "animate-spin" : ""
+                }`}
+              />
+            </button>
+          )}
+          {!isBackendManaged && isAdmin && (
             <button
               type="button"
               onClick={() => void onDelete(connector.id)}
@@ -630,11 +648,19 @@ function ConnectorPanel({
         </div>
       </div>
 
+      {connector.managedBy === "practicepanther" && (
+        <p className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+          Tool access is fixed by Docket policy. Reads are available according
+          to role; permitted writes pause for the initiating user&apos;s
+          one-time approval.
+        </p>
+      )}
+
       <div className="mt-4 space-y-2">
-        {connector.tools.length === 0 ? (
+        {displayedTools.length === 0 ? (
           <p className="text-xs text-gray-500">No tools discovered yet.</p>
         ) : (
-          connector.tools.map((tool) => (
+          displayedTools.map((tool) => (
             <div
               key={tool.id}
               className="flex items-start justify-between gap-3 rounded-md border border-gray-100 px-3 py-2"
@@ -651,7 +677,20 @@ function ConnectorPanel({
                     {tool.description}
                   </p>
                 )}
-                {tool.requiresConfirmation && (
+                {connector.managedBy === "practicepanther" &&
+                  tool.practicePantherPolicy && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    {tool.practicePantherPolicy === "admin_only"
+                      ? "Admin-only in Docket."
+                      : tool.practicePantherPolicy === "read_all"
+                        ? "Read access."
+                        : tool.practicePantherPolicy === "write_with_approval"
+                          ? "Write action; the initiating user must approve it once before Docket sends it."
+                          : "Not available to chat."}
+                  </p>
+                )}
+                {connector.managedBy !== "practicepanther" &&
+                  tool.requiresConfirmation && (
                   <p className="mt-1 text-xs text-amber-700">
                     Requires confirmation; disabled for chat.
                   </p>
@@ -660,9 +699,16 @@ function ConnectorPanel({
               <label className="flex shrink-0 items-center gap-2 text-xs text-gray-600">
                 <input
                   type="checkbox"
-                  checked={tool.enabled}
+                  checked={
+                    connector.managedBy === "practicepanther"
+                      ? tool.practicePantherPolicy !== "deny"
+                      : tool.enabled
+                  }
                   disabled={
-                    tool.requiresConfirmation || busy === `tool:${tool.id}`
+                    connector.managedBy === "practicepanther" ||
+                    (!isAdmin && connector.managedBy === null) ||
+                    tool.requiresConfirmation ||
+                    busy === `tool:${tool.id}`
                   }
                   onChange={(event) =>
                     void onToolEnabled(
@@ -672,7 +718,7 @@ function ConnectorPanel({
                     )
                   }
                 />
-                Chat
+                {connector.managedBy === "practicepanther" ? "Policy" : "Chat"}
               </label>
             </div>
           ))

@@ -22,7 +22,10 @@ import {
   serializeAssistantGenerationSettings,
   setAssistantReasoningMode,
 } from "../src/app/lib/assistantGenerationSettings";
-import { buildAssistantGenerationPayload } from "../src/app/lib/assistantChatPayload";
+import {
+  assistantRequestContinuesAfterDisconnect,
+  buildAssistantGenerationPayload,
+} from "../src/app/lib/assistantChatPayload";
 
 test("exports the exact GPT-5.6 model and effort contracts", () => {
   assert.deepEqual(GPT56_MODEL_IDS, [
@@ -464,5 +467,32 @@ test("builds exact GPT generation fields and omits them for other providers", ()
       reasoningMode: "standard",
     }),
     { model: "claude-sonnet-4-6" },
+  );
+});
+
+test("knows Pro and Max requests survive a disconnect before stream_start", () => {
+  assert.equal(
+    assistantRequestContinuesAfterDisconnect({
+      model: "gpt-5.6-sol",
+      reasoning_mode: "pro",
+      reasoning_effort: "medium",
+    }),
+    true,
+  );
+  assert.equal(
+    assistantRequestContinuesAfterDisconnect({
+      model: "gpt-5.6-sol",
+      reasoning_mode: "standard",
+      reasoning_effort: "max",
+    }),
+    true,
+  );
+  assert.equal(
+    assistantRequestContinuesAfterDisconnect({
+      model: "gpt-5.6-sol",
+      reasoning_mode: "standard",
+      reasoning_effort: "high",
+    }),
+    false,
   );
 });

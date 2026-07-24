@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 import type {
   AssistantEvent,
   DocketAskInputsResponse,
+  DocketAssistantRunStatus,
   DocketChat,
   DocketChatDetailOut,
   DocketCitation,
@@ -21,6 +22,7 @@ import type {
   TabularReviewDetailOut,
 } from "@/app/components/shared/types";
 import type { AssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
+import { ASSISTANT_CANCELLATION_PENDING_MESSAGE } from "@/app/lib/assistantRunHydration";
 
 // Server-side shape before mapping
 interface ServerMessage {
@@ -37,6 +39,12 @@ interface ServerMessage {
 interface ServerChatDetailOut {
   chat: DocketChat;
   messages: ServerMessage[];
+  active_run?: {
+    stream_request_id: string;
+    assistant_message_id: string;
+    project_id: string | null;
+    status: DocketAssistantRunStatus;
+  } | null;
 }
 
 const API_BASE =
@@ -405,6 +413,11 @@ export interface McpToolSummary {
   readOnly: boolean;
   destructive: boolean;
   requiresConfirmation: boolean;
+  practicePantherPolicy?:
+    | "admin_only"
+    | "read_all"
+    | "write_with_approval"
+    | "deny";
   lastSeenAt: string;
 }
 
@@ -534,6 +547,55 @@ export async function setMcpToolEnabled(
       body: JSON.stringify({ enabled }),
     },
   );
+}
+
+export type McpApprovalStatus =
+  | "pending"
+  | "executing"
+  | "succeeded"
+  | "failed"
+  | "indeterminate"
+  | "rejected"
+  | "expired";
+
+export interface McpApprovalSummary {
+  id: string;
+  status: McpApprovalStatus;
+  actorEmail: string;
+  connectorName: string;
+  toolName: string;
+  openaiToolName: string;
+  argumentsPreview: Record<string, unknown>;
+  policyVersion: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  executedAt: string | null;
+  errorMessage: string | null;
+  resultEvent: Extract<AssistantEvent, { type: "mcp_tool_call" }> | null;
+  resultContent: string | null;
+  createdAt: string;
+}
+
+export async function getMcpApproval(
+  approvalId: string,
+): Promise<McpApprovalSummary> {
+  return apiRequest<McpApprovalSummary>(
+    `/user/mcp-approvals/${approvalId}`,
+  );
+}
+
+export async function decideMcpApproval(
+  approvalId: string,
+  decision: "approve" | "reject",
+): Promise<{
+  approval: McpApprovalSummary;
+  event?: Extract<AssistantEvent, { type: "mcp_tool_call" }>;
+}> {
+  return apiRequest(`/user/mcp-approvals/${approvalId}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
 }
 
 export async function getProject(projectId: string): Promise<DocketProject> {
@@ -906,6 +968,14 @@ export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
       ? (m.content as AssistantEvent[])
       : undefined;
     const pending = m.content == null;
+    const activeRun =
+      pending && raw.active_run?.assistant_message_id === m.id
+        ? {
+            streamRequestId: raw.active_run.stream_request_id,
+            projectId: raw.active_run.project_id ?? undefined,
+            status: raw.active_run.status,
+          }
+        : undefined;
     return {
       role: "assistant",
       content:
@@ -919,6 +989,11 @@ export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
         events ??
         (pending ? [{ type: "thinking" as const, isStreaming: true }] : undefined),
       pending,
+      assistantRun: activeRun,
+      error:
+        activeRun?.status === "cancel_requested"
+          ? ASSISTANT_CANCELLATION_PENDING_MESSAGE
+          : undefined,
     };
   });
   return { chat: raw.chat, messages };
@@ -957,6 +1032,7 @@ export async function streamChat(payload: AssistantGenerationPayload & {
   chat_id?: string;
   project_id?: string;
   ask_inputs_response?: DocketAskInputsResponse;
+  stream_request_id?: string;
   signal?: AbortSignal;
 }): Promise<Response> {
   const { signal, ...body } = payload;
@@ -987,6 +1063,7 @@ export async function streamProjectChat(payload: AssistantGenerationPayload & {
   displayed_doc?: { filename: string; document_id: string };
   attached_documents?: { filename: string; document_id: string }[];
   ask_inputs_response?: DocketAskInputsResponse;
+  stream_request_id?: string;
   signal?: AbortSignal;
 }): Promise<Response> {
   const { projectId, signal, ...body } = payload;
@@ -1001,6 +1078,33 @@ export async function streamProjectChat(payload: AssistantGenerationPayload & {
     body: JSON.stringify(body),
     signal,
   });
+}
+
+export async function cancelAssistantStream(input: {
+  streamRequestId: string;
+  projectId?: string;
+}): Promise<void> {
+  const path = input.projectId
+    ? `/projects/${encodeURIComponent(input.projectId)}/chat/cancel`
+    : "/chat/cancel";
+  await apiRequest(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stream_request_id: input.streamRequestId }),
+  });
+}
+
+export async function getAssistantRunStatus(
+  streamRequestId: string,
+): Promise<{
+  run_id: string;
+  chat_id: string;
+  project_id: string | null;
+  status: string;
+}> {
+  return apiRequest(
+    `/chat/runs/${encodeURIComponent(streamRequestId)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

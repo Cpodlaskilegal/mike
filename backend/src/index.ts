@@ -12,6 +12,7 @@ import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
+import { startAssistantBackgroundRecovery } from "./lib/assistantBackgroundRecovery";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -141,4 +142,5 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`Docket backend running on port ${PORT}`);
+  startAssistantBackgroundRecovery();
 });

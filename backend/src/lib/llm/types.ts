@@ -37,6 +37,23 @@ export type StreamCallbacks = {
 };
 
 /**
+ * Durable provider identifiers and state for a long-running assistant turn.
+ * OpenAI emits these updates as soon as the Responses API assigns an ID so
+ * the route can persist it before the browser transport is detached.
+ */
+export type ProviderRunProgress = {
+    provider: "openai";
+    iteration: number;
+    phase: "started" | "polling" | "resuming" | "completed" | "failed";
+    background: boolean;
+    providerResponseId?: string | null;
+    providerRequestId?: string | null;
+    providerStatus?: string | null;
+    lastSequenceNumber?: number | null;
+    recoveryAttempted?: boolean;
+};
+
+/**
  * Normalizes the cancellation errors surfaced by provider SDKs and Node's
  * fetch implementation. Routes use this to distinguish a disconnected client
  * from a provider failure that should be shown as an error.
@@ -79,6 +96,20 @@ export function appendCancellationMarker<T extends { type: string }>(
     });
     if (hasCancellationMarker) return [...events];
     return [...events, { type: "content", text: "Cancelled by user." }];
+}
+
+/** Keep a transport failure distinct from an explicit user cancellation. */
+export function appendConnectionInterruptionMarker<T extends { type: string }>(
+    events: T[],
+): (T | { type: "content"; text: string })[] {
+    const text =
+        "Response interrupted by a browser connection or infrastructure timeout.";
+    const hasMarker = events.some((event) => {
+        const candidate = event as { type: string; text?: unknown };
+        return candidate.type === "content" && candidate.text === text;
+    });
+    if (hasMarker) return [...events];
+    return [...events, { type: "content", text }];
 }
 
 /**
@@ -167,6 +198,9 @@ export type StreamChatParams = {
     tools?: OpenAIToolSchema[];
     maxIterations?: number;
     callbacks?: StreamCallbacks;
+    onProviderRunProgress?: (
+        progress: ProviderRunProgress,
+    ) => void | Promise<void>;
     runTools?: (calls: NormalizedToolCall[]) => Promise<NormalizedToolResult[]>;
     apiKeys?: UserApiKeys;
     /**
