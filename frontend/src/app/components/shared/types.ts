@@ -235,8 +235,32 @@ export type AssistantEvent =
         connector_name: string;
         tool_name: string;
         openai_tool_name: string;
-        status: "ok" | "error";
-        error?: string;
+            status: "ok" | "error" | "approval_required";
+            action_kind?: "read" | "mutation";
+            execution_outcome?: "failed" | "indeterminate";
+        actor_email?: string;
+        docket_audit_id?: string;
+        approval_id?: string;
+            approval_status?:
+                | "pending"
+                | "executing"
+                | "succeeded"
+                | "failed"
+                | "indeterminate"
+                | "rejected"
+                | "expired";
+        approval_expires_at?: string;
+        policy_version?: string;
+        practicepanther_audit_note_id?: string;
+        practicepanther_audit_status?:
+          | "not_required"
+          | "pending"
+          | "created"
+          | "finalized"
+          | "failed";
+            attribution_warning?: string;
+            result_summary?: string;
+            error?: string;
         isStreaming?: boolean;
     }
   | {
@@ -267,6 +291,22 @@ export interface DocketMessage {
   error?: string;
   /** True when the backend has created the assistant row but is still streaming. */
   pending?: boolean;
+  /** Durable run metadata used to restore Stop after navigation or reload. */
+  assistantRun?: DocketAssistantRun;
+}
+
+export type DocketAssistantRunStatus =
+  | "starting"
+  | "queued"
+  | "in_progress"
+  | "background_pending"
+  | "cancel_requested"
+  | "running_tools";
+
+export interface DocketAssistantRun {
+  streamRequestId: string;
+  projectId?: string;
+  status: DocketAssistantRunStatus;
 }
 
 export interface CitationQuote {

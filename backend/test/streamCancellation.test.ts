@@ -5,6 +5,7 @@ import test from "node:test";
 import {
     AssistantStreamAbortError,
     appendCancellationMarker,
+    appendConnectionInterruptionMarker,
     isAbortError,
     throwIfAborted,
 } from "../src/lib/llm/types";
@@ -16,6 +17,27 @@ test("turns an aborted assistant signal into a recognizable abort error", () => 
     assert.throws(
         () => throwIfAborted(controller.signal),
         (error: unknown) => isAbortError(error),
+    );
+});
+
+test("keeps infrastructure disconnects distinct from user cancellation", () => {
+    const events = appendConnectionInterruptionMarker([
+        { type: "content", text: "Partial answer" },
+    ]);
+
+    assert.deepEqual(events, [
+        { type: "content", text: "Partial answer" },
+        {
+            type: "content",
+            text: "Response interrupted by a browser connection or infrastructure timeout.",
+        },
+    ]);
+    assert.equal(
+        events.some(
+            (event) =>
+                event.type === "content" && event.text === "Cancelled by user.",
+        ),
+        false,
     );
 });
 

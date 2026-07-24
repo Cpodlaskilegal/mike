@@ -163,15 +163,102 @@ create table if not exists public.user_mcp_tool_audit_logs (
   tool_id uuid references public.user_mcp_connector_tools(id) on delete set null,
   tool_name text not null,
   openai_tool_name text not null,
-  status text not null check (status in ('ok', 'error')),
+  actor_email text,
+  action_kind text not null default 'read'
+    check (action_kind in ('read', 'mutation')),
+  status text not null check (status in ('pending', 'ok', 'error')),
   error_message text,
   duration_ms integer not null default 0,
   result_size_chars integer not null default 0,
-  created_at timestamptz not null default now()
+  target_refs jsonb not null default '{}'::jsonb,
+  practicepanther_audit_note_id text,
+  practicepanther_audit_status text not null default 'not_required'
+    check (practicepanther_audit_status in (
+      'not_required', 'pending', 'created', 'finalized', 'failed'
+    )),
+  chat_id text,
+  assistant_message_id text,
+  assistant_run_id text,
+  trace_id text,
+  project_id text,
+  tool_call_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_user_mcp_tool_audit_logs_user_created
   on public.user_mcp_tool_audit_logs(user_id, created_at desc);
+create index if not exists idx_user_mcp_tool_audit_logs_actor_created
+  on public.user_mcp_tool_audit_logs(actor_email, created_at desc);
+create index if not exists idx_user_mcp_tool_audit_logs_pp_note
+  on public.user_mcp_tool_audit_logs(practicepanther_audit_note_id)
+  where practicepanther_audit_note_id is not null;
+create unique index if not exists idx_user_mcp_tool_audit_logs_run_tool_mutation
+  on public.user_mcp_tool_audit_logs(assistant_run_id, tool_call_id)
+  where
+    action_kind = 'mutation'
+    and assistant_run_id is not null
+    and tool_call_id is not null;
+create unique index if not exists idx_user_mcp_tool_audit_logs_message_tool_mutation
+  on public.user_mcp_tool_audit_logs(assistant_message_id, tool_call_id)
+  where
+    action_kind = 'mutation'
+    and assistant_message_id is not null
+    and tool_call_id is not null;
+
+create table if not exists public.user_mcp_tool_approvals (
+  id uuid primary key default gen_random_uuid(),
+  request_key text not null unique,
+  user_id text not null references public.app_users(id) on delete cascade,
+  actor_email text not null,
+  connector_id uuid not null references public.user_mcp_connectors(id) on delete cascade,
+  tool_id uuid references public.user_mcp_connector_tools(id) on delete set null,
+  connector_name text not null,
+  tool_name text not null,
+  openai_tool_name text not null,
+  encrypted_arguments text not null,
+  arguments_iv text not null,
+  arguments_tag text not null,
+  arguments_hash text not null,
+  arguments_preview jsonb not null default '{}'::jsonb,
+  policy_version text not null,
+  status text not null default 'pending'
+    check (status in (
+      'pending',
+      'executing',
+      'succeeded',
+      'failed',
+      'indeterminate',
+      'rejected',
+      'expired'
+    )),
+  chat_id text,
+  assistant_message_id text,
+  assistant_run_id text,
+  trace_id text,
+  project_id text,
+  tool_call_id text,
+  expires_at timestamptz not null,
+  decided_at timestamptz,
+  executed_at timestamptz,
+  error_message text,
+  result_event jsonb,
+  result_content text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_user_mcp_tool_approvals_user_created
+  on public.user_mcp_tool_approvals(user_id, created_at desc);
+create index if not exists idx_user_mcp_tool_approvals_pending_expiry
+  on public.user_mcp_tool_approvals(expires_at)
+  where status = 'pending';
+
+create index if not exists idx_user_mcp_tool_approvals_message_terminal
+  on public.user_mcp_tool_approvals(assistant_message_id, chat_id, status)
+  where
+    assistant_message_id is not null
+    and status in ('succeeded', 'failed', 'indeterminate', 'rejected', 'expired');
 
 create table if not exists public.projects (
   id uuid primary key default gen_random_uuid(),
@@ -375,6 +462,70 @@ alter table public.chat_messages
   add column if not exists workflow jsonb;
 
 create index if not exists idx_chat_messages_chat on public.chat_messages(chat_id);
+
+-- Durable lifecycle metadata for assistant responses. All modes are tracked so
+-- cancellation is replica-safe; Pro/Max can additionally continue detached.
+-- The stream request UUID is shared by the browser, route, logs, and provider
+-- polling code so a detached response can be found again after reconnect.
+create table if not exists public.assistant_background_runs (
+  stream_request_id uuid primary key,
+  assistant_message_id uuid not null unique
+    references public.chat_messages(id) on delete cascade,
+  chat_id uuid not null references public.chats(id) on delete cascade,
+  user_id text not null references public.app_users(id) on delete cascade,
+  project_id uuid references public.projects(id) on delete set null,
+  provider_response_id text,
+  provider_request_id text,
+  iteration integer not null default 1 check (iteration >= 1),
+  status text not null default 'starting'
+    check (status in (
+      'starting',
+      'queued',
+      'in_progress',
+      'background_pending',
+      'cancel_requested',
+      'running_tools',
+      'finalizing',
+      'completed',
+      'failed',
+      'cancelled',
+      'interrupted'
+    )),
+  provider_status text
+    check (
+      provider_status is null
+      or provider_status in (
+        'queued',
+        'in_progress',
+        'completed',
+        'failed',
+        'cancelled',
+        'incomplete'
+      )
+    ),
+  model text not null,
+  reasoning_mode text,
+  reasoning_effort text,
+  trace_id text not null,
+  revision text not null,
+  finalization_owner uuid,
+  error_code text,
+  safe_error_message text,
+  request_started_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+create index if not exists assistant_background_runs_chat_status_idx
+  on public.assistant_background_runs(chat_id, status, updated_at desc);
+
+create index if not exists assistant_background_runs_user_status_idx
+  on public.assistant_background_runs(user_id, status, updated_at desc);
+
+create unique index if not exists assistant_background_runs_provider_response_idx
+  on public.assistant_background_runs(provider_response_id)
+  where provider_response_id is not null;
 
 -- Rich assistant citations are kept apart from annotations so existing
 -- tracked-change edit metadata stays backwards compatible. Ask Inputs are

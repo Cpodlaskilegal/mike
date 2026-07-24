@@ -16,13 +16,20 @@ import {
   createUserMcpConnector,
   createUserMcpConnectorFromPreset,
   deleteUserMcpConnector,
+  executeMcpToolApproval,
+  getMcpApprovalForUser,
   getUserMcpConnector,
   listUserMcpConnectorPresets,
   listUserMcpConnectors,
+  McpApprovalError,
   McpOAuthRequiredError,
+  persistMcpApprovalTerminalEvent,
+  rejectMcpApproval,
   refreshUserMcpConnectorTools,
+  serializeMcpApproval,
   setUserMcpToolEnabled,
   startUserMcpConnectorOAuth,
+  type McpApprovalRow,
   updateUserMcpConnector,
 } from "../lib/mcpConnectors";
 import {
@@ -52,6 +59,8 @@ import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
 export const userRouter = Router();
 
 const MONTHLY_CREDIT_LIMIT = 999999;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -71,6 +80,27 @@ function errorMessage(error: unknown): string {
     );
   }
   return String(error);
+}
+
+async function persistApprovalTerminalOutcome(
+  approval: McpApprovalRow,
+): Promise<boolean> {
+  try {
+    return await persistMcpApprovalTerminalEvent({
+      db: createServerSupabase(),
+      approval,
+    });
+  } catch (error) {
+    console.error(
+      "[user/mcp-approvals] failed to persist terminal chat event",
+      {
+        approvalId: approval.id,
+        assistantMessageId: approval.assistant_message_id,
+        error: errorMessage(error),
+      },
+    );
+    return false;
+  }
 }
 
 function backendPublicUrl(req: {
@@ -672,6 +702,14 @@ userRouter.post(
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     try {
+      if (
+        req.params.presetId !== "box" &&
+        !(await isAdminUser(db, userId))
+      ) {
+        return void res.status(403).json({
+          detail: "Admin access is required for this MCP connector preset.",
+        });
+      }
       const connector = await createUserMcpConnectorFromPreset(
         userId,
         req.params.presetId,
@@ -712,7 +750,7 @@ userRouter.get(
 );
 
 // POST /user/mcp-connectors
-userRouter.post("/mcp-connectors", requireAuth, async (req, res) => {
+userRouter.post("/mcp-connectors", requireAuth, requireAdmin, async (req, res) => {
   const userId = res.locals.userId as string;
   const name = typeof req.body?.name === "string" ? req.body.name : "";
   const serverUrl =
@@ -747,6 +785,7 @@ userRouter.post("/mcp-connectors", requireAuth, async (req, res) => {
 userRouter.patch(
   "/mcp-connectors/:connectorId",
   requireAuth,
+  requireAdmin,
   async (req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
@@ -801,6 +840,7 @@ userRouter.patch(
 userRouter.delete(
   "/mcp-connectors/:connectorId",
   requireAuth,
+  requireAdmin,
   async (req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
@@ -827,6 +867,19 @@ userRouter.post(
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     try {
+      const connector = await getUserMcpConnector(
+        userId,
+        req.params.connectorId,
+        db,
+      );
+      if (
+        connector.managedBy !== "box" &&
+        !(await isAdminUser(db, userId))
+      ) {
+        return void res.status(403).json({
+          detail: "Admin access is required for custom MCP connector OAuth.",
+        });
+      }
       const redirectUri = `${backendPublicUrl(req)}/user/mcp-connectors/oauth/callback`;
       const result = await startUserMcpConnectorOAuth(
         userId,
@@ -894,6 +947,16 @@ userRouter.post(
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     try {
+      const current = await getUserMcpConnector(
+        userId,
+        req.params.connectorId,
+        db,
+      );
+      if (current.managedBy === null && !(await isAdminUser(db, userId))) {
+        return void res.status(403).json({
+          detail: "Admin access is required to refresh a custom MCP connector.",
+        });
+      }
       const connector = await refreshUserMcpConnectorTools(
         userId,
         req.params.connectorId,
@@ -929,6 +992,16 @@ userRouter.patch(
 
     const db = createServerSupabase();
     try {
+      const current = await getUserMcpConnector(
+        userId,
+        req.params.connectorId,
+        db,
+      );
+      if (current.managedBy === null && !(await isAdminUser(db, userId))) {
+        return void res.status(403).json({
+          detail: "Admin access is required to change a custom MCP connector.",
+        });
+      }
       const connector = await setUserMcpToolEnabled(
         userId,
         req.params.connectorId,
@@ -946,6 +1019,96 @@ userRouter.patch(
         error: detail,
       });
       res.status(400).json({ detail });
+    }
+  },
+);
+
+// GET /user/mcp-approvals/:approvalId
+userRouter.get(
+  "/mcp-approvals/:approvalId",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    if (!UUID_RE.test(req.params.approvalId)) {
+      return void res.status(400).json({ detail: "Invalid approval ID" });
+    }
+    try {
+      const approval = await getMcpApprovalForUser(
+        req.params.approvalId,
+        userId,
+      );
+      if (!approval) {
+        return void res.status(404).json({ detail: "Approval request not found" });
+      }
+      await persistApprovalTerminalOutcome(approval);
+      res.json(serializeMcpApproval(approval));
+    } catch (err) {
+      const detail = errorMessage(err);
+      console.error("[user/mcp-approvals] get failed", {
+        userId,
+        approvalId: req.params.approvalId,
+        error: detail,
+      });
+      res.status(500).json({ detail });
+    }
+  },
+);
+
+// POST /user/mcp-approvals/:approvalId/decision
+userRouter.post(
+  "/mcp-approvals/:approvalId/decision",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const approvalId = req.params.approvalId;
+    const decision = req.body?.decision;
+    if (!UUID_RE.test(approvalId)) {
+      return void res.status(400).json({ detail: "Invalid approval ID" });
+    }
+    if (decision !== "approve" && decision !== "reject") {
+      return void res.status(400).json({
+        detail: "decision must be approve or reject",
+      });
+    }
+
+    try {
+      if (decision === "reject") {
+        const approval = await rejectMcpApproval({ approvalId, userId });
+        await persistApprovalTerminalOutcome(approval);
+        return void res.json({
+          approval: serializeMcpApproval(approval),
+        });
+      }
+      const result = await executeMcpToolApproval({
+        approvalId,
+        userId,
+      });
+      res.json(result);
+    } catch (err) {
+      const detail = errorMessage(err);
+      const status = err instanceof McpApprovalError ? err.statusCode : 500;
+      console.error("[user/mcp-approvals] decision failed", {
+        userId,
+        approvalId,
+        decision,
+        error: detail,
+      });
+      try {
+        const terminalApproval = await getMcpApprovalForUser(approvalId, userId);
+        if (terminalApproval) {
+          await persistApprovalTerminalOutcome(terminalApproval);
+        }
+      } catch (persistError) {
+        console.error(
+          "[user/mcp-approvals] terminal recovery failed",
+          {
+            userId,
+            approvalId,
+            error: errorMessage(persistError),
+          },
+        );
+      }
+      res.status(status).json({ detail });
     }
   },
 );

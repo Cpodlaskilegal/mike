@@ -26,3 +26,12 @@ export function buildAssistantGenerationPayload(
         reasoning_mode: settings.reasoningMode,
     };
 }
+
+/** Match the backend's durable Pro/Max disconnect policy before SSE starts. */
+export function assistantRequestContinuesAfterDisconnect(
+    payload: AssistantGenerationPayload,
+): boolean {
+    return (
+        payload.reasoning_mode === "pro" || payload.reasoning_effort === "max"
+    );
+}

@@ -745,8 +745,14 @@ export function createCitationSseBridge(write: (line: string) => void) {
             }
             write(line);
         },
-        finish(citations: RichCitation[]) {
+        finish(
+            citations: RichCitation[],
+            terminalEvent?: Record<string, unknown>,
+        ) {
             write(`data: ${JSON.stringify(citationSseEvent("final", citations))}\n\n`);
+            if (terminalEvent) {
+                write(`data: ${JSON.stringify(terminalEvent)}\n\n`);
+            }
             write("data: [DONE]\n\n");
         },
     };
