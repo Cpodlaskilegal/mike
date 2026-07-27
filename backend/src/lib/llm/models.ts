@@ -7,6 +7,7 @@ import type { Provider, ReasoningMode } from "./types";
 export const CLAUDE_MAIN_MODELS = [
     "claude-sonnet-5",
     "claude-fable-5",
+    "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -26,7 +27,7 @@ export type MainModelId =
     | (typeof GEMINI_MAIN_MODELS)[number]
     | (typeof OPENAI_MAIN_MODELS)[number];
 
-export const GPT_5_6_REASONING_EFFORTS = [
+export const ASSISTANT_REASONING_EFFORTS = [
     "none",
     "low",
     "medium",
@@ -35,8 +36,24 @@ export const GPT_5_6_REASONING_EFFORTS = [
     "max",
 ] as const;
 
-export type Gpt56ReasoningEffort =
-    (typeof GPT_5_6_REASONING_EFFORTS)[number];
+export type AssistantReasoningEffort =
+    (typeof ASSISTANT_REASONING_EFFORTS)[number];
+
+// Backwards-compatible GPT aliases for callers that still name this contract
+// after the first provider that exposed it in Docket.
+export const GPT_5_6_REASONING_EFFORTS = ASSISTANT_REASONING_EFFORTS;
+export type Gpt56ReasoningEffort = AssistantReasoningEffort;
+
+export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+] as const;
+
+export type ClaudeOpus5ReasoningEffort =
+    (typeof CLAUDE_OPUS_5_REASONING_EFFORTS)[number];
 
 export type MainModelResolutionStatus =
     | "direct"
@@ -49,7 +66,7 @@ export type ResolvedMainModelRequest = {
     selectionModel: string;
     providerModel: string;
     provider: Provider;
-    reasoningEffort?: Gpt56ReasoningEffort;
+    reasoningEffort?: AssistantReasoningEffort;
     reasoningMode?: ReasoningMode;
     status: MainModelResolutionStatus;
 };
@@ -199,7 +216,7 @@ export function resolveTabularModel(id: unknown): string {
 
 type MainModelRequest = {
     model?: string;
-    reasoning_effort?: Gpt56ReasoningEffort;
+    reasoning_effort?: AssistantReasoningEffort;
     reasoning_mode?: ReasoningMode;
 };
 
@@ -226,10 +243,34 @@ function isGpt56MainModel(model: string): model is Gpt56MainModelId {
     return hasOwn(GPT_5_6_MAIN_MODEL_REGISTRY, model);
 }
 
+function isClaudeOpus5ReasoningEffort(
+    value: unknown,
+): value is ClaudeOpus5ReasoningEffort {
+    return (
+        typeof value === "string" &&
+        (CLAUDE_OPUS_5_REASONING_EFFORTS as readonly string[]).includes(value)
+    );
+}
+
 export function resolveMainModelRequest(
     request: MainModelRequest,
 ): ResolvedMainModelRequest {
     const requestedModel = request.model ?? null;
+
+    if (request.model === "claude-opus-5") {
+        return {
+            requestedModel,
+            selectionModel: request.model,
+            providerModel: request.model,
+            provider: "claude",
+            reasoningEffort: isClaudeOpus5ReasoningEffort(
+                request.reasoning_effort,
+            )
+                ? request.reasoning_effort
+                : "high",
+            status: "direct",
+        };
+    }
 
     if (request.model && NON_OPENAI_MAIN_MODELS.has(request.model)) {
         return {
@@ -332,10 +373,28 @@ export function parseMainModelRequest(
     }
 
     if (model && isNonOpenAiMainRequestModel(model)) {
+        if (model === "claude-opus-5") {
+            let reasoningEffort: ClaudeOpus5ReasoningEffort = "high";
+            if (hasOwn(raw, "reasoning_effort")) {
+                if (!isClaudeOpus5ReasoningEffort(raw.reasoning_effort)) {
+                    return parseFailure(
+                        `reasoning_effort must be one of: ${CLAUDE_OPUS_5_REASONING_EFFORTS.join(", ")}`,
+                    );
+                }
+                reasoningEffort = raw.reasoning_effort;
+            }
+            return {
+                ok: true,
+                value: resolveMainModelRequest({
+                    model,
+                    reasoning_effort: reasoningEffort,
+                }),
+            };
+        }
         return { ok: true, value: resolveMainModelRequest({ model }) };
     }
 
-    let reasoningEffort: Gpt56ReasoningEffort | undefined;
+    let reasoningEffort: AssistantReasoningEffort | undefined;
     if (hasOwn(raw, "reasoning_effort")) {
         if (
             typeof raw.reasoning_effort !== "string" ||
@@ -347,7 +406,7 @@ export function parseMainModelRequest(
                 `reasoning_effort must be one of: ${GPT_5_6_REASONING_EFFORTS.join(", ")}`,
             );
         }
-        reasoningEffort = raw.reasoning_effort as Gpt56ReasoningEffort;
+        reasoningEffort = raw.reasoning_effort as AssistantReasoningEffort;
     }
 
     let reasoningMode: ReasoningMode | undefined;

@@ -1,6 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
-import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages";
+import type {
+    ContentBlock,
+    ContentBlockParam,
+    MessageParam,
+    MessageStreamParams,
+    StopReason,
+    Tool,
+} from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
     StreamChatParams,
     StreamChatResult,
@@ -8,6 +15,10 @@ import type {
     NormalizedToolResult,
 } from "./types";
 import { throwIfAborted } from "./types";
+import {
+    CLAUDE_OPUS_5_REASONING_EFFORTS,
+    type ClaudeOpus5ReasoningEffort,
+} from "./models";
 import { toClaudeTools } from "./tools";
 import { captureAiGeneration } from "../posthog";
 import {
@@ -19,16 +30,6 @@ import {
 } from "../llmSpend";
 import { safeErrorMessage } from "../safeError";
 
-type ContentBlock =
-    | { type: "text"; text: string }
-    | { type: "tool_use"; id: string; name: string; input: unknown }
-    | { type: string; [key: string]: unknown };
-
-type NativeMessage = {
-    role: "user" | "assistant";
-    content: string | ContentBlock[];
-};
-
 const MAX_TOKENS = 16384;
 
 function client(override?: string | null): Anthropic {
@@ -36,10 +37,36 @@ function client(override?: string | null): Anthropic {
     return new Anthropic({ apiKey });
 }
 
+function resolveClaudeOpus5Effort(
+    reasoningEffort: StreamChatParams["reasoningEffort"],
+): ClaudeOpus5ReasoningEffort {
+    if (reasoningEffort === undefined) return "high";
+    if (
+        (CLAUDE_OPUS_5_REASONING_EFFORTS as readonly string[]).includes(
+            reasoningEffort,
+        )
+    ) {
+        return reasoningEffort as ClaudeOpus5ReasoningEffort;
+    }
+    throw new Error(
+        `Claude Opus 5 reasoning effort must be one of: ${CLAUDE_OPUS_5_REASONING_EFFORTS.join(", ")}`,
+    );
+}
+
 function thinkingOptions(
     model: string,
     enableThinking: boolean | undefined,
-): Record<string, unknown> {
+    reasoningEffort: StreamChatParams["reasoningEffort"],
+): Pick<MessageStreamParams, "thinking" | "output_config"> {
+    if (model === "claude-opus-5") {
+        return {
+            thinking: { type: "adaptive", display: "summarized" },
+            output_config: {
+                effort: resolveClaudeOpus5Effort(reasoningEffort),
+            },
+        };
+    }
+
     if (!enableThinking) return {};
 
     if (model === "claude-sonnet-5" || model === "claude-fable-5") {
@@ -61,9 +88,39 @@ function thinkingOptions(
     return {};
 }
 
+export type ClaudeStreamingRequestInput = {
+    model: string;
+    systemPrompt?: string;
+    messages: MessageParam[];
+    tools?: Tool[];
+    enableThinking?: boolean;
+    reasoningEffort?: StreamChatParams["reasoningEffort"];
+};
+
+/**
+ * Build the stable Messages API payload separately from I/O so model-specific
+ * tuning can be contract-tested without calling Anthropic.
+ */
+export function buildClaudeStreamingRequest(
+    input: ClaudeStreamingRequestInput,
+): MessageStreamParams {
+    return {
+        model: input.model,
+        system: input.systemPrompt,
+        messages: input.messages,
+        ...(input.tools?.length ? { tools: input.tools } : {}),
+        max_tokens: MAX_TOKENS,
+        ...thinkingOptions(
+            input.model,
+            input.enableThinking,
+            input.reasoningEffort,
+        ),
+    };
+}
+
 function toNativeMessages(
     messages: StreamChatParams["messages"],
-): NativeMessage[] {
+): MessageParam[] {
     return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
@@ -92,6 +149,132 @@ type RecordedClaudeUsage = {
     totalTokens: number;
     cost: LlmCost;
 };
+
+export type ClaudeIterationContent = {
+    text: string;
+    toolCalls: NormalizedToolCall[];
+    assistantBlocks: ContentBlock[];
+};
+
+/**
+ * Keep response blocks untouched so adaptive-thinking signatures remain valid
+ * when the assistant turn is replayed alongside tool results.
+ */
+export function extractClaudeIterationContent(
+    response: Anthropic.Message,
+): ClaudeIterationContent {
+    let text = "";
+    const toolCalls: NormalizedToolCall[] = [];
+
+    for (const block of response.content) {
+        if (block.type === "text") {
+            text += block.text;
+        } else if (block.type === "tool_use") {
+            toolCalls.push({
+                id: block.id,
+                name: block.name,
+                input: (block.input as Record<string, unknown>) ?? {},
+            });
+        }
+    }
+
+    return {
+        text,
+        toolCalls,
+        assistantBlocks: response.content,
+    };
+}
+
+export function buildClaudeToolContinuation(
+    assistantBlocks: ContentBlock[],
+    results: NormalizedToolResult[],
+): MessageParam[] {
+    return [
+        {
+            role: "assistant",
+            // Response blocks are the exact continuation payload Anthropic
+            // expects, including thinking text, redactions, and signatures.
+            content: assistantBlocks as unknown as ContentBlockParam[],
+        },
+        {
+            role: "user",
+            content: results.map((result) => ({
+                type: "tool_result",
+                tool_use_id: result.tool_use_id,
+                content: result.content,
+            })),
+        },
+    ];
+}
+
+export class ClaudeStopReasonError extends Error {
+    readonly code: "model_context_window_exceeded" | "pause_turn";
+    readonly provider = "anthropic";
+    readonly retryable: boolean;
+
+    constructor(
+        code: "model_context_window_exceeded" | "pause_turn",
+        message: string,
+        retryable: boolean,
+    ) {
+        super(message);
+        this.name = "ClaudeStopReasonError";
+        this.code = code;
+        this.retryable = retryable;
+    }
+}
+
+/**
+ * Max-token and refusal responses may contain useful text and are therefore
+ * terminal successes. Context exhaustion and an unhandled paused turn are
+ * surfaced as explicit, classifiable failures.
+ */
+export function assertUsableClaudeStopReason(
+    stopReason: StopReason | null,
+): void {
+    if (stopReason === "model_context_window_exceeded") {
+        throw new ClaudeStopReasonError(
+            stopReason,
+            "Claude model_context_window_exceeded: request too large for the selected model.",
+            false,
+        );
+    }
+    if (stopReason === "pause_turn") {
+        throw new ClaudeStopReasonError(
+            stopReason,
+            "Claude returned pause_turn before completing the response.",
+            true,
+        );
+    }
+}
+
+type ClaudeMessageStreamLike = {
+    abort(): void;
+    finalMessage(): Promise<Anthropic.Message>;
+};
+
+export async function waitForClaudeFinalMessage(
+    stream: ClaudeMessageStreamLike,
+    abortSignal?: AbortSignal,
+): Promise<Anthropic.Message> {
+    const abortStream = () => stream.abort();
+    if (abortSignal?.aborted) {
+        abortStream();
+        throwIfAborted(abortSignal);
+    }
+    abortSignal?.addEventListener("abort", abortStream, { once: true });
+
+    try {
+        return await stream.finalMessage();
+    } catch (error) {
+        if (abortSignal?.aborted) {
+            throwIfAborted(abortSignal);
+        }
+        throw error;
+    } finally {
+        abortSignal?.removeEventListener("abort", abortStream);
+    }
+}
 
 async function recordClaudeUsage(input: {
     model: string;
@@ -167,7 +350,7 @@ export async function streamClaude(
     const anthropic = client(apiKeys?.claude);
     const claudeTools = toClaudeTools(tools);
 
-    const messages: NativeMessage[] = toNativeMessages(params.messages);
+    const messages = toNativeMessages(params.messages);
     let fullText = "";
     const traceId = params.aiObservability?.traceId || randomUUID();
     const parentId = traceId;
@@ -177,21 +360,16 @@ export async function streamClaude(
         const generationId = randomUUID();
         const requestStartedAt = Date.now();
         let iterationText = "";
-        const stream = anthropic.messages.stream({
+        const request = buildClaudeStreamingRequest({
             model,
-            system: systemPrompt,
-            messages: messages as Anthropic.MessageParam[],
-            tools: claudeTools.length
-                ? (claudeTools as unknown as Tool[])
-                : undefined,
-            max_tokens: MAX_TOKENS,
-            ...thinkingOptions(model, enableThinking),
-            // Extended thinking requires temperature to be default (omitted).
-        }, { signal: params.abortSignal });
-
-        const abortStream = () => stream.abort();
-        params.abortSignal?.addEventListener("abort", abortStream, {
-            once: true,
+            systemPrompt,
+            messages,
+            tools: claudeTools as unknown as Tool[],
+            enableThinking,
+            reasoningEffort: params.reasoningEffort,
+        });
+        const stream = anthropic.messages.stream(request, {
+            signal: params.abortSignal,
         });
 
         let sawThinking = false;
@@ -206,46 +384,18 @@ export async function streamClaude(
             });
         }
 
-        let final: Awaited<ReturnType<typeof stream.finalMessage>>;
-        try {
-            final = await stream.finalMessage();
-        } catch (error) {
-            if (params.abortSignal?.aborted) {
-                throwIfAborted(params.abortSignal);
-            }
-            throw error;
-        } finally {
-            params.abortSignal?.removeEventListener("abort", abortStream);
-        }
+        const final = await waitForClaudeFinalMessage(
+            stream,
+            params.abortSignal,
+        );
         if (sawThinking) callbacks.onReasoningBlockEnd?.();
         throwIfAborted(params.abortSignal);
         const stopReason = final.stop_reason;
-        const assistantBlocks = final.content as ContentBlock[];
-
-        // Extract text content and tool_use calls from the final assistant
-        // message so we can accumulate text and drive the tool-call loop.
-        const toolCalls: NormalizedToolCall[] = [];
-        for (const block of assistantBlocks) {
-            if (block.type === "text") {
-                const txt = (block as { text: string }).text;
-                if (typeof txt === "string") {
-                    iterationText += txt;
-                    fullText += txt;
-                }
-            } else if (block.type === "tool_use") {
-                const tu = block as {
-                    id: string;
-                    name: string;
-                    input: unknown;
-                };
-                const call: NormalizedToolCall = {
-                    id: tu.id,
-                    name: tu.name,
-                    input: (tu.input as Record<string, unknown>) ?? {},
-                };
-                callbacks.onToolCallStart?.(call);
-                toolCalls.push(call);
-            }
+        const iteration = extractClaudeIterationContent(final);
+        iterationText += iteration.text;
+        fullText += iteration.text;
+        for (const call of iteration.toolCalls) {
+            callbacks.onToolCallStart?.(call);
         }
 
         const usage = await recordClaudeUsage({
@@ -280,31 +430,28 @@ export async function streamClaude(
             metadata: {
                 iteration: iter + 1,
                 tool_count: claudeTools.length,
-                function_call_count: toolCalls.length,
+                function_call_count: iteration.toolCalls.length,
                 ...params.aiObservability?.metadata,
             },
         });
 
-        if (stopReason !== "tool_use" || !toolCalls.length || !runTools) {
+        assertUsableClaudeStopReason(stopReason);
+
+        if (
+            stopReason !== "tool_use" ||
+            !iteration.toolCalls.length ||
+            !runTools
+        ) {
             break;
         }
 
         throwIfAborted(params.abortSignal);
-        const results = await runTools(toolCalls);
+        const results = await runTools(iteration.toolCalls);
         throwIfAborted(params.abortSignal);
 
-        // Record the assistant turn (preserving the original content blocks,
-        // which Claude requires on the follow-up) and the user turn that
-        // carries the tool_result blocks.
-        messages.push({ role: "assistant", content: assistantBlocks });
-        messages.push({
-            role: "user",
-            content: results.map((r) => ({
-                type: "tool_result",
-                tool_use_id: r.tool_use_id,
-                content: r.content,
-            })),
-        });
+        messages.push(
+            ...buildClaudeToolContinuation(iteration.assistantBlocks, results),
+        );
     }
 
     return { fullText };

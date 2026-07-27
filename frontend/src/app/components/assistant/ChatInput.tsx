@@ -25,7 +25,10 @@ import { ModelToggle } from "./ModelToggle";
 import { ReasoningEffortToggle } from "./ReasoningEffortToggle";
 import { ReasoningModeToggle } from "./ReasoningModeToggle";
 import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
-import { isGpt56Model } from "@/app/lib/assistantGenerationSettings";
+import {
+    assistantReasoningEffortsFor,
+    isGpt56Model,
+} from "@/app/lib/assistantGenerationSettings";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
@@ -70,6 +73,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     } | null>(null);
     const {
         state: generationSettings,
+        effectiveSettings,
         hydrated,
         selectModel,
         selectEffort,
@@ -77,10 +81,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     } = useAssistantGenerationSettings();
     const model = generationSettings.model;
     const generationControlsDisabled = !hydrated || isLoading;
-    const activeEffort =
-        generationSettings.reasoningMode === "pro"
-            ? generationSettings.proEffort
-            : generationSettings.standardEffort;
+    const isGptModel = isGpt56Model(model);
+    const allowedEfforts = assistantReasoningEffortsFor(
+        model,
+        generationSettings.reasoningMode,
+    );
     const { profile } = useUserProfile();
     const apiKeys = profile?.apiKeys;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -292,20 +297,20 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                 apiKeys={apiKeys}
                                 disabled={generationControlsDisabled}
                             />
-                            {isGpt56Model(model) && (
-                                <>
-                                    <ReasoningEffortToggle
-                                        value={activeEffort}
-                                        mode={generationSettings.reasoningMode}
-                                        onChange={selectEffort}
-                                        disabled={generationControlsDisabled}
-                                    />
-                                    <ReasoningModeToggle
-                                        value={generationSettings.reasoningMode}
-                                        onChange={setReasoningMode}
-                                        disabled={generationControlsDisabled}
-                                    />
-                                </>
+                            {allowedEfforts && (
+                                <ReasoningEffortToggle
+                                    value={effectiveSettings.reasoningEffort}
+                                    efforts={allowedEfforts}
+                                    onChange={selectEffort}
+                                    disabled={generationControlsDisabled}
+                                />
+                            )}
+                            {isGptModel && (
+                                <ReasoningModeToggle
+                                    value={generationSettings.reasoningMode}
+                                    onChange={setReasoningMode}
+                                    disabled={generationControlsDisabled}
+                                />
                             )}
                             <button
                                 type="button"

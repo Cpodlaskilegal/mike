@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ALLOWED_MAIN_MODEL_IDS,
   ASSISTANT_GENERATION_STORAGE_KEY,
+  CLAUDE_OPUS_5_REASONING_EFFORTS,
   CLAUDE_MAIN_MODEL_IDS,
   GEMINI_MAIN_MODEL_IDS,
   GPT56_MODEL_IDS,
@@ -11,9 +12,11 @@ import {
   PRO_REASONING_EFFORTS,
   activateAssistantSession,
   adoptCreatedAssistantChat,
+  assistantReasoningEffortsFor,
   defaultAssistantGenerationSettings,
   deserializeAssistantGenerationSettings,
   effectiveAssistantGenerationSettings,
+  isClaudeOpus5Model,
   isGpt56Model,
   persistAssistantGenerationSettings,
   resetAssistantSession,
@@ -26,6 +29,10 @@ import {
   assistantRequestContinuesAfterDisconnect,
   buildAssistantGenerationPayload,
 } from "../src/app/lib/assistantChatPayload";
+import {
+  MODELS,
+  TABULAR_MODELS,
+} from "../src/app/components/assistant/ModelToggle";
 
 test("exports the exact GPT-5.6 model and effort contracts", () => {
   assert.deepEqual(GPT56_MODEL_IDS, [
@@ -47,14 +54,22 @@ test("exports the exact GPT-5.6 model and effort contracts", () => {
     "xhigh",
     "max",
   ]);
+  assert.deepEqual(CLAUDE_OPUS_5_REASONING_EFFORTS, [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
   assert.equal(ASSISTANT_GENERATION_STORAGE_KEY, "docket.assistant-generation-settings.v1");
   assert.equal(LEGACY_ASSISTANT_MODEL_STORAGE_KEY, "docket.selectedModel");
 });
 
-test("keeps the existing Claude and Gemini main-model inventories", () => {
+test("adds Opus 5 to the Claude main-model inventory only", () => {
   assert.deepEqual(CLAUDE_MAIN_MODEL_IDS, [
     "claude-sonnet-5",
     "claude-fable-5",
+    "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -68,6 +83,42 @@ test("keeps the existing Claude and Gemini main-model inventories", () => {
     ...CLAUDE_MAIN_MODEL_IDS,
     ...GEMINI_MAIN_MODEL_IDS,
   ]));
+  assert.deepEqual(
+    MODELS.map(({ id }) => id),
+    [
+      ...GPT56_MODEL_IDS,
+      ...CLAUDE_MAIN_MODEL_IDS,
+      ...GEMINI_MAIN_MODEL_IDS,
+    ],
+  );
+  assert.equal(
+    TABULAR_MODELS.some(({ id }) => id === "claude-opus-5"),
+    false,
+  );
+});
+
+test("exposes exact provider-specific efforts and keeps GPT Pro off Opus 5", () => {
+  assert.deepEqual(
+    assistantReasoningEffortsFor("claude-opus-5", "standard"),
+    ["low", "medium", "high", "xhigh", "max"],
+  );
+  assert.deepEqual(
+    assistantReasoningEffortsFor("claude-opus-5", "pro"),
+    ["low", "medium", "high", "xhigh", "max"],
+  );
+  assert.deepEqual(
+    assistantReasoningEffortsFor("gpt-5.6-sol", "standard"),
+    ["none", "low", "medium", "high", "xhigh", "max"],
+  );
+  assert.deepEqual(
+    assistantReasoningEffortsFor("gpt-5.6-sol", "pro"),
+    ["medium", "high", "xhigh", "max"],
+  );
+  assert.equal(
+    assistantReasoningEffortsFor("claude-opus-4-8", "standard"),
+    null,
+  );
+  assert.equal(isGpt56Model("claude-opus-5"), false);
 });
 
 test("migrates retired Mythos selections to account-accessible Sonnet 5", () => {
@@ -88,22 +139,24 @@ test("migrates retired Mythos selections to account-accessible Sonnet 5", () => 
   }
 });
 
-test("defaults to Sol, Medium, and Standard", () => {
+test("defaults to Sol, GPT Medium, Claude High, and Standard", () => {
   assert.deepEqual(defaultAssistantGenerationSettings(), {
     model: "gpt-5.6-sol",
     standardEffort: "medium",
     proEffort: "medium",
+    claudeEffort: "high",
     reasoningMode: "standard",
     sessionKey: null,
   });
 });
 
-test("storage round-trip persists only model and Standard effort", () => {
+test("storage round-trip persists model plus independent GPT and Claude efforts", () => {
   const state = {
     ...defaultAssistantGenerationSettings(),
     model: "gpt-5.6-terra",
     standardEffort: "low" as const,
     proEffort: "max" as const,
+    claudeEffort: "xhigh" as const,
     reasoningMode: "pro" as const,
     sessionKey: "assistant:123",
   };
@@ -113,6 +166,7 @@ test("storage round-trip persists only model and Standard effort", () => {
     version: 1,
     model: "gpt-5.6-terra",
     standardEffort: "low",
+    claudeEffort: "xhigh",
   });
   assert.equal(serialized.includes("proEffort"), false);
   assert.equal(serialized.includes("reasoningMode"), false);
@@ -126,10 +180,31 @@ test("storage round-trip persists only model and Standard effort", () => {
       model: "gpt-5.6-terra",
       standardEffort: "low",
       proEffort: "medium",
+      claudeEffort: "xhigh",
       reasoningMode: "standard",
       sessionKey: null,
     },
   );
+});
+
+test("version-1 snapshots without a Claude effort hydrate Opus 5 at High", () => {
+  const migrated = deserializeAssistantGenerationSettings({
+    versioned: JSON.stringify({
+      version: 1,
+      model: "claude-opus-5",
+      standardEffort: "low",
+    }),
+    legacy: null,
+  });
+
+  assert.equal(migrated.model, "claude-opus-5");
+  assert.equal(migrated.standardEffort, "low");
+  assert.equal(migrated.claudeEffort, "high");
+  assert.deepEqual(effectiveAssistantGenerationSettings(migrated), {
+    model: "claude-opus-5",
+    reasoningEffort: "high",
+    reasoningMode: "standard",
+  });
 });
 
 test("missing, malformed, or unknown storage safely returns the default", () => {
@@ -162,6 +237,7 @@ test("a valid versioned record wins over a conflicting legacy value", () => {
       model: "gpt-5.6-luna",
       standardEffort: "xhigh",
       proEffort: "xhigh",
+      claudeEffort: "high",
       reasoningMode: "standard",
       sessionKey: null,
     },
@@ -320,6 +396,60 @@ test("switching to Claude or Gemini disables Pro and returning restores Standard
   }
 });
 
+test("switching between GPT and Opus 5 preserves independent effort preferences", () => {
+  const gpt = selectAssistantEffort(
+    defaultAssistantGenerationSettings(),
+    "xhigh",
+  );
+  const opus = selectAssistantModel(gpt, "claude-opus-5");
+
+  assert.equal(isClaudeOpus5Model(opus.model), true);
+  assert.equal(opus.reasoningMode, "standard");
+  assert.equal(opus.standardEffort, "xhigh");
+  assert.equal(opus.claudeEffort, "high");
+
+  const editedOpus = selectAssistantEffort(opus, "max");
+  assert.equal(editedOpus.standardEffort, "xhigh");
+  assert.equal(editedOpus.claudeEffort, "max");
+  assert.deepEqual(effectiveAssistantGenerationSettings(editedOpus), {
+    model: "claude-opus-5",
+    reasoningEffort: "max",
+    reasoningMode: "standard",
+  });
+
+  const returnedToGpt = selectAssistantModel(editedOpus, "gpt-5.6-luna");
+  assert.equal(returnedToGpt.standardEffort, "xhigh");
+  assert.equal(returnedToGpt.claudeEffort, "max");
+  assert.deepEqual(effectiveAssistantGenerationSettings(returnedToGpt), {
+    model: "gpt-5.6-luna",
+    reasoningEffort: "xhigh",
+    reasoningMode: "standard",
+  });
+
+  const rehydrated = deserializeAssistantGenerationSettings({
+    versioned: serializeAssistantGenerationSettings(returnedToGpt),
+    legacy: null,
+  });
+  assert.equal(rehydrated.standardEffort, "xhigh");
+  assert.equal(rehydrated.claudeEffort, "max");
+  assert.equal(
+    effectiveAssistantGenerationSettings(
+      selectAssistantModel(rehydrated, "claude-opus-5"),
+    ).reasoningEffort,
+    "max",
+  );
+});
+
+test("Opus 5 never accepts GPT-only None as its effort preference", () => {
+  const opus = selectAssistantModel(
+    defaultAssistantGenerationSettings(),
+    "claude-opus-5",
+  );
+  const unchanged = selectAssistantEffort(opus, "none");
+
+  assert.equal(unchanged.claudeEffort, "high");
+});
+
 test("resetting a session changes only mode and keeps persisted preferences", () => {
   const state = {
     ...setAssistantReasoningMode(
@@ -447,7 +577,18 @@ test("a recreated page state is Standard even with persisted model and effort", 
   assert.equal(hydrated.sessionKey, null);
 });
 
-test("builds exact GPT generation fields and omits them for other providers", () => {
+test("builds exact provider-specific generation fields", () => {
+  assert.deepEqual(
+    buildAssistantGenerationPayload({
+      model: "claude-opus-5",
+      reasoningEffort: "xhigh",
+      reasoningMode: "standard",
+    }),
+    {
+      model: "claude-opus-5",
+      reasoning_effort: "xhigh",
+    },
+  );
   assert.deepEqual(
     buildAssistantGenerationPayload({
       model: "gpt-5.6-terra",
@@ -471,6 +612,13 @@ test("builds exact GPT generation fields and omits them for other providers", ()
 });
 
 test("knows Pro and Max requests survive a disconnect before stream_start", () => {
+  assert.equal(
+    assistantRequestContinuesAfterDisconnect({
+      model: "claude-opus-5",
+      reasoning_effort: "max",
+    }),
+    true,
+  );
   assert.equal(
     assistantRequestContinuesAfterDisconnect({
       model: "gpt-5.6-sol",

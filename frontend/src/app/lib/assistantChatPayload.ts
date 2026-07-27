@@ -1,18 +1,30 @@
 import {
+    isClaudeOpus5Model,
+    isClaudeOpus5ReasoningEffort,
     isGpt56Model,
+    type AssistantReasoningEffort,
     type EffectiveAssistantGenerationSettings,
-    type Gpt56ReasoningEffort,
 } from "./assistantGenerationSettings";
 
 export type AssistantGenerationPayload = {
     model: string;
-    reasoning_effort?: Gpt56ReasoningEffort;
+    reasoning_effort?: AssistantReasoningEffort;
     reasoning_mode?: "standard" | "pro";
 };
 
 export function buildAssistantGenerationPayload(
     settings: EffectiveAssistantGenerationSettings,
 ): AssistantGenerationPayload {
+    if (isClaudeOpus5Model(settings.model)) {
+        return {
+            model: settings.model,
+            reasoning_effort: isClaudeOpus5ReasoningEffort(
+                settings.reasoningEffort,
+            )
+                ? settings.reasoningEffort
+                : "high",
+        };
+    }
     if (!isGpt56Model(settings.model)) return { model: settings.model };
     const effort =
         settings.reasoningMode === "pro" &&

@@ -40,10 +40,33 @@ function errorText(err: unknown): string {
     }
 }
 
+function structuredErrorType(err: unknown): string | null {
+    if (!err || typeof err !== "object") return null;
+    const candidate = err as {
+        type?: unknown;
+        error?: unknown;
+    };
+    if (typeof candidate.type === "string") return candidate.type;
+    if (!candidate.error || typeof candidate.error !== "object") return null;
+
+    const responseBody = candidate.error as {
+        type?: unknown;
+        error?: unknown;
+    };
+    if (typeof responseBody.type === "string") return responseBody.type;
+    if (!responseBody.error || typeof responseBody.error !== "object") {
+        return null;
+    }
+
+    const nestedError = responseBody.error as { type?: unknown };
+    return typeof nestedError.type === "string" ? nestedError.type : null;
+}
+
 export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     const status = errorStatus(err);
     const text = errorText(err);
     const lower = text.toLowerCase();
+    const errorType = structuredErrorType(err)?.toLowerCase() ?? null;
 
     if (lower.includes("abort") || lower.includes("cancel")) {
         return {
@@ -72,6 +95,8 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
 
     if (
         lower.includes("model_not_found") ||
+        errorType === "not_found_error" ||
+        lower.includes("not_found_error") ||
         lower.includes("does not have access") ||
         lower.includes("not have access to this model") ||
         lower.includes("unsupported model") ||
@@ -103,6 +128,8 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     }
 
     if (
+        errorType === "model_context_window_exceeded" ||
+        lower.includes("model_context_window_exceeded") ||
         lower.includes("context length") ||
         lower.includes("maximum context") ||
         lower.includes("token limit") ||

@@ -111,6 +111,25 @@ test("calculates Claude cache reads separately from standard input", async () =>
   assert.equal(result.totalCostNanos, 18_150_000_000n);
 });
 
+test("prices every Opus 5 token category at its exact per-million rate", async () => {
+  const spend = await loadSpend();
+  const result = spend.calculateLlmCostNanos({
+    provider: "claude",
+    model: "claude-opus-5",
+    inputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheCreation5mTokens: 1_000_000,
+    cacheCreation1hTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 5_000_000_000n);
+  assert.equal(result.cachedInputCostNanos, 16_750_000_000n);
+  assert.equal(result.outputCostNanos, 25_000_000_000n);
+  assert.equal(result.totalCostNanos, 46_750_000_000n);
+});
+
 test("applies the dated Claude Sonnet 5 introductory and standard prices", async () => {
   const spend = await loadSpend();
   const input = {
