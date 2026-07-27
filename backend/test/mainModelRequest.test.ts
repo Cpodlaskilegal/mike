@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+    ASSISTANT_REASONING_EFFORTS,
     CLAUDE_MAIN_MODELS,
+    CLAUDE_OPUS_5_REASONING_EFFORTS,
     DEFAULT_MAIN_MODEL,
     DEFAULT_TABULAR_MODEL,
     DEFAULT_TITLE_MODEL,
@@ -50,12 +52,24 @@ test("defines the canonical GPT-5.6 main-model contract", () => {
         "xhigh",
         "max",
     ]);
+    assert.deepEqual(
+        GPT_5_6_REASONING_EFFORTS,
+        ASSISTANT_REASONING_EFFORTS,
+    );
+    assert.deepEqual(CLAUDE_OPUS_5_REASONING_EFFORTS, [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]);
 });
 
 test("defines only the production-account-accessible Claude main models", () => {
     assert.deepEqual(CLAUDE_MAIN_MODELS, [
         "claude-sonnet-5",
         "claude-fable-5",
+        "claude-opus-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
@@ -99,6 +113,80 @@ test("preserves each canonical GPT-5.6 provider slug and valid effort", () => {
             },
         );
     }
+});
+
+test("resolves Opus 5 directly with High by default and every supported effort", () => {
+    assert.deepEqual(resolveMainModelRequest({ model: "claude-opus-5" }), {
+        requestedModel: "claude-opus-5",
+        selectionModel: "claude-opus-5",
+        providerModel: "claude-opus-5",
+        provider: "claude",
+        reasoningEffort: "high",
+        status: "direct",
+    });
+
+    for (const effort of CLAUDE_OPUS_5_REASONING_EFFORTS) {
+        assert.deepEqual(
+            parseMainModelRequest({
+                model: "claude-opus-5",
+                reasoning_effort: effort,
+                reasoning_mode: { ignored: true },
+            }),
+            {
+                ok: true,
+                value: {
+                    requestedModel: "claude-opus-5",
+                    selectionModel: "claude-opus-5",
+                    providerModel: "claude-opus-5",
+                    provider: "claude",
+                    reasoningEffort: effort,
+                    status: "direct",
+                },
+            },
+        );
+    }
+});
+
+test("rejects unsupported Opus 5 effort values while ignoring GPT-only mode", () => {
+    for (const reasoning_effort of [
+        "none",
+        "minimal",
+        "turbo",
+        null,
+        9,
+        {},
+    ]) {
+        const result = parseMainModelRequest({
+            model: "claude-opus-5",
+            reasoning_effort,
+            reasoning_mode: "pro",
+        });
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+            assert.equal(
+                result.detail,
+                "reasoning_effort must be one of: low, medium, high, xhigh, max",
+            );
+        }
+    }
+
+    assert.deepEqual(
+        parseMainModelRequest({
+            model: "claude-opus-5",
+            reasoning_mode: "invalid-but-ignored",
+        }),
+        {
+            ok: true,
+            value: {
+                requestedModel: "claude-opus-5",
+                selectionModel: "claude-opus-5",
+                providerModel: "claude-opus-5",
+                provider: "claude",
+                reasoningEffort: "high",
+                status: "direct",
+            },
+        },
+    );
 });
 
 test("clamps Pro None and Low requests to Medium", () => {
@@ -293,6 +381,8 @@ test("keeps main-only GPT-5.6 IDs out of tabular model resolution", () => {
 
     assert.equal(isTabularModelId("gpt-5.6-sol"), false);
     assert.equal(resolveTabularModel("gpt-5.6-sol"), DEFAULT_TABULAR_MODEL);
+    assert.equal(isTabularModelId("claude-opus-5"), false);
+    assert.equal(resolveTabularModel("claude-opus-5"), DEFAULT_TABULAR_MODEL);
 });
 
 test("main chat routes resolve the raw request before persistence and SSE", () => {

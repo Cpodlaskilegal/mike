@@ -84,6 +84,11 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("1"),
     output: usdPerMillion("50"),
   },
+  "claude-opus-5": {
+    input: usdPerMillion("5"),
+    cachedInput: usdPerMillion("0.5"),
+    output: usdPerMillion("25"),
+  },
   "claude-opus-4-8": {
     input: usdPerMillion("5"),
     cachedInput: usdPerMillion("0.5"),

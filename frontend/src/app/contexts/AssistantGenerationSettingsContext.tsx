@@ -22,16 +22,16 @@ import {
     selectAssistantEffort,
     selectAssistantModel,
     setAssistantReasoningMode,
+    type AssistantReasoningEffort,
     type AssistantGenerationSettingsState,
     type AssistantReasoningMode,
     type EffectiveAssistantGenerationSettings,
-    type Gpt56ReasoningEffort,
 } from "@/app/lib/assistantGenerationSettings";
 
 type SettingsAction =
     | { type: "hydrate"; state: AssistantGenerationSettingsState }
     | { type: "select_model"; model: string }
-    | { type: "select_effort"; effort: Gpt56ReasoningEffort }
+    | { type: "select_effort"; effort: AssistantReasoningEffort }
     | { type: "set_mode"; mode: AssistantReasoningMode }
     | { type: "activate_session"; sessionKey: string }
     | { type: "adopt_created_chat"; sessionKey: string };
@@ -61,7 +61,7 @@ type AssistantGenerationSettingsContextValue = {
     effectiveSettings: EffectiveAssistantGenerationSettings;
     hydrated: boolean;
     selectModel: (model: string) => void;
-    selectEffort: (effort: Gpt56ReasoningEffort) => void;
+    selectEffort: (effort: AssistantReasoningEffort) => void;
     setReasoningMode: (mode: AssistantReasoningMode) => void;
     activateSession: (sessionKey: string) => void;
     adoptCreatedChat: (sessionKey: string) => void;
@@ -116,7 +116,7 @@ export function AssistantGenerationSettingsProvider({
     const selectModel = useCallback((model: string) => {
         dispatch({ type: "select_model", model });
     }, []);
-    const selectEffort = useCallback((effort: Gpt56ReasoningEffort) => {
+    const selectEffort = useCallback((effort: AssistantReasoningEffort) => {
         dispatch({ type: "select_effort", effort });
     }, []);
     const setReasoningMode = useCallback((mode: AssistantReasoningMode) => {

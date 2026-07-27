@@ -20,9 +20,18 @@ export const PRO_REASONING_EFFORTS = [
     "max",
 ] as const;
 
+export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+] as const;
+
 export const CLAUDE_MAIN_MODEL_IDS = [
     "claude-sonnet-5",
     "claude-fable-5",
+    "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -44,22 +53,26 @@ export const ASSISTANT_GENERATION_STORAGE_KEY =
 export const LEGACY_ASSISTANT_MODEL_STORAGE_KEY = "docket.selectedModel";
 
 export type Gpt56ModelId = (typeof GPT56_MODEL_IDS)[number];
-export type Gpt56ReasoningEffort =
+export type AssistantReasoningEffort =
     (typeof GPT56_REASONING_EFFORTS)[number];
+export type Gpt56ReasoningEffort = AssistantReasoningEffort;
 export type ProReasoningEffort = (typeof PRO_REASONING_EFFORTS)[number];
+export type ClaudeOpus5ReasoningEffort =
+    (typeof CLAUDE_OPUS_5_REASONING_EFFORTS)[number];
 export type AssistantReasoningMode = "standard" | "pro";
 
 export type AssistantGenerationSettingsState = {
     model: string;
     standardEffort: Gpt56ReasoningEffort;
     proEffort: ProReasoningEffort;
+    claudeEffort: ClaudeOpus5ReasoningEffort;
     reasoningMode: AssistantReasoningMode;
     sessionKey: string | null;
 };
 
 export type EffectiveAssistantGenerationSettings = {
     model: string;
-    reasoningEffort: Gpt56ReasoningEffort;
+    reasoningEffort: AssistantReasoningEffort;
     reasoningMode: AssistantReasoningMode;
 };
 
@@ -70,9 +83,13 @@ export type AssistantGenerationStorageSnapshot = {
 
 const DEFAULT_MODEL: Gpt56ModelId = "gpt-5.6-sol";
 const DEFAULT_EFFORT: Gpt56ReasoningEffort = "medium";
+const DEFAULT_CLAUDE_EFFORT: ClaudeOpus5ReasoningEffort = "high";
 const GPT56_MODEL_SET = new Set<string>(GPT56_MODEL_IDS);
 const EFFORT_SET = new Set<string>(GPT56_REASONING_EFFORTS);
 const PRO_EFFORT_SET = new Set<string>(PRO_REASONING_EFFORTS);
+const CLAUDE_OPUS_5_EFFORT_SET = new Set<string>(
+    CLAUDE_OPUS_5_REASONING_EFFORTS,
+);
 
 const LEGACY_GPT_SETTINGS: Record<
     string,
@@ -96,6 +113,15 @@ function isProReasoningEffort(value: unknown): value is ProReasoningEffort {
     return typeof value === "string" && PRO_EFFORT_SET.has(value);
 }
 
+export function isClaudeOpus5ReasoningEffort(
+    value: unknown,
+): value is ClaudeOpus5ReasoningEffort {
+    return (
+        typeof value === "string" &&
+        CLAUDE_OPUS_5_EFFORT_SET.has(value)
+    );
+}
+
 function isAllowedMainModel(value: unknown): value is string {
     return typeof value === "string" && ALLOWED_MAIN_MODEL_IDS.has(value);
 }
@@ -115,11 +141,13 @@ function proEffortFor(
 function hydratedState(
     model: string,
     standardEffort: Gpt56ReasoningEffort,
+    claudeEffort: ClaudeOpus5ReasoningEffort = DEFAULT_CLAUDE_EFFORT,
 ): AssistantGenerationSettingsState {
     return {
         model,
         standardEffort,
         proEffort: proEffortFor(standardEffort),
+        claudeEffort,
         reasoningMode: "standard",
         sessionKey: null,
     };
@@ -127,6 +155,25 @@ function hydratedState(
 
 export function isGpt56Model(model: unknown): model is Gpt56ModelId {
     return typeof model === "string" && GPT56_MODEL_SET.has(model);
+}
+
+export function isClaudeOpus5Model(
+    model: unknown,
+): model is "claude-opus-5" {
+    return model === "claude-opus-5";
+}
+
+export function assistantReasoningEffortsFor(
+    model: unknown,
+    mode: AssistantReasoningMode,
+): readonly AssistantReasoningEffort[] | null {
+    if (isClaudeOpus5Model(model)) {
+        return CLAUDE_OPUS_5_REASONING_EFFORTS;
+    }
+    if (!isGpt56Model(model)) return null;
+    return mode === "pro"
+        ? PRO_REASONING_EFFORTS
+        : GPT56_REASONING_EFFORTS;
 }
 
 export function defaultAssistantGenerationSettings(): AssistantGenerationSettingsState {
@@ -151,7 +198,12 @@ function parseVersionedSettings(
         ) {
             return null;
         }
-        return hydratedState(model, record.standardEffort);
+        const claudeEffort = isClaudeOpus5ReasoningEffort(
+            record.claudeEffort,
+        )
+            ? record.claudeEffort
+            : DEFAULT_CLAUDE_EFFORT;
+        return hydratedState(model, record.standardEffort, claudeEffort);
     } catch {
         return null;
     }
@@ -188,7 +240,15 @@ export function serializeAssistantGenerationSettings(
     const standardEffort = isReasoningEffort(state.standardEffort)
         ? state.standardEffort
         : DEFAULT_EFFORT;
-    return JSON.stringify({ version: 1, model, standardEffort });
+    const claudeEffort = isClaudeOpus5ReasoningEffort(state.claudeEffort)
+        ? state.claudeEffort
+        : DEFAULT_CLAUDE_EFFORT;
+    return JSON.stringify({
+        version: 1,
+        model,
+        standardEffort,
+        claudeEffort,
+    });
 }
 
 export type AssistantGenerationSettingsStorage = {
@@ -234,8 +294,16 @@ export function selectAssistantModel(
 
 export function selectAssistantEffort(
     state: AssistantGenerationSettingsState,
-    effort: Gpt56ReasoningEffort,
+    effort: AssistantReasoningEffort,
 ): AssistantGenerationSettingsState {
+    if (isClaudeOpus5Model(state.model)) {
+        return {
+            ...state,
+            claudeEffort: isClaudeOpus5ReasoningEffort(effort)
+                ? effort
+                : state.claudeEffort,
+        };
+    }
     if (state.reasoningMode === "pro") {
         return {
             ...state,
@@ -298,6 +366,13 @@ export function effectiveAssistantGenerationSettings(
     state: AssistantGenerationSettingsState,
 ): EffectiveAssistantGenerationSettings {
     const isPro = state.reasoningMode === "pro" && isGpt56Model(state.model);
+    if (isClaudeOpus5Model(state.model)) {
+        return {
+            model: state.model,
+            reasoningEffort: state.claudeEffort,
+            reasoningMode: "standard",
+        };
+    }
     return {
         model: state.model,
         reasoningEffort: isPro ? state.proEffort : state.standardEffort,
