@@ -14,7 +14,12 @@ import type {
     NormalizedToolCall,
     NormalizedToolResult,
 } from "./types";
-import { throwIfAborted } from "./types";
+import {
+    assertFinalSynthesisResult,
+    buildToolLoopIteration,
+    normalizeMaxToolIterations,
+    throwIfAborted,
+} from "./types";
 import {
     CLAUDE_OPUS_5_REASONING_EFFORTS,
     type ClaudeOpus5ReasoningEffort,
@@ -346,7 +351,9 @@ export async function streamClaude(
         apiKeys,
         enableThinking,
     } = params;
-    const maxIter = params.maxIterations ?? 10;
+    const maxToolIterations = normalizeMaxToolIterations(
+        params.maxIterations,
+    );
     const anthropic = client(apiKeys?.claude);
     const claudeTools = toClaudeTools(tools);
 
@@ -355,16 +362,27 @@ export async function streamClaude(
     const traceId = params.aiObservability?.traceId || randomUUID();
     const parentId = traceId;
 
-    for (let iter = 0; iter < maxIter; iter++) {
+    for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
+        const iterationPlan = buildToolLoopIteration(
+            iter,
+            maxToolIterations,
+            claudeTools,
+            systemPrompt,
+        );
+        const {
+            finalSynthesis,
+            tools: iterationTools,
+            systemPrompt: iterationSystemPrompt,
+        } = iterationPlan;
         const generationId = randomUUID();
         const requestStartedAt = Date.now();
         let iterationText = "";
         const request = buildClaudeStreamingRequest({
             model,
-            systemPrompt,
+            systemPrompt: iterationSystemPrompt,
             messages,
-            tools: claudeTools as unknown as Tool[],
+            tools: iterationTools as unknown as Tool[],
             enableThinking,
             reasoningEffort: params.reasoningEffort,
         });
@@ -417,7 +435,10 @@ export async function streamClaude(
             provider: "anthropic",
             stream: true,
             latencySeconds: elapsedSeconds(requestStartedAt),
-            input: aiInputMessages(systemPrompt, params.messages),
+            input: aiInputMessages(
+                iterationSystemPrompt,
+                params.messages,
+            ),
             output: iterationText,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
@@ -429,20 +450,28 @@ export async function streamClaude(
             totalCostUsd: spendUsd(usage.cost.totalCostNanos),
             metadata: {
                 iteration: iter + 1,
-                tool_count: claudeTools.length,
+                tool_count: iterationTools.length,
                 function_call_count: iteration.toolCalls.length,
+                final_synthesis: finalSynthesis,
                 ...params.aiObservability?.metadata,
             },
         });
 
         assertUsableClaudeStopReason(stopReason);
 
-        if (
-            stopReason !== "tool_use" ||
-            !iteration.toolCalls.length ||
-            !runTools
-        ) {
+        if (finalSynthesis) {
+            assertFinalSynthesisResult("claude", {
+                text: iteration.text,
+                toolCallCount: iteration.toolCalls.length,
+                providerResponseId: final.id,
+            });
             break;
+        }
+        if (stopReason !== "tool_use" || !iteration.toolCalls.length) break;
+        if (!runTools) {
+            throw new Error(
+                "Claude requested a tool, but no tool executor is available.",
+            );
         }
 
         throwIfAborted(params.abortSignal);

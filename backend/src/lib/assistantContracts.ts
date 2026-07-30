@@ -384,6 +384,60 @@ export function normalizeAskInputsEvent(
     return items.length ? { type: "ask_inputs", request_id: id, items } : null;
 }
 
+export class AssistantIncompleteResponseError extends Error {
+    readonly retryable = true;
+
+    constructor() {
+        super(
+            "The assistant completed without producing a visible final answer.",
+        );
+        this.name = "ASSISTANT_INCOMPLETE_RESPONSE";
+    }
+}
+
+/**
+ * A normal completion must contain visible answer text. Ask Inputs and a
+ * pending MCP approval are intentional pauses whose cards are the visible
+ * outcome, so those two event-only states remain valid.
+ */
+export function hasAssistantCompletionOutcome(events: unknown): boolean {
+    if (!Array.isArray(events)) return false;
+    return events.some((raw) => {
+        if (!isRecord(raw)) return false;
+        if (
+            raw.type === "content" &&
+            typeof raw.text === "string" &&
+            raw.text.trim().length > 0
+        ) {
+            return true;
+        }
+        if (
+            raw.type === "ask_inputs" &&
+            normalizeAskInputsEvent(
+                raw,
+                typeof raw.request_id === "string"
+                    ? raw.request_id
+                    : undefined,
+            )
+        ) {
+            return true;
+        }
+        return (
+            raw.type === "mcp_tool_call" &&
+            raw.status === "approval_required" &&
+            raw.approval_status === "pending" &&
+            typeof raw.approval_id === "string" &&
+            raw.approval_id.trim().length > 0
+        );
+    });
+}
+
+export function assertAssistantCompletionOutcome(events: unknown): void {
+    if (!hasAssistantCompletionOutcome(events)) {
+        throw new AssistantIncompleteResponseError();
+    }
+}
+
 /** Return the latest request with no matching response event after it. */
 export function findPendingAskInputsEvent(events: unknown): AskInputsEvent | null {
     if (!Array.isArray(events)) return null;

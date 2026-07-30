@@ -227,3 +227,79 @@ export type StreamChatParams = {
 export type StreamChatResult = {
     fullText: string;
 };
+
+export const DEFAULT_MAX_TOOL_ITERATIONS = 10;
+
+export const FINAL_SYNTHESIS_INSTRUCTION = `Tool use is no longer available for this response. Using only the information already gathered, provide the complete final answer now. Follow every original citation and output-format requirement. Do not request or claim to run another tool. If the available evidence is insufficient, state that limitation plainly instead of omitting the answer.`;
+
+export function normalizeMaxToolIterations(
+    value: number | undefined,
+): number {
+    if (value === undefined) return DEFAULT_MAX_TOOL_ITERATIONS;
+    if (!Number.isFinite(value)) return DEFAULT_MAX_TOOL_ITERATIONS;
+    return Math.max(0, Math.floor(value));
+}
+
+export function finalSynthesisSystemPrompt(systemPrompt: string): string {
+    return `${systemPrompt}\n\nFINAL RESPONSE REQUIRED:\n${FINAL_SYNTHESIS_INSTRUCTION}`;
+}
+
+export function buildToolLoopIteration<T>(
+    iteration: number,
+    maxToolIterations: number,
+    tools: T[],
+    systemPrompt: string,
+): {
+    finalSynthesis: boolean;
+    tools: T[];
+    systemPrompt: string;
+} {
+    const finalSynthesis = iteration === maxToolIterations;
+    return {
+        finalSynthesis,
+        tools: finalSynthesis ? [] : tools,
+        systemPrompt: finalSynthesis
+            ? finalSynthesisSystemPrompt(systemPrompt)
+            : systemPrompt,
+    };
+}
+
+export class ToolIterationLimitError extends Error {
+    readonly provider: Provider;
+    readonly providerResponseId: string | null;
+    readonly providerRequestId: string | null;
+    readonly retryable = true;
+
+    constructor(
+        provider: Provider,
+        identifiers: {
+            providerResponseId?: string | null;
+            providerRequestId?: string | null;
+        } = {},
+    ) {
+        super(
+            "The assistant reached its tool iteration limit without producing a final answer.",
+        );
+        this.name = "TOOL_ITERATION_LIMIT";
+        this.provider = provider;
+        this.providerResponseId = identifiers.providerResponseId ?? null;
+        this.providerRequestId = identifiers.providerRequestId ?? null;
+    }
+}
+
+export function assertFinalSynthesisResult(
+    provider: Provider,
+    result: {
+        text: string;
+        toolCallCount: number;
+        providerResponseId?: string | null;
+        providerRequestId?: string | null;
+    },
+): void {
+    if (result.toolCallCount > 0 || !result.text.trim()) {
+        throw new ToolIterationLimitError(provider, {
+            providerResponseId: result.providerResponseId,
+            providerRequestId: result.providerRequestId,
+        });
+    }
+}

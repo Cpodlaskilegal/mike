@@ -8,6 +8,7 @@ export type ChatStreamErrorCode =
     | "network"
     | "timeout"
     | "tool_failed"
+    | "incomplete_response"
     | "unknown";
 
 export type ChatStreamErrorPayload = {
@@ -40,6 +41,12 @@ function errorText(err: unknown): string {
     }
 }
 
+function errorName(err: unknown): string | null {
+    if (!err || typeof err !== "object") return null;
+    const name = (err as { name?: unknown }).name;
+    return typeof name === "string" ? name : null;
+}
+
 function structuredErrorType(err: unknown): string | null {
     if (!err || typeof err !== "object") return null;
     const candidate = err as {
@@ -66,6 +73,7 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     const status = errorStatus(err);
     const text = errorText(err);
     const lower = text.toLowerCase();
+    const name = errorName(err);
     const errorType = structuredErrorType(err)?.toLowerCase() ?? null;
 
     if (lower.includes("abort") || lower.includes("cancel")) {
@@ -90,6 +98,32 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
             retryable: false,
             message:
                 "The selected model provider is missing or rejecting its API key. Check Account > Models or the server environment variables, then try again.",
+        };
+    }
+
+    if (
+        name === "TOOL_ITERATION_LIMIT" ||
+        name === "OPENAI_TOOL_ITERATION_LIMIT"
+    ) {
+        return {
+            type: "error",
+            code: "incomplete_response",
+            retryable: true,
+            message:
+                "Docket reached its research-step limit before writing the final answer. Retry the request.",
+        };
+    }
+
+    if (
+        name === "ASSISTANT_INCOMPLETE_RESPONSE" ||
+        name === "OPENAI_EMPTY_RESPONSE"
+    ) {
+        return {
+            type: "error",
+            code: "incomplete_response",
+            retryable: true,
+            message:
+                "Docket did not produce a visible final answer. Retry the request.",
         };
     }
 

@@ -27,6 +27,7 @@ import { chatStreamErrorLine, toChatStreamError } from "../lib/chatErrors";
 import { safeErrorLog } from "../lib/safeError";
 import { isAdminUser } from "../lib/userRoles";
 import {
+  assertAssistantCompletionOutcome,
   consumeAskInputsResponse,
   createCitationSseBridge,
   extractRichCitations,
@@ -1249,9 +1250,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
       signal: streamAbort.signal,
     });
     throwIfAborted(streamAbort.signal);
-    if (!events.length) {
-      throw new Error("The provider returned an empty assistant response");
-    }
+    assertAssistantCompletionOutcome(events);
     if (runPersistenceEnabled) {
       await claimBackgroundRunFinalization({
         providerStatus: "completed",
