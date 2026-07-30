@@ -4,7 +4,12 @@ import type {
     StreamChatResult,
     NormalizedToolCall,
 } from "./types";
-import { throwIfAborted } from "./types";
+import {
+    assertFinalSynthesisResult,
+    buildToolLoopIteration,
+    normalizeMaxToolIterations,
+    throwIfAborted,
+} from "./types";
 import { toGeminiTools } from "./tools";
 
 type GeminiPart = {
@@ -45,22 +50,35 @@ export async function streamGemini(
     params: StreamChatParams,
 ): Promise<StreamChatResult> {
     const { model, systemPrompt, tools = [], callbacks = {}, runTools, apiKeys, enableThinking } = params;
-    const maxIter = params.maxIterations ?? 10;
+    const maxToolIterations = normalizeMaxToolIterations(
+        params.maxIterations,
+    );
     const ai = client(apiKeys?.gemini);
     const functionDeclarations = toGeminiTools(tools);
 
     const contents: GeminiContent[] = toNativeContents(params.messages);
     let fullText = "";
 
-    for (let iter = 0; iter < maxIter; iter++) {
+    for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
+        const iterationPlan = buildToolLoopIteration(
+            iter,
+            maxToolIterations,
+            functionDeclarations,
+            systemPrompt,
+        );
+        const {
+            finalSynthesis,
+            tools: iterationTools,
+            systemPrompt: iterationSystemPrompt,
+        } = iterationPlan;
         const stream = await ai.models.generateContentStream({
             model,
             contents: contents as never,
             config: {
-                systemInstruction: systemPrompt,
-                tools: functionDeclarations.length
-                    ? [{ functionDeclarations } as never]
+                systemInstruction: iterationSystemPrompt,
+                tools: iterationTools.length
+                    ? [{ functionDeclarations: iterationTools } as never]
                     : undefined,
                 // When enabled, ask Gemini to surface thought summaries.
                 // When disabled, explicitly zero the thinking budget so the
@@ -151,8 +169,18 @@ export async function streamGemini(
 
         fullText += textParts.join("");
 
-        if (!toolCalls.length || !runTools) {
+        if (finalSynthesis) {
+            assertFinalSynthesisResult("gemini", {
+                text: textParts.join(""),
+                toolCallCount: toolCalls.length,
+            });
             break;
+        }
+        if (!toolCalls.length) break;
+        if (!runTools) {
+            throw new Error(
+                "Gemini requested a tool, but no tool executor is available.",
+            );
         }
 
         throwIfAborted(params.abortSignal);

@@ -25,7 +25,13 @@ import type {
     StreamChatResult,
     TextVerbosity,
 } from "./types";
-import { isAbortError, throwIfAborted } from "./types";
+import {
+    assertFinalSynthesisResult,
+    buildToolLoopIteration,
+    isAbortError,
+    normalizeMaxToolIterations,
+    throwIfAborted,
+} from "./types";
 import type { Gpt56ReasoningEffort } from "./models";
 import { captureAiGeneration } from "../posthog";
 import {
@@ -1176,7 +1182,9 @@ export async function streamOpenAI(
         callbacks = {},
         runTools,
     } = params;
-    const maxIter = params.maxIterations ?? 10;
+    const maxToolIterations = normalizeMaxToolIterations(
+        params.maxIterations,
+    );
     const openai = client(params.apiKeys?.openai);
     const openaiTools = toOpenAITools(tools);
     const reasoningMode = params.reasoningMode ?? "standard";
@@ -1199,8 +1207,19 @@ export async function streamOpenAI(
               }
             : undefined;
 
-    for (let iter = 0; iter < maxIter; iter++) {
+    for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
+        const iterationPlan = buildToolLoopIteration(
+            iter,
+            maxToolIterations,
+            openaiTools,
+            systemPrompt,
+        );
+        const {
+            finalSynthesis,
+            tools: iterationTools,
+            systemPrompt: iterationSystemPrompt,
+        } = iterationPlan;
         const beforeLength = fullText.length;
         const generationId = randomUUID();
         const requestStartedAt = Date.now();
@@ -1218,9 +1237,9 @@ export async function streamOpenAI(
             result = streaming
                 ? await createStreamingResponse(openai, {
                       model,
-                      systemPrompt,
+                      systemPrompt: iterationSystemPrompt,
                       input,
-                      tools: openaiTools,
+                      tools: iterationTools,
                       enableThinking: params.enableThinking,
                       reasoningEffort: params.reasoningEffort,
                       textVerbosity: params.textVerbosity,
@@ -1239,9 +1258,9 @@ export async function streamOpenAI(
                   })
                 : await createNonStreamingResponse(openai, {
                       model,
-                      systemPrompt,
+                      systemPrompt: iterationSystemPrompt,
                       input,
-                      tools: openaiTools,
+                      tools: iterationTools,
                       enableThinking: params.enableThinking,
                       reasoningEffort: params.reasoningEffort,
                       reasoningMode,
@@ -1300,12 +1319,16 @@ export async function streamOpenAI(
                 provider: "openai",
                 stream: streaming,
                 latencySeconds: elapsedSeconds(requestStartedAt),
-                input: aiInputMessages(systemPrompt, params.messages),
+                input: aiInputMessages(
+                    iterationSystemPrompt,
+                    params.messages,
+                ),
                 output: "",
                 error: safeErrorMessage(error),
                 metadata: {
                     iteration: iter + 1,
-                    tool_count: openaiTools.length,
+                    tool_count: iterationTools.length,
+                    final_synthesis: finalSynthesis,
                     provider_response_id:
                         identifiers.providerResponseId ?? null,
                     provider_request_id:
@@ -1358,7 +1381,10 @@ export async function streamOpenAI(
             stream: streaming,
             latencySeconds: result.latencySeconds,
             timeToFirstTokenSeconds: result.timeToFirstTokenSeconds,
-            input: aiInputMessages(systemPrompt, params.messages),
+            input: aiInputMessages(
+                iterationSystemPrompt,
+                params.messages,
+            ),
             output: iterationText || completedOutput.text,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
@@ -1370,8 +1396,9 @@ export async function streamOpenAI(
             totalCostUsd: spendUsd(usage.cost.totalCostNanos),
             metadata: {
                 iteration: iter + 1,
-                tool_count: openaiTools.length,
+                tool_count: iterationTools.length,
                 function_call_count: extractFunctionCalls(response).length,
+                final_synthesis: finalSynthesis,
                 provider_response_id: response.id,
                 provider_request_id: result.providerRequestId ?? null,
                 background: result.background,
@@ -1381,7 +1408,26 @@ export async function streamOpenAI(
         });
 
         const calls = extractFunctionCalls(response);
-        if (!calls.length || !runTools) break;
+        if (finalSynthesis) {
+            assertFinalSynthesisResult("openai", {
+                text: completedOutput.text,
+                toolCallCount: calls.length,
+                providerResponseId: response.id,
+                providerRequestId: result.providerRequestId,
+            });
+            break;
+        }
+        if (!calls.length) break;
+        if (!runTools) {
+            throw new NamedOpenAIError(
+                "OPENAI_TOOL_EXECUTOR_MISSING",
+                "OpenAI requested a tool, but no tool executor is available.",
+                {
+                    providerResponseId: response.id,
+                    providerRequestId: result.providerRequestId,
+                },
+            );
+        }
 
         const normalizedCalls = emitOpenAIToolCallStarts(
             response,

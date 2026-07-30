@@ -3,9 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+  assertAssistantCompletionOutcome,
   extractRichCitations,
   consumeAskInputsResponse,
   createCitationSseBridge,
+  hasAssistantCompletionOutcome,
   parseAskInputsResponsePayload,
   parsePartialRichCitationObjects,
   persistAskInputsRequest,
@@ -42,6 +44,101 @@ const inputRequest: AskInputsEvent = {
     },
   ],
 };
+
+test("normal assistant completion requires visible text or an intentional pause", () => {
+  const invalidOutcomes = [
+    [],
+    [{ type: "reasoning", text: "Researching" }],
+    [{ type: "courtlistener_search_case_law", query: "standing" }],
+    [{ type: "doc_created", filename: "draft.docx" }],
+    [
+      {
+        type: "mcp_tool_call",
+        status: "ok",
+        approval_id: "approval-1",
+        approval_status: "succeeded",
+      },
+    ],
+    [{ type: "content", text: "   \n" }],
+    [
+      {
+        type: "mcp_tool_call",
+        status: "approval_required",
+        approval_status: "pending",
+      },
+    ],
+    [
+      {
+        type: "mcp_tool_call",
+        status: "approval_required",
+        approval_status: "succeeded",
+        approval_id: "approval-1",
+      },
+    ],
+  ];
+
+  for (const events of invalidOutcomes) {
+    assert.equal(hasAssistantCompletionOutcome(events), false);
+  }
+
+  assert.equal(
+    hasAssistantCompletionOutcome([
+      { type: "content", text: "The requested answer." },
+    ]),
+    true,
+  );
+  assert.equal(
+    hasAssistantCompletionOutcome([
+      { type: "content", text: "I cannot help with that request." },
+    ]),
+    true,
+  );
+  assert.equal(hasAssistantCompletionOutcome([inputRequest]), true);
+  assert.equal(
+    hasAssistantCompletionOutcome([
+      {
+        type: "mcp_tool_call",
+        status: "approval_required",
+        approval_status: "pending",
+        approval_id: "approval-1",
+      },
+    ]),
+    true,
+  );
+
+  assert.throws(
+    () =>
+      assertAssistantCompletionOutcome([
+        { type: "courtlistener_search_case_law", query: "standing" },
+      ]),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === "ASSISTANT_INCOMPLETE_RESPONSE",
+  );
+});
+
+test("both chat routes fail closed before claiming a completed run", () => {
+  for (const relativePath of [
+    "src/routes/chat.ts",
+    "src/routes/projectChat.ts",
+  ]) {
+    const source = readFileSync(resolve(backendRoot, relativePath), "utf8");
+    const guardIndex = source.indexOf(
+      "assertAssistantCompletionOutcome(events)",
+    );
+    const completedClaimIndex = source.indexOf(
+      "claimBackgroundRunFinalization({",
+      guardIndex,
+    );
+
+    assert.ok(guardIndex >= 0, `${relativePath} must enforce the outcome guard`);
+    assert.ok(
+      completedClaimIndex > guardIndex,
+      `${relativePath} must guard before claiming completion`,
+    );
+    assert.equal(source.includes("if (!events.length)"), false);
+  }
+});
 
 test("Ask Inputs accepts a bounded response and canonicalizes trusted prompt text", () => {
   const parsed = parseAskInputsResponsePayload({
