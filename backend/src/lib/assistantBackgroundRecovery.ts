@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { NotFoundError } from "openai";
 import type { Response } from "openai/resources/responses/responses";
 import {
   ASSISTANT_BACKGROUND_RECOVERABLE_STATUSES,
@@ -193,23 +194,27 @@ async function recoverRun(
 
   if (run.status === "cancel_requested") {
     if (run.providerResponseId) {
-      const { response } = await deps.retrieve({
-        apiKey,
-        responseId: run.providerResponseId,
-      });
-      if (response.status === "queued" || response.status === "in_progress") {
-        if (
-          !shouldContinueAssistantStreamAfterDisconnect(
-            run.reasoningMode,
-            run.reasoningEffort,
-          )
-        ) {
-          // Standard Responses cannot use the background cancellation API.
-          // Keep the durable request pending until its aborted transport is
-          // reflected as a terminal provider status.
-          return false;
+      try {
+        const { response } = await deps.retrieve({
+          apiKey,
+          responseId: run.providerResponseId,
+        });
+        if (response.status === "queued" || response.status === "in_progress") {
+          if (
+            !shouldContinueAssistantStreamAfterDisconnect(
+              run.reasoningMode,
+              run.reasoningEffort,
+            )
+          ) {
+            // Standard Responses cannot use the background cancellation API.
+            // Keep the durable request pending until its aborted transport is
+            // reflected as a terminal provider status.
+            return false;
+          }
+          await deps.cancel({ apiKey, responseId: run.providerResponseId });
         }
-        await deps.cancel({ apiKey, responseId: run.providerResponseId });
+      } catch (error) {
+        if (!(error instanceof NotFoundError)) throw error;
       }
     }
     return finalizeCancelled(deps.db, run);

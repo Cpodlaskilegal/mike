@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { InternalServerError, NotFoundError } from "openai";
 import type { Response as OpenAIResponse } from "openai/resources/responses/responses";
 import {
   reconcileStaleAssistantBackgroundRuns,
@@ -397,6 +398,125 @@ test("cancels a fresh cancel_requested run and persists cancellation", async () 
   assert.deepEqual(messages.get(run.assistantMessageId)?.content, [
     { type: "content", text: "Cancelled by user." },
   ]);
+});
+
+test("finalizes cancellation when OpenAI no longer has the response", async () => {
+  const run = makeRun({
+    status: "cancel_requested",
+    updatedAt: FRESH_UPDATED_AT,
+  });
+  const { db, runs, messages } = createFakeDb(run);
+
+  const result = await reconcileStaleAssistantBackgroundRuns({
+    db,
+    now: () => NOW,
+    listRuns: async () => [run],
+    loadOpenAIKey: async () => "test-openai-key",
+    retrieve: async () => {
+      throw new NotFoundError(
+        404,
+        {
+          code: "not_found",
+          message: "Response resp_original not found.",
+          type: "invalid_request_error",
+        },
+        "Response resp_original not found.",
+        new Headers(),
+      );
+    },
+    cancel: async () => assert.fail("missing response must not be cancelled"),
+  });
+
+  assert.deepEqual(result, { inspected: 1, recovered: 1, failed: 0 });
+  assert.equal(runs.get(run.streamRequestId)?.status, "cancelled");
+  assert.equal(runs.get(run.streamRequestId)?.provider_status, "cancelled");
+  assert.equal(
+    runs.get(run.streamRequestId)?.error_code,
+    "explicit_user_cancel",
+  );
+  assert.deepEqual(messages.get(run.assistantMessageId)?.content, [
+    { type: "content", text: "Cancelled by user." },
+  ]);
+});
+
+test("finalizes cancellation when the response disappears before provider cancellation", async () => {
+  const run = makeRun({
+    status: "cancel_requested",
+    updatedAt: FRESH_UPDATED_AT,
+  });
+  const { db, runs, messages } = createFakeDb(run);
+  let cancelAttempts = 0;
+
+  const result = await reconcileStaleAssistantBackgroundRuns({
+    db,
+    now: () => NOW,
+    listRuns: async () => [run],
+    loadOpenAIKey: async () => "test-openai-key",
+    retrieve: async () => ({
+      response: {
+        id: "resp_original",
+        model: "gpt-5.6-sol",
+        status: "in_progress",
+        output: [],
+      } as unknown as OpenAIResponse,
+      providerRequestId: "req_cancel_race",
+    }),
+    cancel: async () => {
+      cancelAttempts += 1;
+      throw new NotFoundError(
+        404,
+        {
+          code: "not_found",
+          message: "Response resp_original not found.",
+          type: "invalid_request_error",
+        },
+        "Response resp_original not found.",
+        new Headers(),
+      );
+    },
+  });
+
+  assert.deepEqual(result, { inspected: 1, recovered: 1, failed: 0 });
+  assert.equal(cancelAttempts, 1);
+  assert.equal(runs.get(run.streamRequestId)?.status, "cancelled");
+  assert.equal(runs.get(run.streamRequestId)?.provider_status, "cancelled");
+  assert.deepEqual(messages.get(run.assistantMessageId)?.content, [
+    { type: "content", text: "Cancelled by user." },
+  ]);
+});
+
+test("keeps cancellation retryable after a transient provider failure", async () => {
+  const run = makeRun({
+    status: "cancel_requested",
+    updatedAt: FRESH_UPDATED_AT,
+  });
+  const { db, runs, messages } = createFakeDb(run);
+
+  const result = await reconcileStaleAssistantBackgroundRuns({
+    db,
+    now: () => NOW,
+    listRuns: async () => [run],
+    loadOpenAIKey: async () => "test-openai-key",
+    retrieve: async () => {
+      throw new InternalServerError(
+        503,
+        {
+          code: "service_unavailable",
+          message: "Service temporarily unavailable.",
+          type: "server_error",
+        },
+        "Service temporarily unavailable.",
+        new Headers(),
+      );
+    },
+    cancel: async () => assert.fail("failed retrieval must not cancel"),
+  });
+
+  assert.deepEqual(result, { inspected: 1, recovered: 0, failed: 1 });
+  assert.equal(runs.get(run.streamRequestId)?.status, "cancel_requested");
+  assert.equal(runs.get(run.streamRequestId)?.error_code, null);
+  assert.equal(runs.get(run.streamRequestId)?.completed_at, null);
+  assert.equal(messages.get(run.assistantMessageId)?.content, null);
 });
 
 test("gives the owning handler a grace period before provider cancellation", async () => {
