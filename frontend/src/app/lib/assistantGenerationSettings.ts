@@ -82,7 +82,7 @@ export type AssistantGenerationStorageSnapshot = {
 };
 
 const DEFAULT_MODEL: Gpt56ModelId = "gpt-5.6-sol";
-const DEFAULT_EFFORT: Gpt56ReasoningEffort = "medium";
+const DEFAULT_EFFORT: Gpt56ReasoningEffort = "max";
 const DEFAULT_CLAUDE_EFFORT: ClaudeOpus5ReasoningEffort = "high";
 const GPT56_MODEL_SET = new Set<string>(GPT56_MODEL_IDS);
 const EFFORT_SET = new Set<string>(GPT56_REASONING_EFFORTS);
