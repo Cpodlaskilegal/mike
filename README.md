@@ -106,13 +106,13 @@ Entra values come from the Microsoft Entra app registrations. The backend valida
 
 ### Signed-in user's email
 
-Docket's private assistant chat can get read-only access to the current user's
-own Microsoft 365 mailbox through the existing sign-in. Mailbox tools are not
-exposed in shared project chats, chats opened through an administrator access
-override, or tabular reviews. The browser still requests
-only the Docket API scope. The backend exchanges that already-validated access
-token through Microsoft's OAuth on-behalf-of flow and calls Microsoft Graph as
-that user.
+Docket's assistant and project assistant can get read-only access to the
+currently signed-in user's own Microsoft 365 mailbox through the existing
+sign-in. The browser still requests only the Docket API scope. The backend
+exchanges that already-validated access token through Microsoft's OAuth
+on-behalf-of flow and calls Microsoft Graph `/me` as that user. A user who can
+access a shared Docket chat still queries their own mailbox, never the chat
+creator's mailbox. Mailbox tools are not exposed in tabular reviews.
 
 Configure the backend API app registration as follows:
 
@@ -128,17 +128,17 @@ Configure the backend API app registration as follows:
    an existing database **before deploying this backend**, even if mailbox
    access will remain disabled initially.
 
-The assistant can search messages and read a selected message plus bounded
-attachment metadata. It cannot send, draft, delete, move, or edit mail. Email
-content is treated as untrusted data, is supplied to the selected model when a
-mail tool is used, and may be reflected in the persisted assistant response.
-Docket marks a chat private before the first mailbox read; after that, only the
-chat owner can list or open it, including against the existing administrator
-chat-read override. To prevent persistent email prompt injection, the mailbox
-search and selected-message read must complete in the originating assistant
-turn; later turns in that chat are tool-free. Start a new private chat for a
-new mailbox task. Docket's mailbox audit stores the actor and correlation metadata, never the
-message body, subject, access token, or search text.
+Mailbox tools activate when the user's current request explicitly asks for
+email. The assistant can search and read bounded messages; after a successful
+mail read, the remainder of that one assistant response is limited to reading
+messages returned by that search so email content cannot trigger unrelated
+tools. The next user turn has the normal toolset again. The assistant cannot
+send, draft, delete, move, or edit mail. Email content is treated as untrusted
+data, is supplied to the selected model when a mail tool is used, and may be
+reflected in the persisted assistant response. The response follows the chat's
+existing Docket visibility rules; mailbox use does not silently change sharing
+or disable later turns. Docket's mailbox audit stores actor and correlation
+metadata, never the message body, subject, access token, or search text.
 
 PostHog is optional. When `NEXT_PUBLIC_POSTHOG_KEY` is unset, the frontend does not initialize PostHog. Set `NEXT_PUBLIC_POSTHOG_HOST` to your PostHog region host, such as `https://us.i.posthog.com` or `https://eu.i.posthog.com`. The frontend starts session replay with inputs masked and supports `ph-no-capture` / `ph-mask` CSS classes for sensitive UI.
 

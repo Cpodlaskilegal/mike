@@ -132,6 +132,21 @@ export type ChatMessage = {
     workflow?: { id: string; title: string };
 };
 
+const EXPLICIT_OWN_MAILBOX_INTENT =
+    /\b(?:e-?mails?|mailbox(?:es)?|inbox(?:es)?|outlook|correspondence)\b|\bmessages?\s+(?:from|to|about|regarding)\b/i;
+
+/** Mailbox tools are offered only for the latest direct user request. */
+export function latestUserMessageHasOwnMailboxIntent(
+    messages: readonly { role: string; content: string | null }[],
+): boolean {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (message.role !== "user") continue;
+        return EXPLICIT_OWN_MAILBOX_INTENT.test(message.content ?? "");
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -2258,7 +2273,7 @@ async function readDocumentContent(
             );
         }
         console.log(
-            `[read_document] DONE filename="${docInfo.filename}" finalTextLength=${text.length} firstChars=${JSON.stringify(text.slice(0, 120))}`,
+            `[read_document] DONE filename="${docInfo.filename}" finalTextLength=${text.length}`,
         );
         emitDocRead();
         return text;
@@ -3097,7 +3112,7 @@ export async function runToolCalls(
             tc.function.name === "read_own_email";
         const requestedMessageId =
             typeof args.message_id === "string" ? args.message_id.trim() : "";
-        const isAllowedSearchFollowupRead = Boolean(
+        const isAllowedSearchResultRead = Boolean(
             ownMailboxTurnState?.untrustedEmailObserved &&
             tc.function.name === "read_own_email" &&
             requestedMessageId &&
@@ -3105,7 +3120,7 @@ export async function runToolCalls(
         );
         if (
             ownMailboxTurnState?.untrustedEmailObserved &&
-            !isAllowedSearchFollowupRead
+            !isAllowedSearchResultRead
         ) {
             toolResults.push({
                 role: "tool",
@@ -3129,25 +3144,6 @@ export async function runToolCalls(
                     content: JSON.stringify({
                         ok: false,
                         error: "Signed-in mailbox access is unavailable for this request.",
-                    }),
-                });
-                continue;
-            }
-            const { data: privateChat, error: privateChatError } = await db
-                .from("chats")
-                .update({ contains_mailbox_data: true })
-                .eq("id", ownMailboxContext.chatId)
-                .eq("user_id", userId)
-                .is("project_id", null)
-                .select("id")
-                .maybeSingle();
-            if (privateChatError || !privateChat?.id) {
-                toolResults.push({
-                    role: "tool",
-                    tool_call_id: tc.id,
-                    content: JSON.stringify({
-                        ok: false,
-                        error: "Docket blocked mailbox access because it could not enforce the private-chat boundary.",
                     }),
                 });
                 continue;
@@ -3238,16 +3234,25 @@ export async function runToolCalls(
             }
             if (result.status === "ok" && ownMailboxTurnState) {
                 ownMailboxTurnState.untrustedEmailObserved = true;
-                ownMailboxTurnState.allowedReadMessageIds.clear();
-                if (
-                    result.structured_content?.kind ===
-                    "email_search_results"
-                ) {
-                    for (const message of result.structured_content.messages) {
-                        ownMailboxTurnState.allowedReadMessageIds.add(
-                            message.id,
-                        );
+                if (tc.function.name === "search_own_email") {
+                    ownMailboxTurnState.allowedReadMessageIds.clear();
+                    if (
+                        result.structured_content?.kind ===
+                        "email_search_results"
+                    ) {
+                        for (const message of result.structured_content
+                            .messages) {
+                            if (message.id) {
+                                ownMailboxTurnState.allowedReadMessageIds.add(
+                                    message.id,
+                                );
+                            }
+                        }
                     }
+                } else if (requestedMessageId) {
+                    ownMailboxTurnState.allowedReadMessageIds.delete(
+                        requestedMessageId,
+                    );
                 }
             }
             toolResults.push({
@@ -4817,10 +4822,8 @@ export async function runLLMStream(params: {
     signal?: AbortSignal;
     /** Validated inbound Docket API token, held only for this request's OBO exchange. */
     docketAccessToken?: string | null;
-    /** Explicit route opt-in. Mailbox tools remain unavailable to project and tabular chats. */
-    allowOwnMailboxAccess?: boolean;
-    /** A prior mailbox result makes every later turn in this chat tool-free. */
-    mailboxDataAlreadyPersisted?: boolean;
+    /** Derived by the route from the latest user-authored text before prompt decoration. */
+    ownMailboxIntent?: boolean;
     /**
      * If set, generate_docx will attach created docs to this project so
      * they appear in the project sidebar. Leave null for general chats —
@@ -4854,8 +4857,7 @@ export async function runLLMStream(params: {
         projectId,
         signal,
         docketAccessToken,
-        allowOwnMailboxAccess = false,
-        mailboxDataAlreadyPersisted = false,
+        ownMailboxIntent = false,
     } = params;
 
     // Extract system prompt; pass remaining turns to the adapter as
@@ -4878,8 +4880,7 @@ export async function runLLMStream(params: {
         chatId && assistantMessageId && !tabularStore,
     );
     const mailboxTools =
-        allowOwnMailboxAccess &&
-        !projectId &&
+        ownMailboxIntent &&
         !tabularStore &&
         docketAccessToken &&
         ownMailboxAccessConfigured()
@@ -4893,11 +4894,9 @@ export async function runLLMStream(params: {
         ...(askInputsAvailable ? [ASK_INPUTS_TOOL] : []),
         ...mcpTools,
     ];
-    const activeTools = mailboxDataAlreadyPersisted
-        ? []
-        : extraTools?.length
-          ? [...baseTools, ...extraTools]
-          : baseTools;
+    const activeTools = extraTools?.length
+        ? [...baseTools, ...extraTools]
+        : baseTools;
 
     const events: AssistantEvent[] = [];
     // One assistant turn produces at most one document_versions row per
@@ -4911,7 +4910,7 @@ export async function runLLMStream(params: {
     // available in the same response.
     const turnReadState: TurnReadState = new Map();
     const ownMailboxTurnState: OwnMailboxTurnState = {
-        untrustedEmailObserved: mailboxDataAlreadyPersisted,
+        untrustedEmailObserved: false,
         allowedReadMessageIds: new Set(),
     };
     // This budget is shared across every tool loop in the assistant response,
@@ -5151,7 +5150,7 @@ export async function runLLMStream(params: {
                 },
                 turnReadState,
                 executeMcpToolCall,
-                allowOwnMailboxAccess && !projectId && docketAccessToken
+                ownMailboxIntent && !tabularStore && docketAccessToken
                     ? {
                           docketAccessToken,
                           actorEmail: userEmail,

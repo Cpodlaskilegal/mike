@@ -169,7 +169,7 @@ test("incremental and fresh schemas define the same content-free mailbox audit t
   }
 });
 
-test("incremental and fresh schemas mark mailbox chats as owner-private and standalone", () => {
+test("incremental and fresh schemas omit the legacy mailbox chat marker", () => {
   for (const relativePath of [
     "migrations/20260812_assistant_native_tool_audit_logs.sql",
     "migrations/azure_postgres_schema.sql",
@@ -179,14 +179,9 @@ test("incremental and fresh schemas mark mailbox chats as owner-private and stan
       resolve(import.meta.dirname, "..", relativePath),
       "utf8",
     );
-    assert.match(
+    assert.doesNotMatch(
       sql,
-      /contains_mailbox_data\s+boolean\s+not null\s+default false/i,
+      /contains_mailbox_data|chats_mailbox_data_private|idx_chats_mailbox_data_owner/i,
     );
-    assert.match(
-      sql,
-      /check\s*\(not contains_mailbox_data or project_id is null\)/i,
-    );
-    assert.match(sql, /where\s+contains_mailbox_data/i);
   }
 });

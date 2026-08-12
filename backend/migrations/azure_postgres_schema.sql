@@ -470,17 +470,11 @@ create table if not exists public.chats (
   project_id uuid references public.projects(id) on delete cascade,
   user_id text not null references public.app_users(id) on delete cascade,
   title text,
-  contains_mailbox_data boolean not null default false,
-  constraint chats_mailbox_data_private
-    check (not contains_mailbox_data or project_id is null),
   created_at timestamptz not null default now()
 );
 
 create index if not exists idx_chats_user on public.chats(user_id);
 create index if not exists idx_chats_project on public.chats(project_id);
-create index if not exists idx_chats_mailbox_data_owner
-  on public.chats(user_id)
-  where contains_mailbox_data;
 
 create table if not exists public.chat_messages (
   id uuid primary key default gen_random_uuid(),

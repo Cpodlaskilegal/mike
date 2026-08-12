@@ -7,6 +7,7 @@ import {
   buildWorkflowStore,
   enrichWithPriorEvents,
   extractAnnotations,
+  latestUserMessageHasOwnMailboxIntent,
   runLLMStream,
   PROJECT_EXTRA_TOOLS,
   type ChatMessage,
@@ -875,6 +876,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       undefined,
       legalResearchUs,
     );
+    const ownMailboxIntent =
+      latestUserMessageHasOwnMailboxIntent(streamMessages);
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
@@ -907,6 +910,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       traceId: streamLifecycle.traceId,
       projectId,
       signal: streamAbort.signal,
+      docketAccessToken: res.locals.token as string,
+      ownMailboxIntent,
     });
     throwIfAborted(streamAbort.signal);
     assertAssistantCompletionOutcome(events);
