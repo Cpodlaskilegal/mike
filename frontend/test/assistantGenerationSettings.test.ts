@@ -139,11 +139,11 @@ test("migrates retired Mythos selections to account-accessible Sonnet 5", () => 
   }
 });
 
-test("defaults to Sol, GPT Medium, Claude High, and Standard", () => {
+test("defaults to Sol, GPT Max, Claude High, and Standard", () => {
   assert.deepEqual(defaultAssistantGenerationSettings(), {
     model: "gpt-5.6-sol",
-    standardEffort: "medium",
-    proEffort: "medium",
+    standardEffort: "max",
+    proEffort: "max",
     claudeEffort: "high",
     reasoningMode: "standard",
     sessionKey: null,

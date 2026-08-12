@@ -76,15 +76,27 @@ test("defines only the production-account-accessible Claude main models", () => 
     ]);
 });
 
-test("defaults an omitted main model to Sol, Medium, and Standard", () => {
+test("defaults an omitted main model to Sol, Max, and Standard", () => {
     assert.deepEqual(resolveMainModelRequest({}), {
         requestedModel: null,
         selectionModel: "gpt-5.6-sol",
         providerModel: "gpt-5.6-sol",
         provider: "openai",
-        reasoningEffort: "medium",
+        reasoningEffort: "max",
         reasoningMode: "standard",
         status: "defaulted",
+    });
+});
+
+test("defaults an explicit Sol selection with no effort to Max", () => {
+    assert.deepEqual(resolveMainModelRequest({ model: "gpt-5.6-sol" }), {
+        requestedModel: "gpt-5.6-sol",
+        selectionModel: "gpt-5.6-sol",
+        providerModel: "gpt-5.6-sol",
+        provider: "openai",
+        reasoningEffort: "max",
+        reasoningMode: "standard",
+        status: "direct",
     });
 });
 
@@ -241,7 +253,7 @@ test("rejects explicit malformed model values but defaults an omitted model", ()
             selectionModel: "gpt-5.6-sol",
             providerModel: "gpt-5.6-sol",
             provider: "openai",
-            reasoningEffort: "medium",
+            reasoningEffort: "max",
             reasoningMode: "standard",
             status: "defaulted",
         },
@@ -340,7 +352,7 @@ test("treats object prototype keys as unknown model strings", () => {
             selectionModel: "gpt-5.6-sol",
             providerModel: "gpt-5.6-sol",
             provider: "openai",
-            reasoningEffort: "medium",
+            reasoningEffort: "max",
             reasoningMode: "standard",
             status: "unknown_fallback",
         });

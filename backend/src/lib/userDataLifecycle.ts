@@ -200,6 +200,7 @@ export async function buildDocketDataExport(
     workflows,
     workflowShares,
     connectors,
+    nativeToolAuditLogs,
     apiKeyStatus,
     assistant_chats,
     tabular_reviews,
@@ -249,6 +250,15 @@ export async function buildDocketDataExport(
       [userId],
     ),
     rows(
+      `select id, actor_email, tool_namespace, tool_name, status, error_code,
+              duration_ms, result_size_chars, target_ref_hash, chat_id,
+              assistant_message_id, assistant_run_id, trace_id, project_id,
+              tool_call_id, created_at, updated_at
+         from assistant_native_tool_audit_logs
+        where user_id = $1 order by created_at asc`,
+      [userId],
+    ),
+    rows(
       `select provider, created_at, updated_at from user_api_keys
         where user_id = $1 order by provider asc`,
       [userId],
@@ -274,6 +284,7 @@ export async function buildDocketDataExport(
     workflows,
     workflow_shares: workflowShares,
     mcp_connectors: connectors,
+    assistant_native_tool_audit_logs: nativeToolAuditLogs,
     api_key_status: apiKeyStatus.map((entry) => ({
       ...entry,
       configured: true,
@@ -511,6 +522,7 @@ async function deleteDocketRows(
   await client.query("delete from user_mcp_connectors where user_id = $1", [userId]);
   await client.query("delete from user_mcp_oauth_states where user_id = $1", [userId]);
   await client.query("delete from user_mcp_tool_audit_logs where user_id = $1", [userId]);
+  await client.query("delete from assistant_native_tool_audit_logs where user_id = $1", [userId]);
   await client.query("delete from user_api_keys where user_id = $1", [userId]);
   // Keep aggregate accounting intact, but detach it from the deleted user's
   // identity and their content-bearing chat/project records.
