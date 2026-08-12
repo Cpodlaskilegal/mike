@@ -976,7 +976,9 @@ function turnScopedReadProblems(source: string): string[] {
     !/const\s+turnReadState\s*:\s*TurnReadState\s*=\s*new\s+Map\s*\(/.test(
       runLlmStreamSource,
     ) ||
-    !/runToolCalls\s*\([\s\S]*?turnReadState\s*,?\s*\)/.test(runLlmStreamSource)
+    !/runToolCalls\s*\([\s\S]*?\bturnReadState\b(?:\s*,|\s*\))/.test(
+      runLlmStreamSource,
+    )
   ) {
     problems.push(
       "runLLMStream does not keep and pass one turn-scoped read cache",

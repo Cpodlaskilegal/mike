@@ -61,6 +61,8 @@ PGSSLMODE=require
 
 AZURE_TENANT_ID=your-azure-tenant-id
 AZURE_API_CLIENT_ID=your-api-app-client-id
+AZURE_API_CLIENT_SECRET=your-api-app-client-secret
+AZURE_API_SCOPE_NAME=access_as_user
 AZURE_STORAGE_ACCOUNT=your-storage-account
 AZURE_STORAGE_KEY=your-storage-account-key
 AZURE_STORAGE_CONTAINER=documents
@@ -100,7 +102,43 @@ NEXT_PUBLIC_POSTHOG_KEY=phc_your_posthog_project_api_key
 NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
 ```
 
-Entra values come from the Microsoft Entra app registrations. The backend validates access tokens for `AZURE_API_CLIENT_ID`; the frontend requests `NEXT_PUBLIC_AZURE_API_SCOPE`.
+Entra values come from the Microsoft Entra app registrations. The backend validates access tokens for `AZURE_API_CLIENT_ID` and requires the delegated scope named by `AZURE_API_SCOPE_NAME`; the frontend requests `NEXT_PUBLIC_AZURE_API_SCOPE`.
+
+### Signed-in user's email
+
+Docket's private assistant chat can get read-only access to the current user's
+own Microsoft 365 mailbox through the existing sign-in. Mailbox tools are not
+exposed in shared project chats, chats opened through an administrator access
+override, or tabular reviews. The browser still requests
+only the Docket API scope. The backend exchanges that already-validated access
+token through Microsoft's OAuth on-behalf-of flow and calls Microsoft Graph as
+that user.
+
+Configure the backend API app registration as follows:
+
+1. Add Microsoft Graph **delegated** permission `Mail.Read` and grant tenant
+   admin consent.
+2. Create a confidential-client credential for the backend API registration
+   and provide it to the backend as the `AZURE_API_CLIENT_SECRET` secret. Never
+   bake this value into an image or frontend environment variable.
+3. Do not add Graph application mail permissions, `Mail.Read.Shared`,
+   `Mail.ReadWrite`, or `Mail.Send`. Docket's native mail tools are hard-coded
+   to `/me/messages` and cannot select another mailbox.
+4. Apply `backend/migrations/20260812_assistant_native_tool_audit_logs.sql` to
+   an existing database **before deploying this backend**, even if mailbox
+   access will remain disabled initially.
+
+The assistant can search messages and read a selected message plus bounded
+attachment metadata. It cannot send, draft, delete, move, or edit mail. Email
+content is treated as untrusted data, is supplied to the selected model when a
+mail tool is used, and may be reflected in the persisted assistant response.
+Docket marks a chat private before the first mailbox read; after that, only the
+chat owner can list or open it, including against the existing administrator
+chat-read override. To prevent persistent email prompt injection, the mailbox
+search and selected-message read must complete in the originating assistant
+turn; later turns in that chat are tool-free. Start a new private chat for a
+new mailbox task. Docket's mailbox audit stores the actor and correlation metadata, never the
+message body, subject, access token, or search text.
 
 PostHog is optional. When `NEXT_PUBLIC_POSTHOG_KEY` is unset, the frontend does not initialize PostHog. Set `NEXT_PUBLIC_POSTHOG_HOST` to your PostHog region host, such as `https://us.i.posthog.com` or `https://eu.i.posthog.com`. The frontend starts session replay with inputs masked and supports `ph-no-capture` / `ph-mask` CSS classes for sensitive UI.
 
@@ -113,7 +151,7 @@ the Next.js client bundle during the Docker build. To roll out PostHog to
 production, run `scripts/deploy-posthog-frontend.sh` with `POSTHOG_KEY` and
 `POSTHOG_HOST` set.
 
-Provider keys are only needed for the models and email features you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
+Provider keys are only needed for the model providers and administrative report delivery features you plan to use. Model provider keys can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
 
 MCP connector credentials and OAuth tokens are encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET`. PracticePanther is connected by default as a backend-managed MCP connector using `PRACTICEPANTHER_MCP_SERVER_URL` (default `https://wild-spark-qn7iy.run.mcp-use.com/mcp`). Box is also connected by default as a backend-managed MCP connector using Box's hosted endpoint at `https://mcp.box.com`. Each Docket user authorizes Box separately, and Docket can access whatever that logged-in user can access in Box.
 
@@ -152,6 +190,11 @@ Open `http://localhost:3000`.
 ## Troubleshooting
 
 **Sign-in fails before reaching Docket.** Confirm the frontend redirect URI is registered in the Entra SPA app and that the API scope/admin consent configuration matches `NEXT_PUBLIC_AZURE_API_SCOPE`.
+
+**The assistant cannot access email.** Confirm the backend API app registration
+has delegated Microsoft Graph `Mail.Read` with tenant consent, the Container App
+has a valid `AZURE_API_CLIENT_SECRET`, and the user signed in again after consent
+was granted. Do not resolve this by granting an application mail permission.
 
 **The model picker shows a missing-key warning.** Add a key for that provider in **Account > Models & API Keys**, or configure the provider key in `backend/.env` and restart the backend.
 

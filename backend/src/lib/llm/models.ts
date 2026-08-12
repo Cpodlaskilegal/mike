@@ -82,7 +82,7 @@ type Gpt56MainModelConfig = {
     providerModel: Gpt56MainModelId;
     supportedReasoningEfforts: typeof GPT_5_6_REASONING_EFFORTS;
     supportedReasoningModes: readonly ["standard", "pro"];
-    defaultReasoningEffort: "medium";
+    defaultReasoningEffort: Gpt56ReasoningEffort;
     streamingByMode: { readonly standard: true; readonly pro: false };
 };
 
@@ -92,7 +92,7 @@ const GPT_5_6_MAIN_MODEL_REGISTRY = {
         providerModel: "gpt-5.6-sol",
         supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
         supportedReasoningModes: ["standard", "pro"],
-        defaultReasoningEffort: "medium",
+        defaultReasoningEffort: "max",
         streamingByMode: { standard: true, pro: false },
     },
     "gpt-5.6-terra": {

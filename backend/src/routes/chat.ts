@@ -79,7 +79,17 @@ type AccessibleChat = {
   title: string | null;
   user_id: string;
   project_id: string | null;
+  contains_mailbox_data?: boolean;
 } & Record<string, unknown>;
+
+function filterMailboxPrivateChats(
+  chats: AccessibleChat[],
+  userId: string,
+): AccessibleChat[] {
+  return chats.filter(
+    (chat) => chat.user_id === userId || chat.contains_mailbox_data !== true,
+  );
+}
 
 function createSafeStreamWriter(res: Response) {
   return (line: string) => {
@@ -195,6 +205,7 @@ async function getAccessibleChat(
 
   const row = chat as AccessibleChat;
   if (row.user_id === userId) return row;
+  if (row.contains_mailbox_data === true) return null;
   if (options.allowAdmin && (await isAdminUser(db, userId))) return row;
 
   if (row.project_id) {
@@ -225,7 +236,9 @@ chatRouter.get("/", requireAuth, async (req, res) => {
       .select("*")
       .order("created_at", { ascending: false });
     if (error) return void res.status(500).json({ detail: error.message });
-    return void res.json(data ?? []);
+    return void res.json(
+      filterMailboxPrivateChats((data ?? []) as AccessibleChat[], userId),
+    );
   }
 
   const { data: ownProjects, error: projErr } = await db
@@ -248,7 +261,7 @@ chatRouter.get("/", requireAuth, async (req, res) => {
     .or(filter)
     .order("created_at", { ascending: false });
   if (error) return void res.status(500).json({ detail: error.message });
-  res.json(data ?? []);
+  res.json(filterMailboxPrivateChats((data ?? []) as AccessibleChat[], userId));
 });
 
 // POST /chat/create
@@ -346,6 +359,23 @@ chatRouter.get("/:chatId", requireAuth, async (req, res) => {
     .select("*")
     .eq("chat_id", chatId)
     .order("created_at", { ascending: true });
+
+  // Close the authorization/read race if the owner used a mailbox tool after
+  // a non-owner passed the first access check but before this response.
+  if (chat.user_id !== userId) {
+    const { data: privacyState, error: privacyStateError } = await db
+      .from("chats")
+      .select("contains_mailbox_data")
+      .eq("id", chatId)
+      .maybeSingle();
+    if (
+      privacyStateError ||
+      (privacyState as { contains_mailbox_data?: boolean } | null)
+        ?.contains_mailbox_data === true
+    ) {
+      return void res.status(404).json({ detail: "Chat not found" });
+    }
+  }
 
   // A page reload loses the browser's in-memory stream ID. Return only the
   // signed-in user's newest cancellable run for this chat so the frontend
@@ -752,6 +782,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
   let chatId = chat_id ?? null;
   let chatTitle: string | null = null;
   let resolvedProjectId: string | null = parsedProjectId.projectId;
+  let ownsChat = !chatId;
+  let mailboxDataAlreadyPersisted = false;
 
   if (chatId) {
     const existing = await getAccessibleChat(chatId, userId, userEmail, db, {
@@ -771,6 +803,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     }
     resolvedProjectId = existingProjectId;
     chatTitle = existing.title;
+    ownsChat = existing.user_id === userId;
+    mailboxDataAlreadyPersisted = existing.contains_mailbox_data === true;
   }
 
   if (!chatId) {
@@ -1213,6 +1247,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+    const allowOwnMailboxAccess = ownsChat && !resolvedProjectId;
 
     devLog("[chat/stream] starting LLM stream", {
       apiMessageCount: apiMessages.length,
@@ -1248,6 +1283,11 @@ chatRouter.post("/", requireAuth, async (req, res) => {
       traceId: streamLifecycle.traceId,
       projectId: resolvedProjectId,
       signal: streamAbort.signal,
+      docketAccessToken: allowOwnMailboxAccess
+        ? (res.locals.token as string)
+        : undefined,
+      allowOwnMailboxAccess,
+      mailboxDataAlreadyPersisted,
     });
     throwIfAborted(streamAbort.signal);
     assertAssistantCompletionOutcome(events);
