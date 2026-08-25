@@ -1,12 +1,12 @@
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import { buildContentDisposition, downloadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
 import { contentTypeForDocumentType } from "../lib/documentTypes";
 
-export const downloadsRouter = Router();
+export const downloadsRouter = createAsyncRouter();
 
 function contentTypeFor(filename: string): string {
     const suffix = filename.includes(".")

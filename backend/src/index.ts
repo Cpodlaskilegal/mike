@@ -13,6 +13,7 @@ import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
 import { startAssistantBackgroundRecovery } from "./lib/assistantBackgroundRecovery";
+import { apiErrorHandler } from "./middleware/asyncRouteErrors";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -139,6 +140,8 @@ app.use("/download", downloadsRouter);
 app.use("/case-law", caseLawRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+app.use(apiErrorHandler);
 
 app.listen(PORT, () => {
   console.log(`Docket backend running on port ${PORT}`);

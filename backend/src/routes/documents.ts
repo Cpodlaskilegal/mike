@@ -1,5 +1,5 @@
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import {
   buildContentDisposition,
@@ -30,7 +30,7 @@ import {
   shouldConvertToPdf,
 } from "../lib/documentTypes";
 
-export const documentsRouter = Router();
+export const documentsRouter = createAsyncRouter();
 
 const VERSION_ROW_SELECT =
   "id, version_number, source, created_at, display_name, file_type, size_bytes, page_count, deleted_at, deleted_by";

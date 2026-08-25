@@ -1,5 +1,6 @@
-import { Router, type Response } from "express";
+import type { Response } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import {
   buildProjectDocContext,
@@ -67,7 +68,7 @@ When the user asks for drafting inside a project, treat exemplar discovery as pa
 REPLICATING A DOCUMENT:
 When the user wants to use an existing project document as a starting point for a new file (e.g. "use this NDA as a template", "make me a copy of the SOW so I can edit it", "duplicate this and adapt it for company X"), call the replicate_document tool with the source doc_id. This creates a byte-for-byte copy as a new project document, returns a fresh doc_id slug, and shows a download/open card in the UI. Then call edit_document on the returned slug to make the user's requested changes — do NOT call generate_docx for cases where the user clearly wants the existing document's structure and formatting preserved.`;
 
-export const projectChatRouter = Router({ mergeParams: true });
+export const projectChatRouter = createAsyncRouter({ mergeParams: true });
 
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {

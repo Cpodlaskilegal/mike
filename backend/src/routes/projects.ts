@@ -1,5 +1,5 @@
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import {
   attachActiveVersionPaths,
@@ -17,7 +17,7 @@ import {
   shouldConvertToPdf,
 } from "../lib/documentTypes";
 
-export const projectsRouter = Router();
+export const projectsRouter = createAsyncRouter();
 
 function normalizeDocumentFilename(nextName: unknown, currentName: string) {
   if (typeof nextName !== "string") return null;
