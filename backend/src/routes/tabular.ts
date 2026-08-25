@@ -1,5 +1,6 @@
-import { Router, type Response } from "express";
+import type { Response } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import { downloadFile } from "../lib/storage";
 import { loadActiveVersion } from "../lib/documentVersions";
@@ -82,7 +83,7 @@ function formatPromptSuffix(format?: string, tags?: string[]): string {
     }
 }
 
-export const tabularRouter = Router();
+export const tabularRouter = createAsyncRouter();
 
 function createSafeStreamWriter(res: Response) {
     return (line: string) => {

@@ -103,3 +103,22 @@ test("account deletion has a dedicated rate limit before authentication", async 
     },
   );
 });
+
+test("malformed JSON receives a redacted JSON error response", async () => {
+  await withBackend({}, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"client_secret":"must-not-be-echoed",',
+    });
+    const body = await response.text();
+
+    assert.equal(response.status, 400);
+    assert.match(
+      response.headers.get("content-type") ?? "",
+      /^application\/json/,
+    );
+    assert.deepEqual(JSON.parse(body), { detail: "Invalid JSON request body" });
+    assert.doesNotMatch(body, /must-not-be-echoed/i);
+  });
+});

@@ -1,5 +1,5 @@
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import {
   buildWorkflowZip,
@@ -21,7 +21,7 @@ import {
 } from "../lib/workflowContributions";
 import { isAdminUser } from "../lib/userRoles";
 
-export const workflowsRouter = Router();
+export const workflowsRouter = createAsyncRouter();
 
 type Db = ReturnType<typeof createServerSupabase>;
 

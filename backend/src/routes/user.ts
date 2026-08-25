@@ -1,6 +1,6 @@
 import crypto from "crypto";
-import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { createServerSupabase } from "../lib/supabase";
 import { isTabularModelId, resolveTabularModel } from "../lib/llm";
@@ -56,7 +56,7 @@ import {
 } from "../lib/llmSpend";
 import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
 
-export const userRouter = Router();
+export const userRouter = createAsyncRouter();
 
 const MONTHLY_CREDIT_LIMIT = 999999;
 const UUID_RE =

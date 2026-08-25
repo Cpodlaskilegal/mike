@@ -1,5 +1,6 @@
-import { Router, type Response } from "express";
+import type { Response } from "express";
 import { requireAuth } from "../middleware/auth";
+import { createAsyncRouter } from "../middleware/asyncRouteErrors";
 import { createServerSupabase } from "../lib/supabase";
 import {
   buildDocContext,
@@ -57,7 +58,7 @@ import {
 import { cancelOpenAIBackgroundResponse } from "../lib/llm/openai";
 import { reconcileMcpApprovalTerminalEventsForMessage } from "../lib/mcpConnectors";
 
-export const chatRouter = Router();
+export const chatRouter = createAsyncRouter();
 
 type Db = ReturnType<typeof createServerSupabase>;
 const isDev = process.env.NODE_ENV !== "production";
