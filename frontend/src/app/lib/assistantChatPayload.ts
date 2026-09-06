@@ -1,7 +1,8 @@
 import {
     isClaudeOpus5Model,
     isClaudeOpus5ReasoningEffort,
-    isGpt56Model,
+    isOpenAiReasoningModel,
+    normalizeOpenAiReasoningEffort,
     type AssistantReasoningEffort,
     type EffectiveAssistantGenerationSettings,
 } from "./assistantGenerationSettings";
@@ -25,13 +26,16 @@ export function buildAssistantGenerationPayload(
                 : "high",
         };
     }
-    if (!isGpt56Model(settings.model)) return { model: settings.model };
+    if (!isOpenAiReasoningModel(settings.model)) return { model: settings.model };
     const effort =
         settings.reasoningMode === "pro" &&
         (settings.reasoningEffort === "none" ||
             settings.reasoningEffort === "low")
             ? "medium"
-            : settings.reasoningEffort;
+            : normalizeOpenAiReasoningEffort(
+                  settings.model,
+                  settings.reasoningEffort,
+              );
     return {
         model: settings.model,
         reasoning_effort: effort,

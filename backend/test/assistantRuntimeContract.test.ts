@@ -57,6 +57,7 @@ function writeRuntimeFixture(
   } = {},
 ) {
   const openAiMainModels = options.openAiMainModels ?? [
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -805,7 +806,7 @@ test("assistant-runtime-check validates this checkout without contacting service
   assert.match(output, /main model picker matches backend canonical models/);
   assert.match(output, /provider adapters honor AbortSignal/);
   assert.match(output, /SSE routes cancel provider work on disconnect/);
-  assert.match(output, /GPT-5\.6 main model literals are exact/);
+  assert.match(output, /OpenAI main model literals are exact/);
   assert.match(output, /main assistant requests resolve before SSE/);
   assert.match(output, /runLLMStream consumes explicit model settings/);
   assert.match(output, /tabular chat and profiles stay on tabular models/);
@@ -1005,7 +1006,7 @@ test("assistant-runtime fixture satisfies the full expanded assistant contract",
       /rich citation streaming and locator contract is complete: PASS/,
     );
     assert.match(output, /turn-scoped document read suppression is safe: PASS/);
-    assert.match(output, /GPT-5\.6 main model literals are exact: PASS/);
+    assert.match(output, /OpenAI main model literals are exact: PASS/);
     assert.match(output, /main assistant requests resolve before SSE: PASS/);
     assert.match(output, /runLLMStream consumes explicit model settings: PASS/);
     assert.match(
@@ -1030,8 +1031,26 @@ test("assistant-runtime-check rejects legacy OpenAI main-model literals even whe
     const output = `${result.stdout}${result.stderr}`;
 
     assert.equal(result.status, 1, output);
-    assert.match(output, /GPT-5\.6 main model literals are exact: FAIL/);
+    assert.match(output, /OpenAI main model literals are exact: FAIL/);
     assert.match(output, /gpt-5\.6-sol|gpt-5\.5/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects a matching backend and picker that omit Astra", () => {
+  const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+  try {
+    writeRuntimeFixture(root, {
+      openAiMainModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    });
+    const result = runHarness(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 1, output);
+    assert.match(output, /OpenAI main model literals are exact: FAIL/);
+    assert.match(output, /missing: gpt-6-astra/);
+    assert.match(output, /main model picker matches backend canonical models: PASS/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

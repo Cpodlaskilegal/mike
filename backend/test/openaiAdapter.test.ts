@@ -18,7 +18,8 @@ test.before(async () => {
   adapter = await import("../src/lib/llm/openai");
 });
 
-const GPT_5_6_MODELS = [
+const OPENAI_MAIN_MODELS = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -76,8 +77,8 @@ function functionCall(
   };
 }
 
-test("builds separately typed Standard streaming requests for every GPT-5.6 family model", () => {
-  for (const model of GPT_5_6_MODELS) {
+test("builds separately typed Standard streaming requests for every OpenAI main model", () => {
+  for (const model of OPENAI_MAIN_MODELS) {
     const request = adapter.buildOpenAIStandardStreamingRequest({
       model,
       input: "Hello",
@@ -100,7 +101,7 @@ test("builds separately typed Standard streaming requests for every GPT-5.6 fami
 });
 
 test("builds Pro as a stored background request without inventing a model slug", () => {
-  for (const model of GPT_5_6_MODELS) {
+  for (const model of OPENAI_MAIN_MODELS) {
     const request = adapter.buildOpenAIProBackgroundRequest({
       model,
       input: "Hello",

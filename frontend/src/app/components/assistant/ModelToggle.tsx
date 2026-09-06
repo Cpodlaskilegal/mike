@@ -22,6 +22,12 @@ export interface ModelOption {
 
 export const MODELS: ModelOption[] = [
     {
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        group: "OpenAI",
+        description: "Complex reasoning and agentic work",
+    },
+    {
         id: "gpt-5.6-sol",
         label: "GPT-5.6 Sol",
         group: "OpenAI",

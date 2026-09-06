@@ -17,6 +17,7 @@ export const GEMINI_MAIN_MODELS = [
     "gemini-3-flash-preview",
 ] as const;
 export const OPENAI_MAIN_MODELS = [
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -43,6 +44,15 @@ export type AssistantReasoningEffort =
 // after the first provider that exposed it in Docket.
 export const GPT_5_6_REASONING_EFFORTS = ASSISTANT_REASONING_EFFORTS;
 export type Gpt56ReasoningEffort = AssistantReasoningEffort;
+
+// https://developers.openai.com/api/docs/models/gpt-6-astra
+export const ASTRA_REASONING_EFFORTS = [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+] as const;
 
 export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
     "low",
@@ -75,18 +85,26 @@ export type MainModelRequestParseResult =
     | { ok: true; value: ResolvedMainModelRequest }
     | { ok: false; detail: string };
 
-type Gpt56MainModelId = (typeof OPENAI_MAIN_MODELS)[number];
+type OpenAiMainModelId = (typeof OPENAI_MAIN_MODELS)[number];
 
-type Gpt56MainModelConfig = {
-    selectionModel: Gpt56MainModelId;
-    providerModel: Gpt56MainModelId;
-    supportedReasoningEfforts: typeof GPT_5_6_REASONING_EFFORTS;
+type OpenAiMainModelConfig = {
+    selectionModel: OpenAiMainModelId;
+    providerModel: OpenAiMainModelId;
+    supportedReasoningEfforts: readonly AssistantReasoningEffort[];
     supportedReasoningModes: readonly ["standard", "pro"];
     defaultReasoningEffort: Gpt56ReasoningEffort;
     streamingByMode: { readonly standard: true; readonly pro: false };
 };
 
-const GPT_5_6_MAIN_MODEL_REGISTRY = {
+const OPENAI_MAIN_MODEL_REGISTRY = {
+    "gpt-6-astra": {
+        selectionModel: "gpt-6-astra",
+        providerModel: "gpt-6-astra",
+        supportedReasoningEfforts: ASTRA_REASONING_EFFORTS,
+        supportedReasoningModes: ["standard", "pro"],
+        defaultReasoningEffort: "max",
+        streamingByMode: { standard: true, pro: false },
+    },
     "gpt-5.6-sol": {
         selectionModel: "gpt-5.6-sol",
         providerModel: "gpt-5.6-sol",
@@ -111,10 +129,10 @@ const GPT_5_6_MAIN_MODEL_REGISTRY = {
         defaultReasoningEffort: "medium",
         streamingByMode: { standard: true, pro: false },
     },
-} as const satisfies Record<Gpt56MainModelId, Gpt56MainModelConfig>;
+} as const satisfies Record<OpenAiMainModelId, OpenAiMainModelConfig>;
 
 type LegacyMainModelConfig = {
-    selectionModel: Gpt56MainModelId;
+    selectionModel: OpenAiMainModelId;
     reasoningEffort: Gpt56ReasoningEffort;
     reasoningMode: ReasoningMode;
 };
@@ -239,8 +257,8 @@ function isNonOpenAiMainRequestModel(model: string): boolean {
     );
 }
 
-function isGpt56MainModel(model: string): model is Gpt56MainModelId {
-    return hasOwn(GPT_5_6_MAIN_MODEL_REGISTRY, model);
+function isOpenAiMainModel(model: string): model is OpenAiMainModelId {
+    return hasOwn(OPENAI_MAIN_MODEL_REGISTRY, model);
 }
 
 function isClaudeOpus5ReasoningEffort(
@@ -296,7 +314,7 @@ export function resolveMainModelRequest(
         };
     }
 
-    let selectionModel: Gpt56MainModelId;
+    let selectionModel: OpenAiMainModelId;
     let defaultEffort: Gpt56ReasoningEffort;
     let defaultMode: ReasoningMode;
     let status: MainModelResolutionStatus;
@@ -304,13 +322,13 @@ export function resolveMainModelRequest(
     if (request.model === undefined) {
         selectionModel = DEFAULT_MAIN_MODEL;
         defaultEffort =
-            GPT_5_6_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
+            OPENAI_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
         defaultMode = "standard";
         status = "defaulted";
-    } else if (isGpt56MainModel(request.model)) {
+    } else if (isOpenAiMainModel(request.model)) {
         selectionModel = request.model;
         defaultEffort =
-            GPT_5_6_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
+            OPENAI_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
         defaultMode = "standard";
         status = "direct";
     } else if (hasOwn(LEGACY_MAIN_MODEL_MAP, request.model)) {
@@ -322,13 +340,16 @@ export function resolveMainModelRequest(
     } else {
         selectionModel = DEFAULT_MAIN_MODEL;
         defaultEffort =
-            GPT_5_6_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
+            OPENAI_MAIN_MODEL_REGISTRY[selectionModel].defaultReasoningEffort;
         defaultMode = "standard";
         status = "unknown_fallback";
     }
 
     const reasoningMode = request.reasoning_mode ?? defaultMode;
     let reasoningEffort = request.reasoning_effort ?? defaultEffort;
+    if (selectionModel === "gpt-6-astra" && reasoningEffort === "none") {
+        reasoningEffort = "low";
+    }
     if (
         reasoningMode === "pro" &&
         (reasoningEffort === "none" || reasoningEffort === "low")
@@ -336,7 +357,7 @@ export function resolveMainModelRequest(
         reasoningEffort = "medium";
     }
 
-    const config = GPT_5_6_MAIN_MODEL_REGISTRY[selectionModel];
+    const config = OPENAI_MAIN_MODEL_REGISTRY[selectionModel];
     return {
         requestedModel,
         selectionModel: config.selectionModel,
@@ -395,15 +416,18 @@ export function parseMainModelRequest(
     }
 
     let reasoningEffort: AssistantReasoningEffort | undefined;
+    const supportedEfforts = model && isOpenAiMainModel(model)
+        ? OPENAI_MAIN_MODEL_REGISTRY[model].supportedReasoningEfforts
+        : GPT_5_6_REASONING_EFFORTS;
     if (hasOwn(raw, "reasoning_effort")) {
         if (
             typeof raw.reasoning_effort !== "string" ||
-            !(GPT_5_6_REASONING_EFFORTS as readonly string[]).includes(
+            !(supportedEfforts as readonly string[]).includes(
                 raw.reasoning_effort,
             )
         ) {
             return parseFailure(
-                `reasoning_effort must be one of: ${GPT_5_6_REASONING_EFFORTS.join(", ")}`,
+                `reasoning_effort must be one of: ${supportedEfforts.join(", ")}`,
             );
         }
         reasoningEffort = raw.reasoning_effort as AssistantReasoningEffort;
