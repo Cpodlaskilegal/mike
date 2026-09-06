@@ -29,6 +29,11 @@ function usdPerMillion(value: string): bigint {
 }
 
 const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
+  "gpt-6-astra": {
+    input: usdPerMillion("10"),
+    cachedInput: usdPerMillion("1"),
+    output: usdPerMillion("50"),
+  },
   "gpt-5.6-sol": {
     input: usdPerMillion("5"),
     cachedInput: usdPerMillion("0.5"),
@@ -116,6 +121,14 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
   },
 };
 
+// https://developers.openai.com/api/docs/pricing (verified 2026-09-06).
+// Astra's long-context rates apply to all tokens when total input exceeds 272K.
+const GPT_6_ASTRA_LONG_CONTEXT_PRICE: PricePerMillion = {
+  input: usdPerMillion("20"),
+  cachedInput: usdPerMillion("2"),
+  output: usdPerMillion("75"),
+};
+
 const CLAUDE_SONNET_5_INTRODUCTORY_PRICE: PricePerMillion = {
   input: usdPerMillion("2"),
   cachedInput: usdPerMillion("0.2"),
@@ -162,11 +175,14 @@ export function calculateLlmCostNanos(
   input: LlmCostInput,
   at: Date = new Date(),
 ): LlmCost {
+  const inputTokens = positiveInteger(input.inputTokens);
   const pricing =
-    input.model === "claude-sonnet-5" &&
-    at < CLAUDE_SONNET_5_STANDARD_PRICING_START
-      ? CLAUDE_SONNET_5_INTRODUCTORY_PRICE
-      : PRICE_PER_MILLION[input.model];
+    input.model === "gpt-6-astra" && inputTokens > 272_000
+      ? GPT_6_ASTRA_LONG_CONTEXT_PRICE
+      : input.model === "claude-sonnet-5" &&
+          at < CLAUDE_SONNET_5_STANDARD_PRICING_START
+        ? CLAUDE_SONNET_5_INTRODUCTORY_PRICE
+        : PRICE_PER_MILLION[input.model];
   if (!pricing) {
     return {
       pricingStatus: "unpriced",
@@ -177,7 +193,6 @@ export function calculateLlmCostNanos(
     };
   }
 
-  const inputTokens = positiveInteger(input.inputTokens);
   const outputTokens = positiveInteger(input.outputTokens);
   const cachedInputTokens = positiveInteger(input.cachedInputTokens);
   const cacheReadTokens = positiveInteger(input.cacheReadTokens);

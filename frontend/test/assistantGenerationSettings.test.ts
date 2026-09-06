@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ALLOWED_MAIN_MODEL_IDS,
+  ASTRA_MODEL_ID,
+  ASTRA_REASONING_EFFORTS,
   ASSISTANT_GENERATION_STORAGE_KEY,
   CLAUDE_OPUS_5_REASONING_EFFORTS,
   CLAUDE_MAIN_MODEL_IDS,
@@ -9,6 +11,7 @@ import {
   GPT56_MODEL_IDS,
   GPT56_REASONING_EFFORTS,
   LEGACY_ASSISTANT_MODEL_STORAGE_KEY,
+  OPENAI_MAIN_MODEL_IDS,
   PRO_REASONING_EFFORTS,
   activateAssistantSession,
   adoptCreatedAssistantChat,
@@ -18,6 +21,7 @@ import {
   effectiveAssistantGenerationSettings,
   isClaudeOpus5Model,
   isGpt56Model,
+  isOpenAiReasoningModel,
   persistAssistantGenerationSettings,
   resetAssistantSession,
   selectAssistantEffort,
@@ -29,6 +33,10 @@ import {
   assistantRequestContinuesAfterDisconnect,
   buildAssistantGenerationPayload,
 } from "../src/app/lib/assistantChatPayload";
+import {
+  getModelProvider,
+  isModelAvailable,
+} from "../src/app/lib/modelAvailability";
 import {
   MODELS,
   TABULAR_MODELS,
@@ -79,14 +87,14 @@ test("adds Opus 5 to the Claude main-model inventory only", () => {
     "gemini-3-flash-preview",
   ]);
   assert.deepEqual(new Set(ALLOWED_MAIN_MODEL_IDS), new Set([
-    ...GPT56_MODEL_IDS,
+    ...OPENAI_MAIN_MODEL_IDS,
     ...CLAUDE_MAIN_MODEL_IDS,
     ...GEMINI_MAIN_MODEL_IDS,
   ]));
   assert.deepEqual(
     MODELS.map(({ id }) => id),
     [
-      ...GPT56_MODEL_IDS,
+      ...OPENAI_MAIN_MODEL_IDS,
       ...CLAUDE_MAIN_MODEL_IDS,
       ...GEMINI_MAIN_MODEL_IDS,
     ],
@@ -95,6 +103,117 @@ test("adds Opus 5 to the Claude main-model inventory only", () => {
     TABULAR_MODELS.some(({ id }) => id === "claude-opus-5"),
     false,
   );
+});
+
+test("adds Astra to the main OpenAI picker without changing defaults or tabular models", () => {
+  assert.equal(ASTRA_MODEL_ID, "gpt-6-astra");
+  assert.equal(MODELS.find(({ id }) => id === ASTRA_MODEL_ID)?.label, "GPT-6 Astra");
+  assert.equal(ALLOWED_MAIN_MODEL_IDS.has(ASTRA_MODEL_ID), true);
+  assert.equal(isOpenAiReasoningModel(ASTRA_MODEL_ID), true);
+  assert.equal(isGpt56Model(ASTRA_MODEL_ID), false);
+  assert.equal(TABULAR_MODELS.some(({ id }) => id === ASTRA_MODEL_ID), false);
+  assert.equal(defaultAssistantGenerationSettings().model, "gpt-5.6-sol");
+  assert.equal(defaultAssistantGenerationSettings().standardEffort, "max");
+  assert.equal(getModelProvider(ASTRA_MODEL_ID), "openai");
+  const missing = { configured: false, source: null };
+  assert.equal(isModelAvailable(ASTRA_MODEL_ID, {
+    openai: { configured: true, source: "user" },
+    claude: missing,
+    courtlistener: missing,
+    gemini: missing,
+  }), true);
+  assert.equal(isModelAvailable(ASTRA_MODEL_ID, {
+    openai: missing,
+    claude: missing,
+    courtlistener: missing,
+    gemini: missing,
+  }), false);
+});
+
+test("Astra exposes Low through Max in Standard mode and supports Pro", () => {
+  assert.deepEqual(ASTRA_REASONING_EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(assistantReasoningEffortsFor(ASTRA_MODEL_ID, "standard"), ASTRA_REASONING_EFFORTS);
+  assert.deepEqual(assistantReasoningEffortsFor(ASTRA_MODEL_ID, "pro"), PRO_REASONING_EFFORTS);
+  const astra = selectAssistantModel(defaultAssistantGenerationSettings(), ASTRA_MODEL_ID);
+  assert.equal(astra.standardEffort, "max");
+  assert.equal(setAssistantReasoningMode(astra, "pro").reasoningMode, "pro");
+});
+
+test("Astra normalizes None to Low when selected or restored from storage", () => {
+  const none = selectAssistantEffort(defaultAssistantGenerationSettings(), "none");
+  const astra = selectAssistantModel(none, ASTRA_MODEL_ID);
+  assert.equal(astra.standardEffort, "low");
+  assert.equal(selectAssistantEffort(astra, "none").standardEffort, "low");
+
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: JSON.stringify({ version: 1, model: ASTRA_MODEL_ID, standardEffort: "none" }),
+  });
+  assert.equal(restored.model, ASTRA_MODEL_ID);
+  assert.equal(restored.standardEffort, "low");
+  assert.equal(restored.proEffort, "medium");
+  assert.deepEqual(effectiveAssistantGenerationSettings({ ...astra, standardEffort: "none" }), {
+    model: ASTRA_MODEL_ID,
+    reasoningEffort: "low",
+    reasoningMode: "standard",
+  });
+  assert.equal(JSON.parse(serializeAssistantGenerationSettings({ ...astra, standardEffort: "none" })).standardEffort, "low");
+  assert.equal(deserializeAssistantGenerationSettings({ legacy: ASTRA_MODEL_ID }).model, ASTRA_MODEL_ID);
+});
+
+test("Astra preserves model and effort across storage and OpenAI model switches", () => {
+  const astra = selectAssistantEffort(
+    selectAssistantModel(defaultAssistantGenerationSettings(), ASTRA_MODEL_ID),
+    "xhigh",
+  );
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: serializeAssistantGenerationSettings(astra),
+  });
+  assert.equal(restored.model, ASTRA_MODEL_ID);
+  assert.equal(restored.standardEffort, "xhigh");
+
+  const pro = selectAssistantEffort(setAssistantReasoningMode(restored, "pro"), "max");
+  for (const model of [...GPT56_MODEL_IDS, ASTRA_MODEL_ID]) {
+    const switched = selectAssistantModel(pro, model);
+    assert.equal(switched.reasoningMode, "pro");
+    assert.equal(switched.proEffort, "max");
+    assert.equal(switched.standardEffort, "xhigh");
+  }
+});
+
+test("Astra request payloads include supported effort and mode with durable Pro and Max", () => {
+  for (const effort of ASTRA_REASONING_EFFORTS) {
+    assert.deepEqual(buildAssistantGenerationPayload({
+      model: ASTRA_MODEL_ID,
+      reasoningEffort: effort,
+      reasoningMode: "standard",
+    }), {
+      model: ASTRA_MODEL_ID,
+      reasoning_effort: effort,
+      reasoning_mode: "standard",
+    });
+  }
+  for (const [mode, effort] of [["standard", "low"], ["pro", "medium"]] as const) {
+    assert.deepEqual(buildAssistantGenerationPayload({
+      model: ASTRA_MODEL_ID,
+      reasoningEffort: "none",
+      reasoningMode: mode,
+    }), {
+      model: ASTRA_MODEL_ID,
+      reasoning_effort: effort,
+      reasoning_mode: mode,
+    });
+  }
+  for (const [mode, effort, durable] of [
+    ["standard", "max", true],
+    ["pro", "medium", true],
+    ["standard", "high", false],
+  ] as const) {
+    assert.equal(assistantRequestContinuesAfterDisconnect(buildAssistantGenerationPayload({
+      model: ASTRA_MODEL_ID,
+      reasoningEffort: effort,
+      reasoningMode: mode,
+    })), durable);
+  }
 });
 
 test("exposes exact provider-specific efforts and keeps GPT Pro off Opus 5", () => {

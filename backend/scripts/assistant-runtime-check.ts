@@ -16,6 +16,7 @@ type StringArrayRead = {
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRepositoryRoot = resolve(scriptDirectory, "../..");
 const expectedOpenAiMainModels = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -1131,7 +1132,7 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       ? "providerForModel does not route OpenAI model IDs"
       : "",
   ].filter(Boolean);
-  const exactGpt56ModelErrors: string[] = [];
+  const exactOpenAiMainModelErrors: string[] = [];
   const openAiMainModelDetail = describeSetMismatch(
     expectedOpenAiMainModels,
     modelArrays.OPENAI_MAIN_MODELS.values,
@@ -1142,12 +1143,12 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       (model, index) => model !== expectedOpenAiMainModels[index],
     )
   ) {
-    exactGpt56ModelErrors.push(
+    exactOpenAiMainModelErrors.push(
       `OPENAI_MAIN_MODELS must equal ${expectedOpenAiMainModels.join(", ")}; found ${modelArrays.OPENAI_MAIN_MODELS.values.join(", ") || "none"}${openAiMainModelDetail ? ` (${openAiMainModelDetail})` : ""}`,
     );
   }
   if (backendDefaultModel !== expectedDefaultMainModel) {
-    exactGpt56ModelErrors.push(
+    exactOpenAiMainModelErrors.push(
       `DEFAULT_MAIN_MODEL must be ${expectedDefaultMainModel}; found ${backendDefaultModel ?? "none"}`,
     );
   }
@@ -1434,9 +1435,9 @@ export function evaluateAssistantRuntimeContract(root: string): CheckResult[] {
       detail: canonicalModelErrors.join("; ") || undefined,
     },
     {
-      name: "GPT-5.6 main model literals are exact",
-      ok: exactGpt56ModelErrors.length === 0,
-      detail: exactGpt56ModelErrors.join("; ") || undefined,
+      name: "OpenAI main model literals are exact",
+      ok: exactOpenAiMainModelErrors.length === 0,
+      detail: exactOpenAiMainModelErrors.join("; ") || undefined,
     },
     {
       name: "main model picker matches backend canonical models",

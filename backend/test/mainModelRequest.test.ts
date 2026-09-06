@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+    ASTRA_REASONING_EFFORTS,
     ASSISTANT_REASONING_EFFORTS,
     CLAUDE_MAIN_MODELS,
     CLAUDE_OPUS_5_REASONING_EFFORTS,
@@ -35,8 +36,9 @@ function sourceSection(
     return source.slice(start, end < 0 ? undefined : end);
 }
 
-test("defines the canonical GPT-5.6 main-model contract", () => {
+test("defines the canonical OpenAI main-model contract", () => {
     assert.deepEqual(OPENAI_MAIN_MODELS, [
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -63,6 +65,37 @@ test("defines the canonical GPT-5.6 main-model contract", () => {
         "xhigh",
         "max",
     ]);
+});
+
+test("routes Astra directly with its supported efforts and Pro mode", () => {
+    const defaults = resolveMainModelRequest({ model: "gpt-6-astra" });
+    assert.equal(defaults.providerModel, "gpt-6-astra");
+    assert.equal(defaults.reasoningEffort, "max");
+    assert.equal(defaults.reasoningMode, "standard");
+    for (const reasoning_mode of ["standard", "pro"] as const) {
+        for (const reasoning_effort of ASTRA_REASONING_EFFORTS) {
+            const result = parseMainModelRequest({
+                model: "gpt-6-astra", reasoning_effort, reasoning_mode,
+            });
+            assert.equal(result.ok, true);
+            if (!result.ok) continue;
+            assert.equal(result.value.selectionModel, "gpt-6-astra");
+            assert.equal(result.value.providerModel, "gpt-6-astra");
+            assert.equal(result.value.provider, "openai");
+            assert.equal(result.value.status, "direct");
+            assert.equal(result.value.reasoningMode, reasoning_mode);
+            assert.equal(result.value.reasoningEffort,
+                reasoning_mode === "pro" && reasoning_effort === "low"
+                    ? "medium" : reasoning_effort);
+        }
+    }
+    for (const reasoning_effort of ["none", "minimal", "ultra"]) {
+        const result = parseMainModelRequest({ model: "gpt-6-astra", reasoning_effort });
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.match(result.detail, /low, medium, high, xhigh, max/);
+    }
+    assert.equal(resolveMainModelRequest({ model: "gpt-6-astra", reasoning_effort: "none" }).reasoningEffort, "low");
+    assert.equal(isTabularModelId("gpt-6-astra"), false);
 });
 
 test("defines only the production-account-accessible Claude main models", () => {

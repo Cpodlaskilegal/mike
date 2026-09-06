@@ -2,7 +2,7 @@ import type { ApiKeyState } from "@/app/lib/docketApi";
 import {
     CLAUDE_MAIN_MODEL_IDS,
     GEMINI_MAIN_MODEL_IDS,
-    GPT56_MODEL_IDS,
+    OPENAI_MAIN_MODEL_IDS,
 } from "@/app/lib/assistantGenerationSettings";
 
 export type ModelProvider = "claude" | "gemini" | "openai";
@@ -10,7 +10,7 @@ export type ModelGroup = "Anthropic" | "Google" | "OpenAI";
 
 const CLAUDE_MODELS = new Set<string>(CLAUDE_MAIN_MODEL_IDS);
 const GEMINI_MODELS = new Set<string>(GEMINI_MAIN_MODEL_IDS);
-const OPENAI_MODELS = new Set<string>(GPT56_MODEL_IDS);
+const OPENAI_MODELS = new Set<string>(OPENAI_MAIN_MODEL_IDS);
 
 export function getModelProvider(modelId: string): ModelProvider | null {
     if (OPENAI_MODELS.has(modelId) || modelId.startsWith("gpt-")) {

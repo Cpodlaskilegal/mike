@@ -27,7 +27,7 @@ import { ReasoningModeToggle } from "./ReasoningModeToggle";
 import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
 import {
     assistantReasoningEffortsFor,
-    isGpt56Model,
+    isOpenAiReasoningModel,
 } from "@/app/lib/assistantGenerationSettings";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
@@ -81,7 +81,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     } = useAssistantGenerationSettings();
     const model = generationSettings.model;
     const generationControlsDisabled = !hydrated || isLoading;
-    const isGptModel = isGpt56Model(model);
+    const isGptModel = isOpenAiReasoningModel(model);
     const allowedEfforts = assistantReasoningEffortsFor(
         model,
         generationSettings.reasoningMode,

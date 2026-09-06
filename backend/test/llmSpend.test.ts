@@ -56,6 +56,42 @@ test("prices every GPT-5.6 family model at its exact per-million rate", async ()
   }
 });
 
+test("prices Astra at standard rates through the 272K input boundary", async () => {
+  const spend = await loadSpend();
+  const result = spend.calculateLlmCostNanos({
+    provider: "openai",
+    model: "gpt-6-astra",
+    inputTokens: 272_000,
+    cachedInputTokens: 20_000,
+    cacheCreation5mTokens: 12_000,
+    outputTokens: 10_000,
+  });
+
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 2_400_000_000n);
+  assert.equal(result.cachedInputCostNanos, 170_000_000n);
+  assert.equal(result.outputCostNanos, 500_000_000n);
+  assert.equal(result.totalCostNanos, 3_070_000_000n);
+});
+
+test("prices all Astra tokens at long-context rates above 272K total input", async () => {
+  const spend = await loadSpend();
+  const result = spend.calculateLlmCostNanos({
+    provider: "openai",
+    model: "gpt-6-astra",
+    inputTokens: 272_001,
+    cachedInputTokens: 20_000,
+    cacheCreation5mTokens: 12_000,
+    outputTokens: 10_000,
+  });
+
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 4_800_020_000n);
+  assert.equal(result.cachedInputCostNanos, 340_000_000n);
+  assert.equal(result.outputCostNanos, 750_000_000n);
+  assert.equal(result.totalCostNanos, 5_890_020_000n);
+});
+
 test("subtracts OpenAI cached and cache-write tokens exactly once", async () => {
   const spend = await loadSpend();
   const result = spend.calculateLlmCostNanos({
