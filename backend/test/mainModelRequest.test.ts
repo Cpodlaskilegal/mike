@@ -43,7 +43,7 @@ test("defines the canonical OpenAI main-model contract", () => {
         "gpt-5.6-terra",
         "gpt-5.6-luna",
     ]);
-    assert.equal(DEFAULT_MAIN_MODEL, "gpt-5.6-sol");
+    assert.equal(DEFAULT_MAIN_MODEL, "gpt-6-astra");
     assert.equal(DEFAULT_TITLE_MODEL, "gpt-5.4-nano");
     assert.equal(DEFAULT_TABULAR_MODEL, "gpt-5.4-mini");
     assert.deepEqual(GPT_5_6_REASONING_EFFORTS, [
@@ -109,11 +109,11 @@ test("defines only the production-account-accessible Claude main models", () => 
     ]);
 });
 
-test("defaults an omitted main model to Sol, Max, and Standard", () => {
+test("defaults an omitted main model to Astra, Max, and Standard", () => {
     assert.deepEqual(resolveMainModelRequest({}), {
         requestedModel: null,
-        selectionModel: "gpt-5.6-sol",
-        providerModel: "gpt-5.6-sol",
+        selectionModel: "gpt-6-astra",
+        providerModel: "gpt-6-astra",
         provider: "openai",
         reasoningEffort: "max",
         reasoningMode: "standard",
@@ -283,8 +283,8 @@ test("rejects explicit malformed model values but defaults an omitted model", ()
         ok: true,
         value: {
             requestedModel: null,
-            selectionModel: "gpt-5.6-sol",
-            providerModel: "gpt-5.6-sol",
+            selectionModel: "gpt-6-astra",
+            providerModel: "gpt-6-astra",
             provider: "openai",
             reasoningEffort: "max",
             reasoningMode: "standard",
@@ -356,7 +356,7 @@ test("maps stale Mythos selections to account-accessible Sonnet 5", () => {
     );
 });
 
-test("falls back unknown non-empty model strings to Sol with observability status", () => {
+test("falls back unknown non-empty model strings to Astra with observability status", () => {
     assert.deepEqual(
         parseMainModelRequest({
             model: "future-main-model",
@@ -367,8 +367,8 @@ test("falls back unknown non-empty model strings to Sol with observability statu
             ok: true,
             value: {
                 requestedModel: "future-main-model",
-                selectionModel: "gpt-5.6-sol",
-                providerModel: "gpt-5.6-sol",
+                selectionModel: "gpt-6-astra",
+                providerModel: "gpt-6-astra",
                 provider: "openai",
                 reasoningEffort: "high",
                 reasoningMode: "pro",
@@ -382,8 +382,8 @@ test("treats object prototype keys as unknown model strings", () => {
     for (const requestedModel of ["toString", "__proto__"]) {
         assert.deepEqual(resolveMainModelRequest({ model: requestedModel }), {
             requestedModel,
-            selectionModel: "gpt-5.6-sol",
-            providerModel: "gpt-5.6-sol",
+            selectionModel: "gpt-6-astra",
+            providerModel: "gpt-6-astra",
             provider: "openai",
             reasoningEffort: "max",
             reasoningMode: "standard",
