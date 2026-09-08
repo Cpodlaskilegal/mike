@@ -97,7 +97,7 @@ export type AssistantGenerationStorageSnapshot = {
     legacy?: string | null;
 };
 
-const DEFAULT_MODEL: Gpt56ModelId = "gpt-5.6-sol";
+const DEFAULT_MODEL: OpenAiMainModelId = ASTRA_MODEL_ID;
 const DEFAULT_EFFORT: Gpt56ReasoningEffort = "max";
 const DEFAULT_CLAUDE_EFFORT: ClaudeOpus5ReasoningEffort = "high";
 const GPT56_MODEL_SET = new Set<string>(GPT56_MODEL_IDS);

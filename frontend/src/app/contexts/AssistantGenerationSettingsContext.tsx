@@ -97,7 +97,7 @@ export function AssistantGenerationSettingsProvider({
                 });
             } catch {
                 // Storage can be unavailable in private or restricted browser
-                // contexts. The in-memory Sol/Max/Standard state is safe.
+                // contexts. The in-memory Astra/Max/Standard state is safe.
             }
         }
         dispatch({ type: "hydrate", state: next });

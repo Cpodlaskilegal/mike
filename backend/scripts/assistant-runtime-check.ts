@@ -21,7 +21,7 @@ const expectedOpenAiMainModels = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ] as const;
-const expectedDefaultMainModel = "gpt-5.6-sol";
+const expectedDefaultMainModel = "gpt-6-astra";
 
 function readSource(
   root: string,

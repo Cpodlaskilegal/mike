@@ -38,6 +38,7 @@ import {
   isModelAvailable,
 } from "../src/app/lib/modelAvailability";
 import {
+  DEFAULT_MODEL_ID,
   MODELS,
   TABULAR_MODELS,
 } from "../src/app/components/assistant/ModelToggle";
@@ -105,14 +106,15 @@ test("adds Opus 5 to the Claude main-model inventory only", () => {
   );
 });
 
-test("adds Astra to the main OpenAI picker without changing defaults or tabular models", () => {
+test("defaults the main OpenAI picker to Astra without changing tabular models", () => {
   assert.equal(ASTRA_MODEL_ID, "gpt-6-astra");
   assert.equal(MODELS.find(({ id }) => id === ASTRA_MODEL_ID)?.label, "GPT-6 Astra");
   assert.equal(ALLOWED_MAIN_MODEL_IDS.has(ASTRA_MODEL_ID), true);
   assert.equal(isOpenAiReasoningModel(ASTRA_MODEL_ID), true);
   assert.equal(isGpt56Model(ASTRA_MODEL_ID), false);
   assert.equal(TABULAR_MODELS.some(({ id }) => id === ASTRA_MODEL_ID), false);
-  assert.equal(defaultAssistantGenerationSettings().model, "gpt-5.6-sol");
+  assert.equal(DEFAULT_MODEL_ID, ASTRA_MODEL_ID);
+  assert.equal(defaultAssistantGenerationSettings().model, ASTRA_MODEL_ID);
   assert.equal(defaultAssistantGenerationSettings().standardEffort, "max");
   assert.equal(getModelProvider(ASTRA_MODEL_ID), "openai");
   const missing = { configured: false, source: null };
@@ -140,7 +142,10 @@ test("Astra exposes Low through Max in Standard mode and supports Pro", () => {
 });
 
 test("Astra normalizes None to Low when selected or restored from storage", () => {
-  const none = selectAssistantEffort(defaultAssistantGenerationSettings(), "none");
+  const none = selectAssistantEffort(
+    selectAssistantModel(defaultAssistantGenerationSettings(), "gpt-5.6-sol"),
+    "none",
+  );
   const astra = selectAssistantModel(none, ASTRA_MODEL_ID);
   assert.equal(astra.standardEffort, "low");
   assert.equal(selectAssistantEffort(astra, "none").standardEffort, "low");
@@ -258,9 +263,9 @@ test("migrates retired Mythos selections to account-accessible Sonnet 5", () => 
   }
 });
 
-test("defaults to Sol, GPT Max, Claude High, and Standard", () => {
+test("defaults to Astra, GPT Max, Claude High, and Standard", () => {
   assert.deepEqual(defaultAssistantGenerationSettings(), {
-    model: "gpt-5.6-sol",
+    model: "gpt-6-astra",
     standardEffort: "max",
     proEffort: "max",
     claudeEffort: "high",
@@ -342,18 +347,18 @@ test("missing, malformed, or unknown storage safely returns the default", () => 
   }
 });
 
-test("a valid versioned record wins over a conflicting legacy value", () => {
+test("a valid saved Sol preference wins over the Astra default and a conflicting legacy value", () => {
   assert.deepEqual(
     deserializeAssistantGenerationSettings({
       versioned: JSON.stringify({
         version: 1,
-        model: "gpt-5.6-luna",
+        model: "gpt-5.6-sol",
         standardEffort: "xhigh",
       }),
       legacy: "gpt-5.5-pro",
     }),
     {
-      model: "gpt-5.6-luna",
+      model: "gpt-5.6-sol",
       standardEffort: "xhigh",
       proEffort: "xhigh",
       claudeEffort: "high",
@@ -438,10 +443,10 @@ test("never removes the legacy key when the versioned write fails", () => {
   assert.deepEqual(events, ["set"]);
 });
 
-test("enabling Pro clamps None and Low to Medium without changing Standard", () => {
+test("enabling GPT-5.6 Pro clamps None and Low to Medium without changing Standard", () => {
   for (const effort of ["none", "low"] as const) {
     const standard = selectAssistantEffort(
-      defaultAssistantGenerationSettings(),
+      selectAssistantModel(defaultAssistantGenerationSettings(), "gpt-5.6-sol"),
       effort,
     );
     const pro = setAssistantReasoningMode(standard, "pro");
@@ -479,7 +484,7 @@ test("editing Pro changes only Pro effort and disabling restores Standard", () =
   assert.equal(edited.standardEffort, "high");
   assert.equal(edited.proEffort, "max");
   assert.deepEqual(effectiveAssistantGenerationSettings(restored), {
-    model: "gpt-5.6-sol",
+    model: "gpt-6-astra",
     reasoningEffort: "high",
     reasoningMode: "standard",
   });

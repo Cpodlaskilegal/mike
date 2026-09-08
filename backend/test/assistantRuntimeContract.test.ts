@@ -62,7 +62,7 @@ function writeRuntimeFixture(
     "gpt-5.6-terra",
     "gpt-5.6-luna",
   ];
-  const defaultMainModel = options.defaultMainModel ?? "gpt-5.6-sol";
+  const defaultMainModel = options.defaultMainModel ?? "gpt-6-astra";
   const frontendMainModels = options.frontendMainModels ?? [
     ...openAiMainModels,
     "claude-main",
@@ -1043,6 +1043,7 @@ test("assistant-runtime-check rejects a matching backend and picker that omit As
   try {
     writeRuntimeFixture(root, {
       openAiMainModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      defaultMainModel: "gpt-5.6-sol",
     });
     const result = runHarness(root);
     const output = `${result.stdout}${result.stderr}`;

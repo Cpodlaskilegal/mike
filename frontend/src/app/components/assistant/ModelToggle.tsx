@@ -71,7 +71,7 @@ export const TABULAR_MODELS: ModelOption[] = [
     },
 ];
 
-export const DEFAULT_MODEL_ID = "gpt-5.6-sol";
+export const DEFAULT_MODEL_ID = "gpt-6-astra";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
