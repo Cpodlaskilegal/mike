@@ -8,11 +8,16 @@ import {
     claimMcpApprovalForExecution,
     createPendingMcpApproval,
     finishMcpApproval,
+    mcpArgumentsHash,
     serializeMcpApproval,
     type McpApprovalPool,
     type McpApprovalRow,
     type McpApprovalSummary,
 } from "./approvals";
+import {
+    boxApprovalPolicyVersion,
+    boxToolRequiresApproval,
+} from "./boxAccessPolicy";
 import {
     authConfigPatch,
     decryptAuthConfig,
@@ -93,7 +98,14 @@ function connectorSummary(
                           tool.toolName,
                       ),
                   }))
-                : summary.tools,
+                : managedBy === "box"
+                  ? summary.tools.map((tool, index) => ({
+                        ...tool,
+                        requiresConfirmation: boxToolRequiresApproval(
+                            tools![index],
+                        ),
+                    }))
+                  : summary.tools,
     };
 }
 
@@ -421,8 +433,8 @@ export async function refreshUserMcpConnectorTools(
     db: Db = createServerSupabase(),
 ): Promise<McpConnectorSummary> {
     const connector = await loadConnector(userId, connectorId, db);
-    const isPracticePanther =
-        backendManagedBy(connector) === "practicepanther";
+    const managedBy = backendManagedBy(connector);
+    const isPracticePanther = managedBy === "practicepanther";
     const now = new Date().toISOString();
     const result = await withMcpClient(
         connector,
@@ -435,10 +447,14 @@ export async function refreshUserMcpConnectorTools(
             tool.annotations && typeof tool.annotations === "object"
                 ? (tool.annotations as Record<string, unknown>)
                 : {};
-        const requiresConfirmation = toolRequiresConfirmation(
-            annotations,
-            tool.name,
-        );
+        const requiresConfirmation =
+            managedBy === "box"
+                ? boxToolRequiresApproval({
+                      tool_name: tool.name,
+                      annotations,
+                      requires_confirmation: false,
+                  })
+                : toolRequiresConfirmation(annotations, tool.name);
         return {
             connector_id: connector.id,
             tool_name: tool.name,
@@ -463,7 +479,7 @@ export async function refreshUserMcpConnectorTools(
                 onConflict: "connector_id,tool_name",
             });
         if (error) throw error;
-        if (!isPracticePanther) {
+        if (managedBy === null) {
             const { error: disableError } = await db
                 .from("user_mcp_connector_tools")
                 .update({ enabled: false, updated_at: now })
@@ -509,7 +525,7 @@ export async function setUserMcpToolEnabled(
             "PracticePanther tool access is managed by Docket's role and approval policy.",
         );
     }
-    if (enabled) {
+    if (enabled && backendManagedBy(connector) !== "box") {
         const { data, error } = await db
             .from("user_mcp_connector_tools")
             .select("requires_confirmation")
@@ -576,7 +592,7 @@ export async function buildUserMcpTools(
     const { data, error } = await db
         .from("user_mcp_connector_tools")
         .select(
-            "connector_id, openai_tool_name, tool_name, title, description, input_schema, requires_confirmation, enabled",
+            "connector_id, openai_tool_name, tool_name, title, description, input_schema, annotations, requires_confirmation, enabled",
         )
         .in(
             "connector_id",
@@ -601,6 +617,13 @@ export async function buildUserMcpTools(
             const decision = authorizePracticePantherTool({ role, toolName });
             if (decision.effect === "deny") return [];
             approvalRequired = decision.effect === "approval_required";
+        } else if (managedBy === "box") {
+            if (raw.enabled !== true) return [];
+            approvalRequired = boxToolRequiresApproval({
+                tool_name: toolName,
+                annotations: raw.annotations as ToolCacheRow["annotations"],
+                requires_confirmation: raw.requires_confirmation === true,
+            });
         } else {
             if (managedBy === null && role !== "admin") return [];
             if (
@@ -616,7 +639,7 @@ export async function buildUserMcpTools(
                 ? raw.description
                 : `Call ${toolName} on ${connector.name}.`;
         const approvalNotice = approvalRequired
-            ? "\n\nDocket will not send this change to PracticePanther until the signed-in user reviews and approves this exact action once."
+            ? `\n\nDocket will not send this change to ${connector.name} until the signed-in user reviews and approves this exact action once.`
             : "";
         return [{
             type: "function",
@@ -650,8 +673,12 @@ async function resolveCallableTool(
         .maybeSingle();
     if (connectorError || !connector) return null;
     const connectorRow = connector as ConnectorRow;
-    if (backendManagedBy(connectorRow) !== "practicepanther") {
-        if (!tool.enabled || tool.requires_confirmation) return null;
+    const managedBy = backendManagedBy(connectorRow);
+    if (managedBy !== "practicepanther") {
+        if (
+            !tool.enabled ||
+            (managedBy !== "box" && tool.requires_confirmation)
+        ) return null;
     }
     return { connector: connectorRow, tool };
 }
@@ -675,6 +702,7 @@ type ApprovedMcpExecution = {
     toolId: string | null;
     toolName: string;
     policyVersion: string;
+    argumentsHash: string;
 };
 
 async function executeMcpToolCallAuthorized(
@@ -730,12 +758,11 @@ async function executeMcpToolCallAuthorized(
             },
         };
     }
-    const actionKind = classifyMcpAction(
-        tool.tool_name,
-        args,
-        tool.annotations,
-    );
     const managedBy = backendManagedBy(connector);
+    const actionKind =
+        managedBy === "box"
+            ? boxToolRequiresApproval(tool, args) ? "mutation" : "read"
+            : classifyMcpAction(tool.tool_name, args, tool.annotations);
     const actorEmail = normalizeDocketActorEmail(context.actorEmail);
 
     if (managedBy === null && role !== "admin") {
@@ -771,14 +798,21 @@ async function executeMcpToolCallAuthorized(
         };
     }
 
-    if (managedBy === "practicepanther") {
+    if (approved || managedBy === "practicepanther" || managedBy === "box") {
+        const policyVersion =
+            managedBy === "box"
+                ? boxApprovalPolicyVersion(connector, tool)
+                : managedBy === "practicepanther"
+                  ? PRACTICEPANTHER_POLICY_VERSION
+                  : "unsupported-approval-connector";
         const matchesApprovedRequest =
             !!approved &&
             !!approved.approvalId &&
             approved.connectorId === connector.id &&
             approved.toolId === tool.id &&
             approved.toolName === tool.tool_name &&
-            approved.policyVersion === PRACTICEPANTHER_POLICY_VERSION;
+            approved.policyVersion === policyVersion &&
+            approved.argumentsHash === mcpArgumentsHash(args);
         if (approved && !matchesApprovedRequest) {
             const message =
                 "Docket blocked this approval because the current tool or policy no longer matches the reviewed action.";
@@ -793,17 +827,27 @@ async function executeMcpToolCallAuthorized(
                     status: "error",
                     action_kind: actionKind,
                     actor_email: actorEmail ?? undefined,
-                    policy_version: PRACTICEPANTHER_POLICY_VERSION,
+                    policy_version: policyVersion,
                     error: message,
                 },
             };
         }
-        const decision = authorizePracticePantherTool({
-            role,
-            toolName: tool.tool_name,
-            args,
-            approvalGranted: matchesApprovedRequest,
-        });
+        const decision =
+            managedBy === "practicepanther"
+                ? authorizePracticePantherTool({
+                      role,
+                      toolName: tool.tool_name,
+                      args,
+                      approvalGranted: matchesApprovedRequest,
+                  })
+                : {
+                      effect:
+                          actionKind === "mutation" && !matchesApprovedRequest
+                              ? "approval_required"
+                              : "allow",
+                      policyVersion,
+                      reason: "box_write_approval",
+                  };
         if (decision.effect === "deny") {
             const message = "MCP tool is not available or is disabled.";
             await insertMcpAuditLog(db, {
@@ -857,12 +901,15 @@ async function executeMcpToolCallAuthorized(
                 };
             }
             try {
-                const reviewableArgs = tagPracticePantherMutationArgs(
-                    tool.tool_name,
-                    args,
-                    tool.input_schema,
-                    actorEmail,
-                );
+                const reviewableArgs =
+                    managedBy === "practicepanther"
+                        ? tagPracticePantherMutationArgs(
+                              tool.tool_name,
+                              args,
+                              tool.input_schema,
+                              actorEmail,
+                          )
+                        : args;
                 const approval = await createPendingMcpApproval({
                     userId,
                     connector,
@@ -879,7 +926,7 @@ async function executeMcpToolCallAuthorized(
                         approval_required: true,
                         approval_id: approval.id,
                         message:
-                            "Docket is waiting for the signed-in user to approve this exact PracticePanther change. Do not retry this tool call.",
+                            `Docket is waiting for the signed-in user to approve this exact ${connector.name} change. Do not retry this tool call.`,
                     }),
                     event: {
                         type: "mcp_tool_call",
@@ -1037,16 +1084,16 @@ type McpApprovalTerminalRow = Pick<
 function terminalApprovalError(row: McpApprovalTerminalRow): string | undefined {
     if (row.error_message) return row.error_message;
     if (row.status === "rejected") {
-        return "The initiating Docket user denied this PracticePanther change.";
+        return `The initiating Docket user denied this ${row.connector_name} change.`;
     }
     if (row.status === "expired") {
-        return "This PracticePanther approval expired without execution.";
+        return `This ${row.connector_name} approval expired without execution.`;
     }
     if (row.status === "indeterminate") {
-        return "Docket could not determine whether the PracticePanther change completed. Verify it in PracticePanther before attempting it again.";
+        return `Docket could not determine whether the ${row.connector_name} change completed. Verify it in ${row.connector_name} before attempting it again.`;
     }
     if (row.status === "failed") {
-        return "The approved PracticePanther change failed.";
+        return `The approved ${row.connector_name} change failed.`;
     }
     return undefined;
 }
@@ -1208,6 +1255,7 @@ export async function executeMcpToolApproval(input: {
     approvalId: string;
     userId: string;
     db?: Db;
+    approvalDb?: McpApprovalPool;
 }): Promise<{
     approval: McpApprovalSummary;
     event: McpToolEvent;
@@ -1216,6 +1264,7 @@ export async function executeMcpToolApproval(input: {
     const claimed = await claimMcpApprovalForExecution({
         approvalId: input.approvalId,
         userId: input.userId,
+        pool: input.approvalDb,
     });
     let event: McpToolEvent;
     let resultContent: string | null = null;
@@ -1240,7 +1289,9 @@ export async function executeMcpToolApproval(input: {
                 toolId: claimed.row.tool_id,
                 toolName: claimed.row.tool_name,
                 policyVersion: claimed.row.policy_version,
+                argumentsHash: claimed.row.arguments_hash,
             },
+            input.approvalDb,
         );
         event = result.event;
         resultContent = result.content;
@@ -1291,8 +1342,9 @@ export async function executeMcpToolApproval(input: {
         errorMessage: succeeded
             ? null
             : indeterminate
-              ? `${event.error ?? "Docket lost the final PracticePanther response."} The outcome is uncertain; verify the action in PracticePanther before attempting it again.`
+              ? `${event.error ?? "Docket lost the final response."} The outcome is uncertain; verify the action in ${claimed.row.connector_name} before attempting it again.`
               : event.error ?? "MCP tool execution failed.",
+        pool: input.approvalDb,
     });
     const appended = await persistMcpApprovalTerminalEvent({
         db,
@@ -1501,11 +1553,14 @@ export async function executeResolvedMcpToolCall(params: {
 }): Promise<{ content: string; event: McpToolEvent }> {
     const context = params.context ?? {};
     const started = Date.now();
-    const actionKind = classifyMcpAction(
-        params.tool.tool_name,
-        params.args,
-        params.tool.annotations,
-    );
+    const actionKind =
+        backendManagedBy(params.connector) === "box"
+            ? boxToolRequiresApproval(params.tool, params.args) ? "mutation" : "read"
+            : classifyMcpAction(
+                  params.tool.tool_name,
+                  params.args,
+                  params.tool.annotations,
+              );
     const actorEmail = normalizeDocketActorEmail(context.actorEmail);
     const isPracticePanther =
         backendManagedBy(params.connector) === "practicepanther";

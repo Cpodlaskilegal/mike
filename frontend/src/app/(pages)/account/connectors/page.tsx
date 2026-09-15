@@ -307,8 +307,9 @@ export default function ConnectorsPage() {
       <section>
         <h2 className="text-2xl font-medium font-serif mb-2">Connectors</h2>
         <p className="text-sm text-gray-500 max-w-xl">
-          PracticePanther access is enforced by Docket roles and one-time write
-          approvals. Custom MCP servers are managed by administrators.
+          Box writes require the initiating user&apos;s one-time approval.
+          PracticePanther access follows Docket roles and its write-approval policy.
+          Custom MCP servers are managed by administrators.
         </p>
       </section>
 
@@ -655,6 +656,13 @@ function ConnectorPanel({
           one-time approval.
         </p>
       )}
+      {connector.managedBy === "box" && (
+        <p className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+          Enabled tools are available to chat. Every write pauses for the
+          initiating user&apos;s one-time approval of the exact action. Enabling
+          a tool does not approve its writes.
+        </p>
+      )}
 
       <div className="mt-4 space-y-2">
         {displayedTools.length === 0 ? (
@@ -692,7 +700,9 @@ function ConnectorPanel({
                 {connector.managedBy !== "practicepanther" &&
                   tool.requiresConfirmation && (
                   <p className="mt-1 text-xs text-amber-700">
-                    Requires confirmation; disabled for chat.
+                    {connector.managedBy === "box"
+                      ? "Write action; the initiating user must approve it once before Docket sends it."
+                      : "Requires confirmation; disabled for chat."}
                   </p>
                 )}
               </div>
@@ -707,7 +717,7 @@ function ConnectorPanel({
                   disabled={
                     connector.managedBy === "practicepanther" ||
                     (!isAdmin && connector.managedBy === null) ||
-                    tool.requiresConfirmation ||
+                    (tool.requiresConfirmation && connector.managedBy !== "box") ||
                     busy === `tool:${tool.id}`
                   }
                   onChange={(event) =>

@@ -155,6 +155,21 @@ Provider keys are only needed for the model providers and administrative report 
 
 MCP connector credentials and OAuth tokens are encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET`. PracticePanther is connected by default as a backend-managed MCP connector using `PRACTICEPANTHER_MCP_SERVER_URL` (default `https://wild-spark-qn7iy.run.mcp-use.com/mcp`). Box is also connected by default as a backend-managed MCP connector using Box's hosted endpoint at `https://mcp.box.com`. Each Docket user authorizes Box separately, and Docket can access whatever that logged-in user can access in Box.
 
+Box write tools are available to the assistant, but each proposed write pauses
+for the initiating user's **Approve once** or **Deny** decision. Enabling a tool
+in connector settings only makes it available; it never authorizes a write.
+Approval records bind the exact arguments and current tool contract, expire
+after 30 minutes, and cannot be replayed. Uploads, copies, folder creation,
+metadata changes, moves, sharing changes, and other mutations use this same
+flow. Box permissions and admin-enabled tool availability still apply.
+
+For an existing deployment, apply
+`backend/migrations/20260915_box_write_approvals.sql` with the updated backend
+to re-enable Box tools disabled by the previous blanket confirmation policy.
+The existing `20260723_practicepanther_access_control.sql` approval table is
+reused; the Box change does not require a new table. A tool-catalog refresh
+discovers tools newly enabled by the Box administrator.
+
 ## Install
 
 Install each app package:
