@@ -102,28 +102,28 @@ export function McpApprovalCard({
     <div className="my-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-gray-800">
       <div className="font-semibold text-amber-900">
         {!status
-          ? "Loading PracticePanther approval"
+          ? `Loading ${displayConnector} approval`
           : status === "pending"
-          ? "PracticePanther change needs your approval"
+          ? `${displayConnector} change needs your approval`
           : status === "executing"
-            ? "Executing approved PracticePanther change"
+            ? `Executing approved ${displayConnector} change`
             : status === "succeeded"
-              ? "PracticePanther change completed"
+              ? `${displayConnector} change completed`
               : status === "indeterminate"
-                ? "PracticePanther outcome needs verification"
+                ? `${displayConnector} outcome needs verification`
               : status === "rejected"
-                ? "PracticePanther change denied"
+                ? `${displayConnector} change denied`
                 : status === "expired"
-                  ? "PracticePanther approval expired"
-                  : "PracticePanther change failed"}
+                  ? `${displayConnector} approval expired`
+                  : `${displayConnector} change failed`}
       </div>
       <p className="mt-1 text-gray-600">
         {!status
           ? "Docket is loading the exact action from its protected approval record."
           : status === "pending"
-          ? "Nothing has been sent to PracticePanther. Review this exact action before approving it once."
+          ? `Nothing has been sent to ${displayConnector}. Review this exact action before approving it once.`
           : status === "indeterminate"
-            ? "Docket did not receive a definitive response. Verify the action in PracticePanther before attempting it again."
+            ? `Docket did not receive a definitive response. Verify the action in ${displayConnector} before attempting it again.`
             : `${displayConnector}: ${displayTool}`}
       </p>
       {approval?.expiresAt && status === "pending" && (
@@ -138,8 +138,8 @@ export function McpApprovalCard({
       )}
       {approval?.actorEmail && (
         <p className="mt-1 text-xs text-gray-500">
-          Docket will attribute this action to {approval.actorEmail} in its
-          PracticePanther audit note and actor tag.
+          Docket records this action and your decision for {approval.actorEmail}
+          {" "}in its audit record.
         </p>
       )}
       <div className="mt-2 rounded border border-amber-100 bg-white px-3 py-2">

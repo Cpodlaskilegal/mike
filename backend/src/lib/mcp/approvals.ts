@@ -334,7 +334,7 @@ export async function getMcpApprovalForUser(
     `update user_mcp_tool_approvals
         set status = 'indeterminate',
             executed_at = coalesce(executed_at, now()),
-            error_message = 'Execution status is indeterminate because Docket did not receive a final completion record. Verify the action in PracticePanther before attempting it again.',
+            error_message = 'Execution status is indeterminate because Docket did not receive a final completion record. Verify the action in the connected service before attempting it again.',
             updated_at = now()
       where id = $1 and user_id = $2 and status = 'executing'
         and updated_at <= now() - ($3::bigint * interval '1 millisecond')`,
@@ -375,6 +375,14 @@ function decryptApprovalArguments(
     if (
       expected.length !== actual.length ||
       !crypto.timingSafeEqual(expected, actual)
+    ) {
+      return null;
+    }
+    // The UI reviews the saved preview, while execution uses the encrypted
+    // arguments. Both must still describe the same exact action at claim time.
+    if (
+      mcpArgumentsHash(mcpArgumentsPreview(args)) !==
+      mcpArgumentsHash(row.arguments_preview)
     ) {
       return null;
     }

@@ -1102,7 +1102,11 @@ export async function enrichWithPriorEvents(
             const toolName =
                 typeof ev.tool_name === "string"
                     ? ev.tool_name
-                    : "PracticePanther tool";
+                    : "MCP tool";
+            const connectorName =
+                typeof ev.connector_name === "string"
+                    ? ev.connector_name.replace(/ MCP$/, "")
+                    : "MCP";
             const result =
                 typeof ev.result_summary === "string" &&
                 ev.result_summary.trim()
@@ -1110,10 +1114,10 @@ export async function enrichWithPriorEvents(
                     : "";
             const outcome =
                 ev.approval_status === "rejected"
-                    ? `PracticePanther action ${toolName} → rejected by the initiating user`
+                    ? `${connectorName} action ${toolName} → rejected by the initiating user`
                     : ev.approval_status === "expired"
-                      ? `PracticePanther action ${toolName} → approval expired without execution`
-                      : `approved PracticePanther action ${toolName} → ${ev.approval_status}`;
+                      ? `${connectorName} action ${toolName} → approval expired without execution`
+                      : `approved ${connectorName} action ${toolName} → ${ev.approval_status}`;
             lines.push(`- ${outcome}.${result}`);
         }
     }
