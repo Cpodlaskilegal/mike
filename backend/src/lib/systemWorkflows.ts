@@ -1,3 +1,5 @@
+import { LEGAL_WORKFLOWS } from "./legalWorkflows";
+
 /**
  * Docket's server-owned system workflow catalog.
  *
@@ -31,6 +33,7 @@ export type SystemWorkflow = {
 };
 
 export const SYSTEM_WORKFLOWS: SystemWorkflow[] = [
+    ...LEGAL_WORKFLOWS,
     {
         id: "builtin-cp-checklist",
         user_id: null,

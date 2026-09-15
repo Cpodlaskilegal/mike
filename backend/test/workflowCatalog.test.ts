@@ -20,6 +20,12 @@ const frontendRoot = resolve(backendRoot, "../frontend");
 
 test("Docket's complete current system catalog is backend-owned and stable", () => {
   const expectedIds = [
+    "builtin-legal-drafting",
+    "builtin-surgical-redline",
+    "builtin-legal-research",
+    "builtin-citation-audit",
+    "builtin-legal-draft-review",
+    "builtin-matter-brief",
     "builtin-cp-checklist",
     "builtin-coc-dd",
     "builtin-credit-summary",
@@ -40,7 +46,7 @@ test("Docket's complete current system catalog is backend-owned and stable", () 
     expectedIds,
   );
   assert.equal(new Set(expectedIds).size, SYSTEM_WORKFLOWS.length);
-  assert.equal(SYSTEM_ASSISTANT_WORKFLOWS.length, 3);
+  assert.equal(SYSTEM_ASSISTANT_WORKFLOWS.length, 9);
   for (const workflow of SYSTEM_WORKFLOWS) {
     assert.equal(workflow.user_id, null);
     assert.equal(workflow.is_system, true);

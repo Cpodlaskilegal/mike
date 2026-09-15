@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
@@ -15,7 +15,7 @@ export default function AssistantChatPage() {
     const { setCurrentChatId, newChatMessages, setNewChatMessages } =
         useChatHistoryContext();
 
-    const initialMessages = newChatMessages ?? [];
+    const [initialMessages] = useState(() => newChatMessages ?? []);
     const {
         messages,
         isResponseLoading,
@@ -35,7 +35,6 @@ export default function AssistantChatPage() {
 
     useEffect(() => {
         if (initialMessages.length > 0) {
-            if (newChatMessages) setNewChatMessages(null);
             return;
         }
         if (hasLoaded.current || messages.length > 0) return;
@@ -62,6 +61,8 @@ export default function AssistantChatPage() {
             messages.length === 1
         ) {
             hasAutoSent.current = true;
+            // Keep the pending launch until generation settings are ready.
+            setNewChatMessages(null);
             void handleChat(newChatMessages[0]);
         }
     }, [newChatMessages, messages.length, isResponseLoading]); // eslint-disable-line react-hooks/exhaustive-deps

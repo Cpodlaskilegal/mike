@@ -58,7 +58,7 @@ export function DocketTutorial() {
                 placement: "center",
                 title: "Use a strong example",
                 content:
-                    "For drafting, Docket will try to find a similar filed pleading or Box toolbox form. Upload a specific example if you want that source used.",
+                    "For drafting, Docket looks for a useful exemplar in your files and any connected sources you can access. Upload a specific example if you want that source used.",
             },
             {
                 target: "body",
@@ -66,6 +66,13 @@ export function DocketTutorial() {
                 title: "Open a chat",
                 content:
                     "Open chat from inside the project. Ask specific questions tied to the selected matter files.",
+            },
+            {
+                target: "body",
+                placement: "center",
+                title: "Use a legal workflow",
+                content:
+                    "Choose a workflow for drafting, redlining, research, citation checks, draft review, or a matter brief. Add your instructions and files. Workflows use your existing access; native tracked changes need a DOCX, and research coverage depends on the sources available.",
             },
             {
                 target: "body",
