@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlock,
   MessageParam,
+  MessageStreamParams,
   Tool,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 
@@ -52,60 +53,73 @@ function messageFixture(input: {
   } as Anthropic.Message;
 }
 
-test("builds the exact Opus 5 adaptive-thinking request for every effort", () => {
-  for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+const reasoningModels = [
+  "claude-fable-5-1",
+  "claude-fable-5",
+  "claude-sonnet-5",
+  "claude-opus-5",
+];
+
+test("builds current Claude adaptive-thinking requests for every effort", () => {
+  for (const model of reasoningModels) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      const request = adapter.buildClaudeStreamingRequest({
+        model,
+        systemPrompt: "Be precise.",
+        messages,
+        tools,
+        enableThinking: true,
+        reasoningEffort: effort,
+      });
+
+      assert.deepEqual(request, {
+        model,
+        system: "Be precise.",
+        messages,
+        tools,
+        max_tokens: effort === "xhigh" || effort === "max" ? 64_000 : 16_384,
+        thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort },
+      });
+      assert.equal("temperature" in request, false);
+      assert.equal("top_p" in request, false);
+      assert.equal("top_k" in request, false);
+      assert.equal("betas" in request, false);
+      assert.equal("service_tier" in request, false);
+    }
+  }
+});
+
+test("defaults current Claude models to High and keeps required thinking enabled", () => {
+  for (const model of reasoningModels) {
     const request = adapter.buildClaudeStreamingRequest({
-      model: "claude-opus-5",
-      systemPrompt: "Be precise.",
+      model,
+      enableThinking: false,
       messages,
-      tools,
-      enableThinking: true,
-      reasoningEffort: effort,
     });
 
-    assert.deepEqual(request, {
-      model: "claude-opus-5",
-      system: "Be precise.",
-      messages,
-      tools,
-      max_tokens: 16_384,
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort },
+    assert.deepEqual(request.thinking, {
+      type: "adaptive",
+      display: "summarized",
     });
-    assert.equal("temperature" in request, false);
-    assert.equal("top_p" in request, false);
-    assert.equal("top_k" in request, false);
-    assert.equal("betas" in request, false);
-    assert.equal("service_tier" in request, false);
+    assert.deepEqual(request.output_config, { effort: "high" });
+
+    for (const invalid of ["none", "minimal"] as const) {
+      assert.throws(
+        () =>
+          adapter.buildClaudeStreamingRequest({
+            model,
+            enableThinking: false,
+            messages,
+            reasoningEffort: invalid,
+          }),
+        /Claude reasoning effort/,
+      );
+    }
   }
 });
 
-test("defaults Opus 5 to High while rejecting non-Opus effort values", () => {
-  const request = adapter.buildClaudeStreamingRequest({
-    model: "claude-opus-5",
-    messages,
-  });
-
-  assert.deepEqual(request.thinking, {
-    type: "adaptive",
-    display: "summarized",
-  });
-  assert.deepEqual(request.output_config, { effort: "high" });
-
-  for (const invalid of ["none", "minimal"] as const) {
-    assert.throws(
-      () =>
-        adapter.buildClaudeStreamingRequest({
-          model: "claude-opus-5",
-          messages,
-          reasoningEffort: invalid,
-        }),
-      /Claude Opus 5 reasoning effort/,
-    );
-  }
-});
-
-test("keeps existing Claude model thinking behavior isolated from Opus 5", () => {
+test("keeps older Claude model thinking behavior unchanged", () => {
   const request = adapter.buildClaudeStreamingRequest({
     model: "claude-opus-4-8",
     messages,
@@ -171,6 +185,179 @@ test("preserves thinking signatures and all assistant blocks across a tool conti
       ],
     },
   ]);
+});
+
+test("Fable 5.1 preserves signed prefixes through multiple tool rounds and final synthesis", async (t) => {
+  const { pool } = await import("../src/lib/supabase");
+  // Keep usage accounting on the normal code path without requiring a database.
+  t.mock.method(pool, "connect", async () => ({
+    async query() {
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  }));
+  const requests: MessageStreamParams[] = [];
+  const responses = ["one", "two"].map((suffix) =>
+    messageFixture({
+      content: [
+        {
+          type: "thinking",
+          thinking: `Read source ${suffix}.`,
+          signature: `signed_${suffix}`,
+        },
+        { type: "redacted_thinking", data: `opaque_${suffix}` },
+        {
+          type: "tool_use",
+          id: `tool_${suffix}`,
+          name: "read_document",
+          input: { document_id: suffix },
+          caller: { type: "direct" },
+        },
+      ],
+      stopReason: "tool_use",
+    }),
+  );
+  responses.push(
+    messageFixture({
+      content: [
+        {
+          type: "text",
+          text: "The sources support this final answer.",
+          citations: null,
+        },
+      ],
+      stopReason: "end_turn",
+    }),
+  );
+  t.mock.method(
+    Anthropic.Messages.prototype,
+    "stream",
+    (request: MessageStreamParams) => {
+      const response = responses[requests.length];
+      assert.ok(response, "No request is allowed after the final synthesis");
+      requests.push(structuredClone(request));
+      return {
+        on() {},
+        abort() {},
+        async finalMessage() {
+          return response;
+        },
+      };
+    },
+  );
+  const toolExecutions: string[] = [];
+  const result = await adapter.streamClaude({
+    model: "claude-fable-5-1",
+    systemPrompt: "Preserve every legal citation and source qualification.",
+    messages: [{ role: "user", content: "Compare the two source documents." }],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "read_document",
+          description: "Read one document",
+          parameters: tools[0].input_schema,
+        },
+      },
+    ],
+    maxIterations: 2,
+    reasoningEffort: "high",
+    apiKeys: { claude: "test-only-not-a-real-key" },
+    async runTools(calls) {
+      return calls.map((call) => {
+        toolExecutions.push(call.id);
+        return {
+          tool_use_id: call.id,
+          content: `Source ${call.input.document_id}`,
+        };
+      });
+    },
+  });
+  assert.equal(result.fullText, "The sources support this final answer.");
+  assert.deepEqual(toolExecutions, ["tool_one", "tool_two"]);
+  assert.equal(requests.length, 3);
+  const [first, second, final] = requests;
+  assert.equal(first.tool_choice, undefined);
+  assert.equal(second.tool_choice, undefined);
+  assert.deepEqual(final.tool_choice, { type: "none" });
+  for (const request of [second, final]) {
+    assert.equal(request.system, first.system);
+    assert.deepEqual(request.tools, first.tools);
+    assert.deepEqual(request.messages[1], {
+      role: "assistant",
+      content: responses[0].content,
+    });
+    assert.deepEqual(
+      request.messages.slice(0, first.messages.length),
+      first.messages,
+    );
+  }
+  assert.deepEqual(
+    final.messages.slice(0, second.messages.length),
+    second.messages,
+  );
+  assert.deepEqual(final.messages[3], {
+    role: "assistant",
+    content: responses[1].content,
+  });
+  assert.deepEqual(final.messages[4], {
+    role: "user",
+    content: [
+      { type: "tool_result", tool_use_id: "tool_two", content: "Source two" },
+    ],
+  });
+  assert.equal(final.messages[5].role, "user");
+  assert.match(String(final.messages[5].content), /FINAL RESPONSE REQUIRED/);
+  assert.match(
+    String(final.messages[5].content),
+    /citation and output-format requirement/,
+  );
+});
+
+test("Fable 5.1 final synthesis works with a zero tool budget and no tool definitions", () => {
+  const result = adapter.buildClaudeToolLoopRequest({
+    model: "claude-fable-5-1",
+    systemPrompt: "Preserve citations.",
+    messages,
+    iteration: 0,
+    maxToolIterations: 0,
+  });
+  assert.equal(result.finalSynthesis, true);
+  assert.equal(result.request.system, "Preserve citations.");
+  assert.equal(result.request.tools, undefined);
+  assert.equal(result.request.tool_choice, undefined);
+  assert.deepEqual(result.request.messages.slice(0, messages.length), messages);
+  assert.match(
+    String(result.request.messages.at(-1)?.content),
+    /complete final answer now/,
+  );
+});
+
+test("Sonnet 5 tabular completion forwards Low effort while retaining its 2048-token cap", async (t) => {
+  const { pool } = await import("../src/lib/supabase");
+  const { completeText } = await import("../src/lib/llm");
+  t.mock.method(pool, "connect", async () => ({
+    async query() { return { rows: [], rowCount: 0 }; },
+    release() {},
+  }));
+  let submitted: Anthropic.MessageCreateParams | undefined;
+  t.mock.method(Anthropic.Messages.prototype, "create", async (request: Anthropic.MessageCreateParams) => {
+    submitted = request;
+    return messageFixture({
+      content: [{ type: "text", text: '{"answer":"September 15"}', citations: null }],
+      stopReason: "end_turn",
+    });
+  });
+  const result = await completeText({
+    model: "claude-sonnet-5", systemPrompt: "Extract the requested fact.",
+    user: "The deadline is September 15.", reasoningEffort: "low", maxTokens: 2048,
+    apiKeys: { claude: "test-only-not-a-real-key" },
+  });
+  assert.equal(result, '{"answer":"September 15"}');
+  assert.equal(submitted?.model, "claude-sonnet-5");
+  assert.equal(submitted?.max_tokens, 2048);
+  assert.deepEqual(submitted?.output_config, { effort: "low" });
+  assert.deepEqual(submitted?.thinking, { type: "adaptive", display: "summarized" });
 });
 
 test("keeps refusal and max-token partial text usable", () => {
