@@ -132,11 +132,17 @@ export function WorkflowList() {
     const practices = Array.from(
         new Set(byTab.map((wf) => wf.practice).filter((p): p is string => !!p)),
     ).sort();
-    const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
     const filtered = byTab
         .filter((wf) => !practiceFilter || wf.practice === practiceFilter)
         .filter((wf) => !typeFilter || wf.type === typeFilter)
-        .filter((wf) => !q || wf.title.toLowerCase().includes(q));
+        .filter(
+            (wf) =>
+                !q ||
+                [wf.title, wf.description, wf.practice].some((value) =>
+                    value?.toLowerCase().includes(q),
+                ),
+        );
 
     const allSelected =
         filtered.length > 0 &&

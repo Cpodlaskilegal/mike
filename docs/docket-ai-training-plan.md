@@ -76,9 +76,9 @@ User action:
 
 Prompting tip:
 
-"When asking for a draft, Docket will try to find a similar filed pleading or
-Box toolbox form before drafting from scratch. Upload a specific example if you
-want that source used."
+"When asking for a draft, Docket looks for an exemplar in your files and any
+connected sources you can access. Upload a specific example if you want that
+source used."
 
 Safety note:
 
@@ -106,6 +106,26 @@ Good prompt example:
 uploaded discovery requests, deficiency letter, and example motion as source
 materials. Preserve the tone and structure of the example. Flag any facts or
 citations that need attorney confirmation."
+
+### Use a Legal Workflow
+
+From Workflows, choose a built-in workflow and start a chat, or add a workflow
+to an existing assistant/project chat. Attach the relevant files and explain
+the jurisdiction, represented side, and desired result.
+
+- **Draft a Legal Document**: provide the facts, objective, and any exemplar.
+- **Redline a Document**: attach the source DOCX for tracked changes; PDFs and
+  pasted text receive proposed wording and a change list.
+- **Research a Legal Question**: state the jurisdiction and question. Enable US
+  legal research for available case-law tools, or upload the authorities.
+- **Check Citations and Authorities**: supply the draft and available sources.
+- **Review a Legal Draft**: provide the draft, objectives, and supporting record.
+- **Build a Matter Brief and Chronology**: select the matter files to summarize.
+
+Workflows use the current user's access. They do not provide firm-wide mailbox
+or file access, a commercial citator, or automatic sending/filing. When sources
+are missing, Docket identifies the gap and continues with the available record
+where useful. Review all output and unresolved authority checks before use.
 
 ### 4. Choose a Model
 

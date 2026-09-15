@@ -62,8 +62,13 @@ export function AssistantWorkflowModal({
 
     if (!open) return null;
 
-    const filteredWorkflows = search
-        ? workflows.filter((w) => w.title.toLowerCase().includes(search.toLowerCase()))
+    const query = search.trim().toLowerCase();
+    const filteredWorkflows = query
+        ? workflows.filter((workflow) =>
+              [workflow.title, workflow.description, workflow.practice].some(
+                  (value) => value?.toLowerCase().includes(query),
+              ),
+          )
         : workflows;
 
     function handleUse() {
@@ -104,6 +109,8 @@ export function AssistantWorkflowModal({
                         )}
                     </div>
                     <button
+                        type="button"
+                        aria-label="Close workflow chooser"
                         onClick={onClose}
                         className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
                     >
@@ -123,13 +130,14 @@ export function AssistantWorkflowModal({
                                 <Search className="h-3 w-3 text-gray-400 shrink-0" />
                                 <input
                                     type="text"
+                                    aria-label="Search workflows by name, description, or practice"
                                     placeholder="Search workflows…"
                                     value={search}
                                     onChange={(e) => setSearch(e.target.value)}
                                     className="flex-1 bg-transparent text-xs text-gray-700 placeholder:text-gray-400 outline-none"
                                 />
                                 {search && (
-                                    <button onClick={() => setSearch("")} className="text-gray-400 hover:text-gray-600">
+                                    <button type="button" aria-label="Clear workflow search" onClick={() => setSearch("")} className="text-gray-400 hover:text-gray-600">
                                         <X className="h-3 w-3" />
                                     </button>
                                 )}
@@ -153,26 +161,39 @@ export function AssistantWorkflowModal({
                             </div>
                         ) : filteredWorkflows.length === 0 ? (
                             <p className="px-4 py-8 text-sm text-center text-gray-400">
-                                {search ? "No matches found" : "No assistant workflows found"}
+                                {query ? "No matches found" : "No assistant workflows found"}
                             </p>
                         ) : (
                             filteredWorkflows.map((wf) => (
                                 <button
                                     key={wf.id}
                                     type="button"
+                                    aria-pressed={selected?.id === wf.id}
                                     onClick={() =>
                                         setSelected((prev) =>
                                             prev?.id === wf.id ? null : wf,
                                         )
                                     }
-                                    className={`w-full flex items-center gap-3 px-4 py-3 text-xs text-left transition-colors border-b border-gray-50 ${
+                                    className={`w-full flex items-start gap-3 px-4 py-3 text-xs text-left transition-colors border-b border-gray-50 ${
                                         selected?.id === wf.id
                                             ? "bg-gray-50"
                                             : "hover:bg-gray-50"
                                     }`}
                                 >
-                                    <span className="flex-1 truncate text-gray-800">
-                                        {wf.title}
+                                    <span className="flex-1 min-w-0">
+                                        <span className="block text-gray-800">
+                                            {wf.title}
+                                        </span>
+                                        {wf.description && (
+                                            <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-gray-500">
+                                                {wf.description}
+                                            </span>
+                                        )}
+                                        {wf.practice && (
+                                            <span className="mt-1 block text-xs text-gray-400">
+                                                {wf.practice}
+                                            </span>
+                                        )}
                                     </span>
                                     <span className="shrink-0 text-xs text-gray-400">
                                         {wf.is_system ? "Built-in" : "Custom"}
@@ -185,16 +206,25 @@ export function AssistantWorkflowModal({
                     {/* Right panel — prompt preview */}
                     {selected && (
                         <div className={`flex-1 border-l border-gray-100 flex flex-col overflow-hidden px-3 pb-3 transition-opacity duration-200 ${rightVisible ? "opacity-100" : "opacity-0"}`}>
-                            <div className="flex items-center justify-between py-3 shrink-0">
-                                <p className="text-xs font-medium text-gray-700">
-                                    Workflow Prompt
-                                </p>
-                                <button
-                                    onClick={() => setSelected(null)}
-                                    className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                                >
-                                    <ChevronLeft className="h-3.5 w-3.5" />
-                                </button>
+                            <div className="py-3 shrink-0">
+                                <div className="flex items-center justify-between gap-2">
+                                    <h2 className="text-xs font-medium text-gray-700">
+                                        {selected.title}
+                                    </h2>
+                                    <button
+                                        type="button"
+                                        aria-label="Close workflow preview"
+                                        onClick={() => setSelected(null)}
+                                        className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                                    >
+                                        <ChevronLeft className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
+                                {selected.description && (
+                                    <p className="mt-2 text-xs leading-relaxed text-gray-500">
+                                        {selected.description}
+                                    </p>
+                                )}
                             </div>
                             <div className="flex-1 overflow-y-auto px-4 py-3 text-sm border border-gray-200 rounded-md text-gray-600 leading-relaxed font-serif bg-gray-50">
                                 <ReactMarkdown
