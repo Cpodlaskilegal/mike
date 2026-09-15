@@ -166,29 +166,49 @@ test("prices every Opus 5 token category at its exact per-million rate", async (
   assert.equal(result.totalCostNanos, 46_750_000_000n);
 });
 
-test("applies the dated Claude Sonnet 5 introductory and standard prices", async () => {
+test("prices every Fable 5.1 token category including its discounted cache reads", async () => {
   const spend = await loadSpend();
-  const input = {
-    provider: "claude" as const,
+  const result = spend.calculateLlmCostNanos({
+    provider: "claude",
+    model: "claude-fable-5-1",
+    inputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheCreation5mTokens: 1_000_000,
+    cacheCreation1hTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 10_000_000_000n);
+  assert.equal(result.cachedInputCostNanos, 32_750_000_000n);
+  assert.equal(result.outputCostNanos, 50_000_000_000n);
+  assert.equal(result.totalCostNanos, 92_750_000_000n);
+});
+
+test("keeps Sonnet 5 permanent prices before and after the canceled September increase", async () => {
+  const spend = await loadSpend();
+  for (const date of [
+    "2026-08-31T23:59:59Z",
+    "2026-09-01T00:00:00Z",
+    "2026-09-15T00:00:00Z",
+  ]) {
+    const result = spend.calculateLlmCostNanos(
+      {
+        provider: "claude",
     model: "claude-sonnet-5",
     inputTokens: 1_000_000,
     cacheReadTokens: 1_000_000,
+        cacheCreation5mTokens: 1_000_000,
+        cacheCreation1hTokens: 1_000_000,
     outputTokens: 1_000_000,
-  };
-
-  const introductory = spend.calculateLlmCostNanos(
-    input,
-    new Date("2026-08-31T23:59:59Z"),
+      },
+      new Date(date),
   );
-  assert.equal(introductory.pricingStatus, "priced");
-  assert.equal(introductory.totalCostNanos, 12_200_000_000n);
-
-  const standard = spend.calculateLlmCostNanos(
-    input,
-    new Date("2026-09-01T00:00:00Z"),
-  );
-  assert.equal(standard.pricingStatus, "priced");
-  assert.equal(standard.totalCostNanos, 18_300_000_000n);
+    assert.equal(result.pricingStatus, "priced");
+    assert.equal(result.inputCostNanos, 2_000_000_000n);
+    assert.equal(result.cachedInputCostNanos, 6_700_000_000n);
+    assert.equal(result.outputCostNanos, 10_000_000_000n);
+    assert.equal(result.totalCostNanos, 18_700_000_000n);
+  }
 });
 
 test("does not turn an unpriced provider response into account spend", async () => {
