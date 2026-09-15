@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import type {
     ContentBlock,
     ContentBlockParam,
+    MessageCreateParamsBase,
     MessageParam,
     MessageStreamParams,
     StopReason,
@@ -17,12 +18,14 @@ import type {
 import {
     assertFinalSynthesisResult,
     buildToolLoopIteration,
+    FINAL_SYNTHESIS_INSTRUCTION,
     normalizeMaxToolIterations,
     throwIfAborted,
 } from "./types";
 import {
-    CLAUDE_OPUS_5_REASONING_EFFORTS,
-    type ClaudeOpus5ReasoningEffort,
+    CLAUDE_REASONING_EFFORTS,
+    supportsClaudeReasoningEffort,
+    type ClaudeReasoningEffort,
 } from "./models";
 import { toClaudeTools } from "./tools";
 import { captureAiGeneration } from "../posthog";
@@ -36,25 +39,28 @@ import {
 import { safeErrorMessage } from "../safeError";
 
 const MAX_TOKENS = 16384;
+// Higher effort needs enough room for both reasoning and the user-visible answer.
+// https://platform.claude.com/docs/en/build-with-claude/effort
+const HIGH_EFFORT_MAX_TOKENS = 64000;
 
 function client(override?: string | null): Anthropic {
     const apiKey = override?.trim() || process.env.ANTHROPIC_API_KEY || "";
     return new Anthropic({ apiKey });
 }
 
-function resolveClaudeOpus5Effort(
+function resolveClaudeEffort(
     reasoningEffort: StreamChatParams["reasoningEffort"],
-): ClaudeOpus5ReasoningEffort {
+): ClaudeReasoningEffort {
     if (reasoningEffort === undefined) return "high";
     if (
-        (CLAUDE_OPUS_5_REASONING_EFFORTS as readonly string[]).includes(
+        (CLAUDE_REASONING_EFFORTS as readonly string[]).includes(
             reasoningEffort,
         )
     ) {
-        return reasoningEffort as ClaudeOpus5ReasoningEffort;
+        return reasoningEffort as ClaudeReasoningEffort;
     }
     throw new Error(
-        `Claude Opus 5 reasoning effort must be one of: ${CLAUDE_OPUS_5_REASONING_EFFORTS.join(", ")}`,
+        `Claude reasoning effort must be one of: ${CLAUDE_REASONING_EFFORTS.join(", ")}`,
     );
 }
 
@@ -62,21 +68,17 @@ function thinkingOptions(
     model: string,
     enableThinking: boolean | undefined,
     reasoningEffort: StreamChatParams["reasoningEffort"],
-): Pick<MessageStreamParams, "thinking" | "output_config"> {
-    if (model === "claude-opus-5") {
+): Pick<MessageCreateParamsBase, "thinking" | "output_config"> {
+    if (supportsClaudeReasoningEffort(model)) {
         return {
             thinking: { type: "adaptive", display: "summarized" },
             output_config: {
-                effort: resolveClaudeOpus5Effort(reasoningEffort),
+                effort: resolveClaudeEffort(reasoningEffort),
             },
         };
     }
 
     if (!enableThinking) return {};
-
-    if (model === "claude-sonnet-5" || model === "claude-fable-5") {
-        return { output_config: { effort: "high" } };
-    }
 
     if (
         model === "claude-opus-4-8" ||
@@ -98,6 +100,7 @@ export type ClaudeStreamingRequestInput = {
     systemPrompt?: string;
     messages: MessageParam[];
     tools?: Tool[];
+    toolChoice?: MessageStreamParams["tool_choice"];
     enableThinking?: boolean;
     reasoningEffort?: StreamChatParams["reasoningEffort"];
 };
@@ -114,12 +117,62 @@ export function buildClaudeStreamingRequest(
         system: input.systemPrompt,
         messages: input.messages,
         ...(input.tools?.length ? { tools: input.tools } : {}),
-        max_tokens: MAX_TOKENS,
+        ...(input.toolChoice ? { tool_choice: input.toolChoice } : {}),
+        max_tokens:
+            supportsClaudeReasoningEffort(input.model) &&
+            (input.reasoningEffort === "xhigh" ||
+                input.reasoningEffort === "max")
+                ? HIGH_EFFORT_MAX_TOKENS
+                : MAX_TOKENS,
         ...thinkingOptions(
             input.model,
             input.enableThinking,
             input.reasoningEffort,
         ),
+    };
+}
+
+/** Build one tool-loop request without rewriting Fable 5.1's signed prefix. */
+export function buildClaudeToolLoopRequest(
+    input: ClaudeStreamingRequestInput & {
+        systemPrompt: string;
+        iteration: number;
+        maxToolIterations: number;
+    },
+): { finalSynthesis: boolean; request: MessageStreamParams } {
+    const plan = buildToolLoopIteration(
+        input.iteration,
+        input.maxToolIterations,
+        input.tools ?? [],
+        input.systemPrompt,
+    );
+    if (plan.finalSynthesis && input.model === "claude-fable-5-1") {
+        // Fable 5.1 validates every earlier token before a preserved thinking
+        // block, including system and tool definitions. Disable execution via
+        // tool_choice and append the instruction after the completed results.
+        // https://platform.claude.com/docs/en/models/fable-5-1/migration-guide
+        return {
+            finalSynthesis: true,
+            request: buildClaudeStreamingRequest({
+                ...input,
+                messages: [
+                    ...input.messages,
+                    {
+                        role: "user",
+                        content: `FINAL RESPONSE REQUIRED:\n${FINAL_SYNTHESIS_INSTRUCTION}`,
+                    },
+                ],
+                toolChoice: input.tools?.length ? { type: "none" } : undefined,
+            }),
+        };
+    }
+    return {
+        finalSynthesis: plan.finalSynthesis,
+        request: buildClaudeStreamingRequest({
+            ...input,
+            systemPrompt: plan.systemPrompt,
+            tools: plan.tools,
+        }),
     };
 }
 
@@ -351,11 +404,9 @@ export async function streamClaude(
         apiKeys,
         enableThinking,
     } = params;
-    const maxToolIterations = normalizeMaxToolIterations(
-        params.maxIterations,
-    );
+    const maxToolIterations = normalizeMaxToolIterations(params.maxIterations);
     const anthropic = client(apiKeys?.claude);
-    const claudeTools = toClaudeTools(tools);
+    const claudeTools = toClaudeTools(tools) as unknown as Tool[];
 
     const messages = toNativeMessages(params.messages);
     let fullText = "";
@@ -364,25 +415,16 @@ export async function streamClaude(
 
     for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
-        const iterationPlan = buildToolLoopIteration(
-            iter,
-            maxToolIterations,
-            claudeTools,
-            systemPrompt,
-        );
-        const {
-            finalSynthesis,
-            tools: iterationTools,
-            systemPrompt: iterationSystemPrompt,
-        } = iterationPlan;
         const generationId = randomUUID();
         const requestStartedAt = Date.now();
         let iterationText = "";
-        const request = buildClaudeStreamingRequest({
+        const { finalSynthesis, request } = buildClaudeToolLoopRequest({
             model,
-            systemPrompt: iterationSystemPrompt,
+            systemPrompt,
             messages,
-            tools: iterationTools as unknown as Tool[],
+            tools: claudeTools,
+            iteration: iter,
+            maxToolIterations,
             enableThinking,
             reasoningEffort: params.reasoningEffort,
         });
@@ -436,7 +478,9 @@ export async function streamClaude(
             stream: true,
             latencySeconds: elapsedSeconds(requestStartedAt),
             input: aiInputMessages(
-                iterationSystemPrompt,
+                typeof request.system === "string"
+                    ? request.system
+                    : systemPrompt,
                 params.messages,
             ),
             output: iterationText,
@@ -450,7 +494,7 @@ export async function streamClaude(
             totalCostUsd: spendUsd(usage.cost.totalCostNanos),
             metadata: {
                 iteration: iter + 1,
-                tool_count: iterationTools.length,
+                tool_count: finalSynthesis ? 0 : claudeTools.length,
                 function_call_count: iteration.toolCalls.length,
                 final_synthesis: finalSynthesis,
                 ...params.aiObservability?.metadata,
@@ -491,6 +535,7 @@ export async function completeClaudeText(params: {
     systemPrompt?: string;
     user: string;
     maxTokens?: number;
+    reasoningEffort?: StreamChatParams["reasoningEffort"];
     apiKeys?: StreamChatParams["apiKeys"];
     aiObservability?: StreamChatParams["aiObservability"];
 }): Promise<string> {
@@ -504,6 +549,7 @@ export async function completeClaudeText(params: {
             max_tokens: params.maxTokens ?? 512,
             system: params.systemPrompt,
             messages: [{ role: "user", content: params.user }],
+            ...thinkingOptions(params.model, false, params.reasoningEffort),
         });
         const text = resp.content
             .filter((b): b is Anthropic.TextBlock => b.type === "text")

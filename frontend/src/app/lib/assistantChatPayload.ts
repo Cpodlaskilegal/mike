@@ -1,6 +1,6 @@
 import {
-    isClaudeOpus5Model,
-    isClaudeOpus5ReasoningEffort,
+    isClaudeReasoningModel,
+    isClaudeReasoningEffort,
     isOpenAiReasoningModel,
     normalizeOpenAiReasoningEffort,
     type AssistantReasoningEffort,
@@ -16,10 +16,10 @@ export type AssistantGenerationPayload = {
 export function buildAssistantGenerationPayload(
     settings: EffectiveAssistantGenerationSettings,
 ): AssistantGenerationPayload {
-    if (isClaudeOpus5Model(settings.model)) {
+    if (isClaudeReasoningModel(settings.model)) {
         return {
             model: settings.model,
-            reasoning_effort: isClaudeOpus5ReasoningEffort(
+            reasoning_effort: isClaudeReasoningEffort(
                 settings.reasoningEffort,
             )
                 ? settings.reasoningEffort

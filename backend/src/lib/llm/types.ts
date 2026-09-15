@@ -204,16 +204,15 @@ export type StreamChatParams = {
     runTools?: (calls: NormalizedToolCall[]) => Promise<NormalizedToolResult[]>;
     apiKeys?: UserApiKeys;
     /**
-     * Enable provider-side reasoning/thinking. Off by default — should only
-     * be turned on for interactive chat surfaces where the user actually
-     * benefits from seeing the thought stream. Bulk extraction jobs and
-     * one-shot completions should leave this off to save tokens and latency.
+     * Enable reasoning display for interactive chat. Older models also use
+     * this flag to opt into thinking; current Claude models use adaptive
+     * thinking regardless and expose their summaries only when requested.
      */
     enableThinking?: boolean;
     /**
      * Provider-specific generation tuning. OpenAI uses these directly through
-     * the Responses API; Claude/Gemini ignore them unless their adapters add
-     * equivalent knobs later.
+     * the Responses API; current Claude models accept reasoningEffort while
+     * reasoningMode remains OpenAI-only. Gemini ignores these options.
      */
     reasoningEffort?: ReasoningEffort;
     reasoningMode?: ReasoningMode;

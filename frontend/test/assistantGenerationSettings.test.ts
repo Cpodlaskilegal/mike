@@ -6,6 +6,8 @@ import {
   ASTRA_REASONING_EFFORTS,
   ASSISTANT_GENERATION_STORAGE_KEY,
   CLAUDE_OPUS_5_REASONING_EFFORTS,
+  CLAUDE_REASONING_EFFORTS,
+  CLAUDE_REASONING_MODEL_IDS,
   CLAUDE_MAIN_MODEL_IDS,
   GEMINI_MAIN_MODEL_IDS,
   GPT56_MODEL_IDS,
@@ -20,6 +22,7 @@ import {
   deserializeAssistantGenerationSettings,
   effectiveAssistantGenerationSettings,
   isClaudeOpus5Model,
+  isClaudeReasoningModel,
   isGpt56Model,
   isOpenAiReasoningModel,
   persistAssistantGenerationSettings,
@@ -74,8 +77,9 @@ test("exports the exact GPT-5.6 model and effort contracts", () => {
   assert.equal(LEGACY_ASSISTANT_MODEL_STORAGE_KEY, "docket.selectedModel");
 });
 
-test("adds Opus 5 to the Claude main-model inventory only", () => {
+test("offers the latest Claude models while retaining existing selections", () => {
   assert.deepEqual(CLAUDE_MAIN_MODEL_IDS, [
+    "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
     "claude-opus-5",
@@ -103,6 +107,14 @@ test("adds Opus 5 to the Claude main-model inventory only", () => {
   assert.equal(
     TABULAR_MODELS.some(({ id }) => id === "claude-opus-5"),
     false,
+  );
+  assert.equal(
+    MODELS.find(({ id }) => id === "claude-fable-5-1")?.label,
+    "Claude Fable 5.1",
+  );
+  assert.deepEqual(
+    TABULAR_MODELS.filter(({ group }) => group === "Anthropic").map(({ id }) => id),
+    ["claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
   );
 });
 
@@ -243,6 +255,73 @@ test("exposes exact provider-specific efforts and keeps GPT Pro off Opus 5", () 
     null,
   );
   assert.equal(isGpt56Model("claude-opus-5"), false);
+});
+
+test("exposes Claude effort controls for all current reasoning models", () => {
+  assert.deepEqual(CLAUDE_REASONING_MODEL_IDS, [
+    "claude-fable-5-1",
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+  ]);
+  assert.deepEqual(CLAUDE_REASONING_EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(CLAUDE_OPUS_5_REASONING_EFFORTS, CLAUDE_REASONING_EFFORTS);
+  for (const model of CLAUDE_REASONING_MODEL_IDS) {
+    assert.equal(isClaudeReasoningModel(model), true);
+    assert.equal(isOpenAiReasoningModel(model), false);
+    assert.deepEqual(assistantReasoningEffortsFor(model, "standard"), CLAUDE_REASONING_EFFORTS);
+    assert.deepEqual(assistantReasoningEffortsFor(model, "pro"), CLAUDE_REASONING_EFFORTS);
+  }
+  for (const model of ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-6-astra", null]) {
+    assert.equal(isClaudeReasoningModel(model), false);
+  }
+});
+
+test("current Claude models preserve shared Claude effort separately from OpenAI settings", () => {
+  const openaiPro = setAssistantReasoningMode(
+    selectAssistantEffort(defaultAssistantGenerationSettings(), "xhigh"),
+    "pro",
+  );
+  for (const model of CLAUDE_REASONING_MODEL_IDS) {
+    const selected = selectAssistantModel(openaiPro, model);
+    assert.equal(selected.reasoningMode, "standard");
+    assert.equal(selected.claudeEffort, "high");
+    assert.equal(setAssistantReasoningMode(selected, "pro").reasoningMode, "standard");
+    assert.equal(selectAssistantEffort(selected, "none").claudeEffort, "high");
+
+    const edited = selectAssistantEffort(selected, "max");
+    assert.equal(edited.standardEffort, "xhigh");
+    const rehydrated = deserializeAssistantGenerationSettings({
+      versioned: serializeAssistantGenerationSettings(edited),
+    });
+    assert.equal(rehydrated.model, model);
+    assert.deepEqual(effectiveAssistantGenerationSettings(rehydrated), {
+      model,
+      reasoningEffort: "max",
+      reasoningMode: "standard",
+    });
+    for (const nextModel of CLAUDE_REASONING_MODEL_IDS) {
+      assert.equal(effectiveAssistantGenerationSettings(
+        selectAssistantModel(rehydrated, nextModel),
+      ).reasoningEffort, "max");
+    }
+    assert.equal(effectiveAssistantGenerationSettings(
+      selectAssistantModel(rehydrated, ASTRA_MODEL_ID),
+    ).reasoningEffort, "xhigh");
+  }
+});
+
+test("older saved Claude settings hydrate with high effort and preserve the model", () => {
+  for (const model of CLAUDE_MAIN_MODEL_IDS) {
+    for (const snapshot of [
+      { legacy: model },
+      { versioned: JSON.stringify({ version: 1, model, standardEffort: "low" }) },
+    ]) {
+      const state = deserializeAssistantGenerationSettings(snapshot);
+      assert.equal(state.model, model);
+      assert.equal(state.claudeEffort, "high");
+    }
+  }
 });
 
 test("migrates retired Mythos selections to account-accessible Sonnet 5", () => {
@@ -733,6 +812,25 @@ test("builds exact provider-specific generation fields", () => {
     }),
     { model: "claude-sonnet-4-6" },
   );
+});
+
+test("all current Claude models emit effort without OpenAI Pro mode", () => {
+  for (const model of CLAUDE_REASONING_MODEL_IDS) {
+    for (const reasoningEffort of CLAUDE_REASONING_EFFORTS) {
+      const payload = buildAssistantGenerationPayload({
+        model,
+        reasoningEffort,
+        reasoningMode: "pro",
+      });
+      assert.deepEqual(payload, { model, reasoning_effort: reasoningEffort });
+      assert.equal(assistantRequestContinuesAfterDisconnect(payload), reasoningEffort === "max");
+    }
+    assert.deepEqual(buildAssistantGenerationPayload({
+      model,
+      reasoningEffort: "none",
+      reasoningMode: "pro",
+    }), { model, reasoning_effort: "high" });
+  }
 });
 
 test("knows Pro and Max requests survive a disconnect before stream_start", () => {

@@ -35,7 +35,7 @@ export const PRO_REASONING_EFFORTS = [
     "max",
 ] as const;
 
-export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
+export const CLAUDE_REASONING_EFFORTS = [
     "low",
     "medium",
     "high",
@@ -43,7 +43,17 @@ export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
     "max",
 ] as const;
 
+export const CLAUDE_OPUS_5_REASONING_EFFORTS = CLAUDE_REASONING_EFFORTS;
+
+export const CLAUDE_REASONING_MODEL_IDS = [
+    "claude-fable-5-1",
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+] as const;
+
 export const CLAUDE_MAIN_MODEL_IDS = [
+    "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
     "claude-opus-5",
@@ -73,15 +83,17 @@ export type AssistantReasoningEffort =
     (typeof GPT56_REASONING_EFFORTS)[number];
 export type Gpt56ReasoningEffort = AssistantReasoningEffort;
 export type ProReasoningEffort = (typeof PRO_REASONING_EFFORTS)[number];
-export type ClaudeOpus5ReasoningEffort =
-    (typeof CLAUDE_OPUS_5_REASONING_EFFORTS)[number];
+export type ClaudeReasoningModelId = (typeof CLAUDE_REASONING_MODEL_IDS)[number];
+export type ClaudeReasoningEffort =
+    (typeof CLAUDE_REASONING_EFFORTS)[number];
+export type ClaudeOpus5ReasoningEffort = ClaudeReasoningEffort;
 export type AssistantReasoningMode = "standard" | "pro";
 
 export type AssistantGenerationSettingsState = {
     model: string;
     standardEffort: Gpt56ReasoningEffort;
     proEffort: ProReasoningEffort;
-    claudeEffort: ClaudeOpus5ReasoningEffort;
+    claudeEffort: ClaudeReasoningEffort;
     reasoningMode: AssistantReasoningMode;
     sessionKey: string | null;
 };
@@ -99,14 +111,13 @@ export type AssistantGenerationStorageSnapshot = {
 
 const DEFAULT_MODEL: OpenAiMainModelId = ASTRA_MODEL_ID;
 const DEFAULT_EFFORT: Gpt56ReasoningEffort = "max";
-const DEFAULT_CLAUDE_EFFORT: ClaudeOpus5ReasoningEffort = "high";
+const DEFAULT_CLAUDE_EFFORT: ClaudeReasoningEffort = "high";
 const GPT56_MODEL_SET = new Set<string>(GPT56_MODEL_IDS);
 const OPENAI_MAIN_MODEL_SET = new Set<string>(OPENAI_MAIN_MODEL_IDS);
 const EFFORT_SET = new Set<string>(GPT56_REASONING_EFFORTS);
 const PRO_EFFORT_SET = new Set<string>(PRO_REASONING_EFFORTS);
-const CLAUDE_OPUS_5_EFFORT_SET = new Set<string>(
-    CLAUDE_OPUS_5_REASONING_EFFORTS,
-);
+const CLAUDE_EFFORT_SET = new Set<string>(CLAUDE_REASONING_EFFORTS);
+const CLAUDE_REASONING_MODEL_SET = new Set<string>(CLAUDE_REASONING_MODEL_IDS);
 
 const LEGACY_GPT_SETTINGS: Record<
     string,
@@ -130,14 +141,16 @@ function isProReasoningEffort(value: unknown): value is ProReasoningEffort {
     return typeof value === "string" && PRO_EFFORT_SET.has(value);
 }
 
-export function isClaudeOpus5ReasoningEffort(
+export function isClaudeReasoningEffort(
     value: unknown,
-): value is ClaudeOpus5ReasoningEffort {
+): value is ClaudeReasoningEffort {
     return (
         typeof value === "string" &&
-        CLAUDE_OPUS_5_EFFORT_SET.has(value)
+        CLAUDE_EFFORT_SET.has(value)
     );
 }
+
+export const isClaudeOpus5ReasoningEffort = isClaudeReasoningEffort;
 
 function isAllowedMainModel(value: unknown): value is string {
     return typeof value === "string" && ALLOWED_MAIN_MODEL_IDS.has(value);
@@ -158,7 +171,7 @@ function proEffortFor(
 function hydratedState(
     model: string,
     standardEffort: Gpt56ReasoningEffort,
-    claudeEffort: ClaudeOpus5ReasoningEffort = DEFAULT_CLAUDE_EFFORT,
+    claudeEffort: ClaudeReasoningEffort = DEFAULT_CLAUDE_EFFORT,
 ): AssistantGenerationSettingsState {
     const effort = normalizeOpenAiReasoningEffort(model, standardEffort);
     return {
@@ -194,12 +207,18 @@ export function isClaudeOpus5Model(
     return model === "claude-opus-5";
 }
 
+export function isClaudeReasoningModel(
+    model: unknown,
+): model is ClaudeReasoningModelId {
+    return typeof model === "string" && CLAUDE_REASONING_MODEL_SET.has(model);
+}
+
 export function assistantReasoningEffortsFor(
     model: unknown,
     mode: AssistantReasoningMode,
 ): readonly AssistantReasoningEffort[] | null {
-    if (isClaudeOpus5Model(model)) {
-        return CLAUDE_OPUS_5_REASONING_EFFORTS;
+    if (isClaudeReasoningModel(model)) {
+        return CLAUDE_REASONING_EFFORTS;
     }
     if (!isOpenAiReasoningModel(model)) return null;
     return mode === "pro"
@@ -231,7 +250,7 @@ function parseVersionedSettings(
         ) {
             return null;
         }
-        const claudeEffort = isClaudeOpus5ReasoningEffort(
+        const claudeEffort = isClaudeReasoningEffort(
             record.claudeEffort,
         )
             ? record.claudeEffort
@@ -276,7 +295,7 @@ export function serializeAssistantGenerationSettings(
             ? state.standardEffort
             : DEFAULT_EFFORT,
     );
-    const claudeEffort = isClaudeOpus5ReasoningEffort(state.claudeEffort)
+    const claudeEffort = isClaudeReasoningEffort(state.claudeEffort)
         ? state.claudeEffort
         : DEFAULT_CLAUDE_EFFORT;
     return JSON.stringify({
@@ -336,10 +355,10 @@ export function selectAssistantEffort(
     state: AssistantGenerationSettingsState,
     effort: AssistantReasoningEffort,
 ): AssistantGenerationSettingsState {
-    if (isClaudeOpus5Model(state.model)) {
+    if (isClaudeReasoningModel(state.model)) {
         return {
             ...state,
-            claudeEffort: isClaudeOpus5ReasoningEffort(effort)
+            claudeEffort: isClaudeReasoningEffort(effort)
                 ? effort
                 : state.claudeEffort,
         };
@@ -407,7 +426,7 @@ export function effectiveAssistantGenerationSettings(
 ): EffectiveAssistantGenerationSettings {
     const isPro =
         state.reasoningMode === "pro" && isOpenAiReasoningModel(state.model);
-    if (isClaudeOpus5Model(state.model)) {
+    if (isClaudeReasoningModel(state.model)) {
         return {
             model: state.model,
             reasoningEffort: state.claudeEffort,

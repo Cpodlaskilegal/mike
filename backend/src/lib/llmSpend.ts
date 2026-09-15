@@ -18,9 +18,6 @@ type PricePerMillion = {
 };
 
 const MILLION = 1_000_000n;
-const CLAUDE_SONNET_5_STANDARD_PRICING_START = new Date(
-  "2026-09-01T00:00:00Z",
-);
 
 function usdPerMillion(value: string): bigint {
   const [whole, fraction = ""] = value.split(".");
@@ -74,15 +71,22 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("0.02"),
     output: usdPerMillion("1.25"),
   },
+  "claude-fable-5-1": {
+    input: usdPerMillion("10"),
+    cachedInput: usdPerMillion("0.25"),
+    output: usdPerMillion("50"),
+  },
   "claude-fable-5": {
     input: usdPerMillion("10"),
     cachedInput: usdPerMillion("1"),
     output: usdPerMillion("50"),
   },
   "claude-sonnet-5": {
-    input: usdPerMillion("3"),
-    cachedInput: usdPerMillion("0.3"),
-    output: usdPerMillion("15"),
+    // The announced September increase was canceled; these are permanent.
+    // https://platform.claude.com/docs/en/about-claude/pricing (2026-09-15)
+    input: usdPerMillion("2"),
+    cachedInput: usdPerMillion("0.2"),
+    output: usdPerMillion("10"),
   },
   "claude-mythos-5": {
     input: usdPerMillion("10"),
@@ -129,12 +133,6 @@ const GPT_6_ASTRA_LONG_CONTEXT_PRICE: PricePerMillion = {
   output: usdPerMillion("75"),
 };
 
-const CLAUDE_SONNET_5_INTRODUCTORY_PRICE: PricePerMillion = {
-  input: usdPerMillion("2"),
-  cachedInput: usdPerMillion("0.2"),
-  output: usdPerMillion("10"),
-};
-
 export type LlmCostInput = {
   provider: SpendProvider;
   model: string;
@@ -173,16 +171,13 @@ export function providerCategory(provider: SpendProvider): "gpt" | "claude" {
 
 export function calculateLlmCostNanos(
   input: LlmCostInput,
-  at: Date = new Date(),
+  _at: Date = new Date(),
 ): LlmCost {
   const inputTokens = positiveInteger(input.inputTokens);
   const pricing =
     input.model === "gpt-6-astra" && inputTokens > 272_000
       ? GPT_6_ASTRA_LONG_CONTEXT_PRICE
-      : input.model === "claude-sonnet-5" &&
-          at < CLAUDE_SONNET_5_STANDARD_PRICING_START
-        ? CLAUDE_SONNET_5_INTRODUCTORY_PRICE
-        : PRICE_PER_MILLION[input.model];
+      : PRICE_PER_MILLION[input.model];
   if (!pricing) {
     return {
       pricingStatus: "unpriced",

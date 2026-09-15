@@ -5,6 +5,7 @@ import type { Provider, ReasoningMode } from "./types";
 // ---------------------------------------------------------------------------
 // Main-chat tier (top-end) — user picks one of these per message.
 export const CLAUDE_MAIN_MODELS = [
+    "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
     "claude-opus-5",
@@ -54,7 +55,7 @@ export const ASTRA_REASONING_EFFORTS = [
     "max",
 ] as const;
 
-export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
+export const CLAUDE_REASONING_EFFORTS = [
     "low",
     "medium",
     "high",
@@ -62,8 +63,28 @@ export const CLAUDE_OPUS_5_REASONING_EFFORTS = [
     "max",
 ] as const;
 
-export type ClaudeOpus5ReasoningEffort =
-    (typeof CLAUDE_OPUS_5_REASONING_EFFORTS)[number];
+export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_EFFORTS)[number];
+
+// Preserve imports used by older callers while sharing the current Claude
+// effort contract across the models that support all five levels.
+export const CLAUDE_OPUS_5_REASONING_EFFORTS = CLAUDE_REASONING_EFFORTS;
+export type ClaudeOpus5ReasoningEffort = ClaudeReasoningEffort;
+
+export const CLAUDE_REASONING_MODELS = [
+    "claude-fable-5-1",
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+] as const;
+
+export function supportsClaudeReasoningEffort(
+    model: unknown,
+): model is (typeof CLAUDE_REASONING_MODELS)[number] {
+    return (
+        typeof model === "string" &&
+        (CLAUDE_REASONING_MODELS as readonly string[]).includes(model)
+    );
+}
 
 export type MainModelResolutionStatus =
     | "direct"
@@ -162,6 +183,7 @@ const LEGACY_MAIN_MODEL_MAP: Record<string, LegacyMainModelConfig> = {
 
 // Mid-tier (used for tabular review) — user picks one in account settings.
 export const CLAUDE_MID_MODELS = [
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-5",
 ] as const;
@@ -215,7 +237,10 @@ export function providerForModel(model: string): Provider {
     throw new Error(`Unknown model id: ${model}`);
 }
 
-export function resolveModel(id: string | null | undefined, fallback: string): string {
+export function resolveModel(
+    id: string | null | undefined,
+    fallback: string,
+): string {
     if (id && ALL_MODELS.has(id)) return id;
     return fallback;
 }
@@ -261,12 +286,12 @@ function isOpenAiMainModel(model: string): model is OpenAiMainModelId {
     return hasOwn(OPENAI_MAIN_MODEL_REGISTRY, model);
 }
 
-function isClaudeOpus5ReasoningEffort(
+function isClaudeReasoningEffort(
     value: unknown,
-): value is ClaudeOpus5ReasoningEffort {
+): value is ClaudeReasoningEffort {
     return (
         typeof value === "string" &&
-        (CLAUDE_OPUS_5_REASONING_EFFORTS as readonly string[]).includes(value)
+        (CLAUDE_REASONING_EFFORTS as readonly string[]).includes(value)
     );
 }
 
@@ -275,15 +300,13 @@ export function resolveMainModelRequest(
 ): ResolvedMainModelRequest {
     const requestedModel = request.model ?? null;
 
-    if (request.model === "claude-opus-5") {
+    if (supportsClaudeReasoningEffort(request.model)) {
         return {
             requestedModel,
             selectionModel: request.model,
             providerModel: request.model,
             provider: "claude",
-            reasoningEffort: isClaudeOpus5ReasoningEffort(
-                request.reasoning_effort,
-            )
+            reasoningEffort: isClaudeReasoningEffort(request.reasoning_effort)
                 ? request.reasoning_effort
                 : "high",
             status: "direct",
@@ -394,12 +417,12 @@ export function parseMainModelRequest(
     }
 
     if (model && isNonOpenAiMainRequestModel(model)) {
-        if (model === "claude-opus-5") {
-            let reasoningEffort: ClaudeOpus5ReasoningEffort = "high";
+        if (supportsClaudeReasoningEffort(model)) {
+            let reasoningEffort: ClaudeReasoningEffort = "high";
             if (hasOwn(raw, "reasoning_effort")) {
-                if (!isClaudeOpus5ReasoningEffort(raw.reasoning_effort)) {
+                if (!isClaudeReasoningEffort(raw.reasoning_effort)) {
                     return parseFailure(
-                        `reasoning_effort must be one of: ${CLAUDE_OPUS_5_REASONING_EFFORTS.join(", ")}`,
+                        `reasoning_effort must be one of: ${CLAUDE_REASONING_EFFORTS.join(", ")}`,
                     );
                 }
                 reasoningEffort = raw.reasoning_effort;
@@ -440,9 +463,7 @@ export function parseMainModelRequest(
             (raw.reasoning_mode !== "standard" &&
                 raw.reasoning_mode !== "pro")
         ) {
-            return parseFailure(
-                "reasoning_mode must be one of: standard, pro",
-            );
+            return parseFailure("reasoning_mode must be one of: standard, pro");
         }
         reasoningMode = raw.reasoning_mode;
     }

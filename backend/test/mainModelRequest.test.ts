@@ -6,6 +6,8 @@ import {
     ASSISTANT_REASONING_EFFORTS,
     CLAUDE_MAIN_MODELS,
     CLAUDE_OPUS_5_REASONING_EFFORTS,
+    CLAUDE_REASONING_EFFORTS,
+    CLAUDE_REASONING_MODELS,
     DEFAULT_MAIN_MODEL,
     DEFAULT_TABULAR_MODEL,
     DEFAULT_TITLE_MODEL,
@@ -54,10 +56,7 @@ test("defines the canonical OpenAI main-model contract", () => {
         "xhigh",
         "max",
     ]);
-    assert.deepEqual(
-        GPT_5_6_REASONING_EFFORTS,
-        ASSISTANT_REASONING_EFFORTS,
-    );
+    assert.deepEqual(GPT_5_6_REASONING_EFFORTS, ASSISTANT_REASONING_EFFORTS);
     assert.deepEqual(CLAUDE_OPUS_5_REASONING_EFFORTS, [
         "low",
         "medium",
@@ -86,20 +85,32 @@ test("routes Astra directly with its supported efforts and Pro mode", () => {
             assert.equal(result.value.reasoningMode, reasoning_mode);
             assert.equal(result.value.reasoningEffort,
                 reasoning_mode === "pro" && reasoning_effort === "low"
-                    ? "medium" : reasoning_effort);
+                    ? "medium"
+                    : reasoning_effort,
+            );
         }
     }
     for (const reasoning_effort of ["none", "minimal", "ultra"]) {
-        const result = parseMainModelRequest({ model: "gpt-6-astra", reasoning_effort });
+        const result = parseMainModelRequest({
+            model: "gpt-6-astra",
+            reasoning_effort,
+        });
         assert.equal(result.ok, false);
         if (!result.ok) assert.match(result.detail, /low, medium, high, xhigh, max/);
     }
-    assert.equal(resolveMainModelRequest({ model: "gpt-6-astra", reasoning_effort: "none" }).reasoningEffort, "low");
+    assert.equal(
+        resolveMainModelRequest({
+            model: "gpt-6-astra",
+            reasoning_effort: "none",
+        }).reasoningEffort,
+        "low",
+    );
     assert.equal(isTabularModelId("gpt-6-astra"), false);
 });
 
 test("defines only the production-account-accessible Claude main models", () => {
     assert.deepEqual(CLAUDE_MAIN_MODELS, [
+        "claude-fable-5-1",
         "claude-sonnet-5",
         "claude-fable-5",
         "claude-opus-5",
@@ -160,29 +171,30 @@ test("preserves each canonical GPT-5.6 provider slug and valid effort", () => {
     }
 });
 
-test("resolves Opus 5 directly with High by default and every supported effort", () => {
-    assert.deepEqual(resolveMainModelRequest({ model: "claude-opus-5" }), {
-        requestedModel: "claude-opus-5",
-        selectionModel: "claude-opus-5",
-        providerModel: "claude-opus-5",
+test("resolves current Claude models directly with High by default and every supported effort", () => {
+    for (const model of CLAUDE_REASONING_MODELS) {
+        assert.deepEqual(resolveMainModelRequest({ model }), {
+            requestedModel: model,
+            selectionModel: model,
+            providerModel: model,
         provider: "claude",
         reasoningEffort: "high",
         status: "direct",
     });
 
-    for (const effort of CLAUDE_OPUS_5_REASONING_EFFORTS) {
+        for (const effort of CLAUDE_REASONING_EFFORTS) {
         assert.deepEqual(
             parseMainModelRequest({
-                model: "claude-opus-5",
+                    model,
                 reasoning_effort: effort,
                 reasoning_mode: { ignored: true },
             }),
             {
                 ok: true,
                 value: {
-                    requestedModel: "claude-opus-5",
-                    selectionModel: "claude-opus-5",
-                    providerModel: "claude-opus-5",
+                        requestedModel: model,
+                        selectionModel: model,
+                        providerModel: model,
                     provider: "claude",
                     reasoningEffort: effort,
                     status: "direct",
@@ -190,9 +202,11 @@ test("resolves Opus 5 directly with High by default and every supported effort",
             },
         );
     }
+    }
 });
 
-test("rejects unsupported Opus 5 effort values while ignoring GPT-only mode", () => {
+test("rejects unsupported Claude efforts while ignoring GPT-only mode", () => {
+    for (const model of CLAUDE_REASONING_MODELS) {
     for (const reasoning_effort of [
         "none",
         "minimal",
@@ -202,7 +216,7 @@ test("rejects unsupported Opus 5 effort values while ignoring GPT-only mode", ()
         {},
     ]) {
         const result = parseMainModelRequest({
-            model: "claude-opus-5",
+                model,
             reasoning_effort,
             reasoning_mode: "pro",
         });
@@ -214,24 +228,16 @@ test("rejects unsupported Opus 5 effort values while ignoring GPT-only mode", ()
             );
         }
     }
-
-    assert.deepEqual(
-        parseMainModelRequest({
-            model: "claude-opus-5",
+        const parsed = parseMainModelRequest({
+            model,
             reasoning_mode: "invalid-but-ignored",
-        }),
-        {
-            ok: true,
-            value: {
-                requestedModel: "claude-opus-5",
-                selectionModel: "claude-opus-5",
-                providerModel: "claude-opus-5",
-                provider: "claude",
-                reasoningEffort: "high",
-                status: "direct",
-            },
-        },
-    );
+        });
+        assert.equal(parsed.ok, true);
+        if (parsed.ok) {
+            assert.equal(parsed.value.reasoningEffort, "high");
+            assert.equal(parsed.value.reasoningMode, undefined);
+        }
+    }
 });
 
 test("clamps Pro None and Low requests to Medium", () => {
@@ -313,7 +319,7 @@ test("rejects malformed reasoning fields for canonical and fallback OpenAI reque
 
 test("retains Claude and Gemini selections while stripping GPT-only fields", () => {
     const cases = [
-        ["claude-sonnet-5", "claude"],
+        ["claude-sonnet-4-6", "claude"],
         ["gemini-3.1-pro-preview", "gemini"],
     ] as const;
 
@@ -418,7 +424,10 @@ test("maps legacy main selections without changing their intended semantics", ()
     }
 });
 
-test("keeps main-only GPT-5.6 IDs out of tabular model resolution", () => {
+test("supports Sonnet 5 tabular review while excluding main-only models", () => {
+    assert.equal(isTabularModelId("claude-sonnet-5"), true);
+    assert.equal(resolveTabularModel("claude-sonnet-5"), "claude-sonnet-5");
+    assert.equal(isTabularModelId("claude-fable-5-1"), false);
     for (const model of ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]) {
         assert.equal(isTabularModelId(model), true);
         assert.equal(resolveTabularModel(model), model);
