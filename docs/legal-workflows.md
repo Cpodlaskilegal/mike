@@ -4,6 +4,12 @@ Docket includes six on-demand legal workflows adapted from the firm's local skil
 
 The workflow definitions live in `backend/src/lib/legalWorkflows.ts`, version `docket-legal-v1`. The server catalog in `backend/src/lib/systemWorkflows.ts` supplies the authenticated workflow API and assistant tools. These are assistant workflows, not background agents or scheduled monitors.
 
+## Availability to all Docket users
+
+All six are built-in Assistant workflows owned by Docket (`type: "assistant"`, `is_system: true`, `user_id: null`). Every authenticated user, including a new user with no saved workflows or sharing grants, receives this catalog. No administrator role, per-user share, connector, or database migration is required. Find them under **Workflows → Built-in** or in the Assistant workflow picker. A user may hide a built-in from their own list; that does not hide it for anyone else or change access.
+
+The shared definitions are read-only. Their availability does not share any user's documents, conversations, email, or source-system permissions.
+
 ## Workflows and inputs
 
 | ID | Title | Use and minimum useful inputs | Output |
@@ -113,7 +119,7 @@ Use synthetic documents and test accounts. These are acceptance criteria; listin
 
 Automated catalog, access-summary, and workflow-routing checks should be reported separately from live document quality, live research accuracy, and Azure deployment verification.
 
-## Local validation on 2026-09-15
+## Initial local validation on 2026-09-15
 
 - Backend `npm run build`: passed.
 - Frontend `npm run lint` and `npm run build -- --webpack`: passed. The build recovered from one network connection reset while fetching its existing fonts.
@@ -122,4 +128,4 @@ Automated catalog, access-summary, and workflow-routing checks should be reporte
 - Backend coverage includes six workflow runtime tests, portable workflow exports, and the existing tracked-DOCX test. The streaming test uses a fake provider and verifies that unavailable tools cannot execute; it is not a live model quality evaluation.
 - Independent source-method and runtime reviews found no remaining actionable issues. `git diff --check` passed.
 
-Validation reused installed dependencies through local worktree symlinks; clean `npm ci` installs and the default Turbopack build were not run. No live model acceptance scenarios, Azure deployment, or production workflow runs were performed. The source inventory and acceptance criteria above identify the remaining quality checks before claiming CMA parity or live rollout.
+This initial validation reused installed dependencies through local worktree symlinks and did not include clean installs, the default Turbopack build, or production execution. Subsequent clean builds, sharing tests, deployment, and live checks are recorded in [the release report](deployments/2026-09-15-legal-workflows.md). The acceptance criteria above remain separate from a claim of CMA quality parity.
