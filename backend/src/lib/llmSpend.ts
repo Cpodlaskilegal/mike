@@ -86,6 +86,12 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("0.25"),
     output: usdPerMillion("50"),
   },
+  "claude-opus-5-5": {
+    // https://platform.claude.com/docs/en/models/opus-5-5/overview (2026-09-22)
+    input: usdPerMillion("4"),
+    cachedInput: usdPerMillion("0.2"),
+    output: usdPerMillion("20"),
+  },
   "claude-fable-5": {
     input: usdPerMillion("10"),
     cachedInput: usdPerMillion("1"),

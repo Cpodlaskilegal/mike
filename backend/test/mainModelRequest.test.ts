@@ -149,6 +149,7 @@ test("routes GPT-6 Sol and Luna directly with Medium defaults and supported effo
 
 test("defines only the production-account-accessible Claude main models", () => {
     assert.deepEqual(CLAUDE_MAIN_MODELS, [
+        "claude-opus-5-5",
         "claude-fable-5-1",
         "claude-sonnet-5",
         "claude-fable-5",
@@ -156,6 +157,7 @@ test("defines only the production-account-accessible Claude main models", () => 
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
+        "claude-haiku-4-5",
     ]);
 });
 
@@ -210,70 +212,95 @@ test("preserves each canonical GPT-5.6 provider slug and valid effort", () => {
     }
 });
 
-test("resolves current Claude models directly with High by default and every supported effort", () => {
+test("resolves current Claude models with per-model defaults and every supported effort", () => {
     for (const model of CLAUDE_REASONING_MODELS) {
+        const defaultEffort = model === "claude-opus-5-5" ? "medium" : "high";
         assert.deepEqual(resolveMainModelRequest({ model }), {
             requestedModel: model,
             selectionModel: model,
             providerModel: model,
-        provider: "claude",
-        reasoningEffort: "high",
-        status: "direct",
-    });
+            provider: "claude",
+            reasoningEffort: defaultEffort,
+            status: "direct",
+        });
+        const parsedDefault = parseMainModelRequest({ model });
+        assert.equal(parsedDefault.ok, true);
+        if (parsedDefault.ok) {
+            assert.equal(parsedDefault.value.reasoningEffort, defaultEffort);
+        }
 
         for (const effort of CLAUDE_REASONING_EFFORTS) {
-        assert.deepEqual(
-            parseMainModelRequest({
+            assert.deepEqual(
+                parseMainModelRequest({
                     model,
-                reasoning_effort: effort,
-                reasoning_mode: { ignored: true },
-            }),
-            {
-                ok: true,
-                value: {
+                    reasoning_effort: effort,
+                    reasoning_mode: { ignored: true },
+                }),
+                {
+                    ok: true,
+                    value: {
                         requestedModel: model,
                         selectionModel: model,
                         providerModel: model,
-                    provider: "claude",
-                    reasoningEffort: effort,
-                    status: "direct",
+                        provider: "claude",
+                        reasoningEffort: effort,
+                        status: "direct",
+                    },
                 },
-            },
-        );
+            );
+        }
     }
-    }
+});
+
+test("routes Haiku 4.5 from the main picker without Claude effort controls", () => {
+    assert.deepEqual(parseMainModelRequest({
+        model: "claude-haiku-4-5",
+        reasoning_effort: "max",
+    }), {
+        ok: true,
+        value: {
+            requestedModel: "claude-haiku-4-5",
+            selectionModel: "claude-haiku-4-5",
+            providerModel: "claude-haiku-4-5",
+            provider: "claude",
+            status: "direct",
+        },
+    });
 });
 
 test("rejects unsupported Claude efforts while ignoring GPT-only mode", () => {
     for (const model of CLAUDE_REASONING_MODELS) {
-    for (const reasoning_effort of [
-        "none",
-        "minimal",
-        "turbo",
-        null,
-        9,
-        {},
-    ]) {
-        const result = parseMainModelRequest({
+        for (const reasoning_effort of [
+            "none",
+            "minimal",
+            "turbo",
+            null,
+            9,
+            {},
+        ]) {
+            const result = parseMainModelRequest({
                 model,
-            reasoning_effort,
-            reasoning_mode: "pro",
-        });
-        assert.equal(result.ok, false);
-        if (!result.ok) {
-            assert.equal(
-                result.detail,
-                "reasoning_effort must be one of: low, medium, high, xhigh, max",
-            );
+                reasoning_effort,
+                reasoning_mode: "pro",
+            });
+            assert.equal(result.ok, false);
+            if (!result.ok) {
+                assert.equal(
+                    result.detail,
+                    "reasoning_effort must be one of: low, medium, high, xhigh, max",
+                );
+            }
         }
-    }
         const parsed = parseMainModelRequest({
             model,
             reasoning_mode: "invalid-but-ignored",
         });
         assert.equal(parsed.ok, true);
         if (parsed.ok) {
-            assert.equal(parsed.value.reasoningEffort, "high");
+            assert.equal(
+                parsed.value.reasoningEffort,
+                model === "claude-opus-5-5" ? "medium" : "high",
+            );
             assert.equal(parsed.value.reasoningMode, undefined);
         }
     }
@@ -476,6 +503,7 @@ test("supports Sonnet 5 tabular review while excluding main-only models", () => 
     assert.equal(resolveTabularModel("gpt-5.6-sol"), DEFAULT_TABULAR_MODEL);
     assert.equal(isTabularModelId("claude-opus-5"), false);
     assert.equal(resolveTabularModel("claude-opus-5"), DEFAULT_TABULAR_MODEL);
+    assert.equal(isTabularModelId("claude-opus-5-5"), false);
 });
 
 test("main chat routes resolve the raw request before persistence and SSE", () => {

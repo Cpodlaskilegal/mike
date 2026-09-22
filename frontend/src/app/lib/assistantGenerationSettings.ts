@@ -52,6 +52,7 @@ export const CLAUDE_REASONING_EFFORTS = [
 export const CLAUDE_OPUS_5_REASONING_EFFORTS = CLAUDE_REASONING_EFFORTS;
 
 export const CLAUDE_REASONING_MODEL_IDS = [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-sonnet-5",
@@ -59,6 +60,7 @@ export const CLAUDE_REASONING_MODEL_IDS = [
 ] as const;
 
 export const CLAUDE_MAIN_MODEL_IDS = [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
@@ -66,6 +68,7 @@ export const CLAUDE_MAIN_MODEL_IDS = [
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
+    "claude-haiku-4-5",
 ] as const;
 
 export const GEMINI_MAIN_MODEL_IDS = [
@@ -100,6 +103,7 @@ export type AssistantGenerationSettingsState = {
     standardEffort: Gpt56ReasoningEffort;
     proEffort: ProReasoningEffort;
     claudeEffort: ClaudeReasoningEffort;
+    opus55Effort?: ClaudeReasoningEffort;
     reasoningMode: AssistantReasoningMode;
     sessionKey: string | null;
 };
@@ -178,6 +182,7 @@ function hydratedState(
     model: string,
     standardEffort: Gpt56ReasoningEffort,
     claudeEffort: ClaudeReasoningEffort = DEFAULT_CLAUDE_EFFORT,
+    opus55Effort?: ClaudeReasoningEffort,
 ): AssistantGenerationSettingsState {
     const effort = normalizeOpenAiReasoningEffort(model, standardEffort);
     return {
@@ -185,6 +190,7 @@ function hydratedState(
         standardEffort: effort,
         proEffort: proEffortFor(effort),
         claudeEffort,
+        ...(opus55Effort ? { opus55Effort } : {}),
         reasoningMode: "standard",
         sessionKey: null,
     };
@@ -261,7 +267,10 @@ function parseVersionedSettings(
         )
             ? record.claudeEffort
             : DEFAULT_CLAUDE_EFFORT;
-        return hydratedState(model, record.standardEffort, claudeEffort);
+        const opus55Effort = isClaudeReasoningEffort(record.opus55Effort)
+            ? record.opus55Effort
+            : undefined;
+        return hydratedState(model, record.standardEffort, claudeEffort, opus55Effort);
     } catch {
         return null;
     }
@@ -309,6 +318,9 @@ export function serializeAssistantGenerationSettings(
         model,
         standardEffort,
         claudeEffort,
+        ...(isClaudeReasoningEffort(state.opus55Effort)
+            ? { opus55Effort: state.opus55Effort }
+            : {}),
     });
 }
 
@@ -361,6 +373,11 @@ export function selectAssistantEffort(
     state: AssistantGenerationSettingsState,
     effort: AssistantReasoningEffort,
 ): AssistantGenerationSettingsState {
+    if (state.model === "claude-opus-5-5") {
+        return isClaudeReasoningEffort(effort)
+            ? { ...state, opus55Effort: effort }
+            : state;
+    }
     if (isClaudeReasoningModel(state.model)) {
         return {
             ...state,
@@ -435,7 +452,9 @@ export function effectiveAssistantGenerationSettings(
     if (isClaudeReasoningModel(state.model)) {
         return {
             model: state.model,
-            reasoningEffort: state.claudeEffort,
+            reasoningEffort: state.model === "claude-opus-5-5"
+                ? state.opus55Effort ?? "medium"
+                : state.claudeEffort,
             reasoningMode: "standard",
         };
     }

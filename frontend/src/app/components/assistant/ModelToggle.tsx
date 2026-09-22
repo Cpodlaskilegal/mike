@@ -57,6 +57,7 @@ export const MODELS: ModelOption[] = [
         group: "OpenAI",
         description: "Efficient high-volume work",
     },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", group: "Anthropic" },
     { id: "claude-fable-5-1", label: "Claude Fable 5.1", group: "Anthropic" },
     { id: "claude-sonnet-5", label: "Claude Sonnet 5", group: "Anthropic" },
     { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
@@ -64,6 +65,7 @@ export const MODELS: ModelOption[] = [
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Anthropic" },
     { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
     { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
 ];

@@ -234,6 +234,25 @@ test("prices every Opus 5 token category at its exact per-million rate", async (
   assert.equal(result.totalCostNanos, 46_750_000_000n);
 });
 
+test("prices Opus 5.5 with its discounted cache reads", async () => {
+  const spend = await loadSpend();
+  const result = spend.calculateLlmCostNanos({
+    provider: "claude",
+    model: "claude-opus-5-5",
+    inputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheCreation5mTokens: 1_000_000,
+    cacheCreation1hTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+
+  assert.equal(result.pricingStatus, "priced");
+  assert.equal(result.inputCostNanos, 4_000_000_000n);
+  assert.equal(result.cachedInputCostNanos, 13_200_000_000n);
+  assert.equal(result.outputCostNanos, 20_000_000_000n);
+  assert.equal(result.totalCostNanos, 37_200_000_000n);
+});
+
 test("prices every Fable 5.1 token category including its discounted cache reads", async () => {
   const spend = await loadSpend();
   const result = spend.calculateLlmCostNanos({

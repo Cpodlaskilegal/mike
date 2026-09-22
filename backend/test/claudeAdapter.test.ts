@@ -54,6 +54,7 @@ function messageFixture(input: {
 }
 
 const reasoningModels = [
+  "claude-opus-5-5",
   "claude-fable-5-1",
   "claude-fable-5",
   "claude-sonnet-5",
@@ -90,7 +91,7 @@ test("builds current Claude adaptive-thinking requests for every effort", () => 
   }
 });
 
-test("defaults current Claude models to High and keeps required thinking enabled", () => {
+test("uses each Claude model's default effort and keeps required thinking enabled", () => {
   for (const model of reasoningModels) {
     const request = adapter.buildClaudeStreamingRequest({
       model,
@@ -102,7 +103,9 @@ test("defaults current Claude models to High and keeps required thinking enabled
       type: "adaptive",
       display: "summarized",
     });
-    assert.deepEqual(request.output_config, { effort: "high" });
+    assert.deepEqual(request.output_config, {
+      effort: model === "claude-opus-5-5" ? "medium" : "high",
+    });
 
     for (const invalid of ["none", "minimal"] as const) {
       assert.throws(
@@ -116,6 +119,32 @@ test("defaults current Claude models to High and keeps required thinking enabled
         /Claude reasoning effort/,
       );
     }
+  }
+});
+
+test("rejects forced tool choice for Opus 5.5 while allowing auto and none", () => {
+  for (const toolChoice of [
+    { type: "any" },
+    { type: "tool", name: "read_document" },
+  ] as const) {
+    assert.throws(
+      () => adapter.buildClaudeStreamingRequest({
+        model: "claude-opus-5-5",
+        messages,
+        tools,
+        toolChoice,
+      }),
+      /does not support forced tool choice/,
+    );
+  }
+  for (const toolChoice of [{ type: "auto" }, { type: "none" }] as const) {
+    const request = adapter.buildClaudeStreamingRequest({
+      model: "claude-opus-5-5",
+      messages,
+      tools,
+      toolChoice,
+    });
+    assert.deepEqual(request.tool_choice, toolChoice);
   }
 });
 
@@ -333,6 +362,45 @@ test("Fable 5.1 final synthesis works with a zero tool budget and no tool defini
   );
 });
 
+test("Opus 5.5 final synthesis preserves the signed conversation prefix", () => {
+  const signedBlocks: ContentBlock[] = [
+    { type: "thinking", thinking: "Read the document.", signature: "sig_opus_5_5" },
+    {
+      type: "tool_use",
+      id: "tool_1",
+      name: "read_document",
+      input: { document_id: "doc_1" },
+      caller: { type: "direct" },
+    },
+  ];
+  const conversation = [
+    ...messages,
+    ...adapter.buildClaudeToolContinuation(signedBlocks, [
+      { tool_use_id: "tool_1", content: "Document text" },
+    ]),
+  ];
+  const result = adapter.buildClaudeToolLoopRequest({
+    model: "claude-opus-5-5",
+    systemPrompt: "Preserve citations.",
+    messages: conversation,
+    tools,
+    iteration: 1,
+    maxToolIterations: 1,
+  });
+
+  assert.equal(result.finalSynthesis, true);
+  assert.equal(result.request.system, "Preserve citations.");
+  assert.deepEqual(result.request.tools, tools);
+  assert.deepEqual(result.request.tool_choice, { type: "none" });
+  assert.deepEqual(result.request.messages.slice(0, conversation.length), conversation);
+  assert.match(String(result.request.messages.at(-1)?.content), /FINAL RESPONSE REQUIRED/);
+  assert.deepEqual(result.request.thinking, {
+    type: "adaptive",
+    display: "summarized",
+  });
+  assert.deepEqual(result.request.output_config, { effort: "medium" });
+});
+
 test("Sonnet 5 tabular completion forwards Low effort while retaining its 2048-token cap", async (t) => {
   const { pool } = await import("../src/lib/supabase");
   const { completeText } = await import("../src/lib/llm");
@@ -358,6 +426,32 @@ test("Sonnet 5 tabular completion forwards Low effort while retaining its 2048-t
   assert.equal(submitted?.max_tokens, 2048);
   assert.deepEqual(submitted?.output_config, { effort: "low" });
   assert.deepEqual(submitted?.thinking, { type: "adaptive", display: "summarized" });
+});
+
+test("Opus 5.5 text completion uses adaptive thinking and Medium by default", async (t) => {
+  const { pool } = await import("../src/lib/supabase");
+  t.mock.method(pool, "connect", async () => ({
+    async query() { return { rows: [], rowCount: 0 }; },
+    release() {},
+  }));
+  let submitted: Anthropic.MessageCreateParams | undefined;
+  t.mock.method(Anthropic.Messages.prototype, "create", async (request: Anthropic.MessageCreateParams) => {
+    submitted = request;
+    return messageFixture({
+      content: [{ type: "text", text: "Done.", citations: null }],
+      stopReason: "end_turn",
+    });
+  });
+  const result = await adapter.completeClaudeText({
+    model: "claude-opus-5-5",
+    user: "Reply briefly.",
+    apiKeys: { claude: "test-only-not-a-real-key" },
+  });
+  assert.equal(result, "Done.");
+  assert.equal(submitted?.model, "claude-opus-5-5");
+  assert.deepEqual(submitted?.thinking, { type: "adaptive", display: "summarized" });
+  assert.deepEqual(submitted?.output_config, { effort: "medium" });
+  assert.equal(submitted?.tool_choice, undefined);
 });
 
 test("keeps refusal and max-token partial text usable", () => {
