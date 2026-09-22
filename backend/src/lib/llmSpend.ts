@@ -31,6 +31,16 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("1"),
     output: usdPerMillion("50"),
   },
+  "gpt-6-sol": {
+    input: usdPerMillion("2"),
+    cachedInput: usdPerMillion("0.2"),
+    output: usdPerMillion("10"),
+  },
+  "gpt-6-luna": {
+    input: usdPerMillion("0.1"),
+    cachedInput: usdPerMillion("0.01"),
+    output: usdPerMillion("0.5"),
+  },
   "gpt-5.6-sol": {
     input: usdPerMillion("5"),
     cachedInput: usdPerMillion("0.5"),
@@ -125,12 +135,24 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
   },
 };
 
-// https://developers.openai.com/api/docs/pricing (verified 2026-09-06).
-// Astra's long-context rates apply to all tokens when total input exceeds 272K.
-const GPT_6_ASTRA_LONG_CONTEXT_PRICE: PricePerMillion = {
-  input: usdPerMillion("20"),
-  cachedInput: usdPerMillion("2"),
-  output: usdPerMillion("75"),
+// https://developers.openai.com/api/docs/pricing (verified 2026-09-22).
+// GPT-6 long-context rates apply to the full request above 272K input tokens.
+const GPT_6_LONG_CONTEXT_PRICE_PER_MILLION: Record<string, PricePerMillion> = {
+  "gpt-6-astra": {
+    input: usdPerMillion("20"),
+    cachedInput: usdPerMillion("2"),
+    output: usdPerMillion("75"),
+  },
+  "gpt-6-sol": {
+    input: usdPerMillion("4"),
+    cachedInput: usdPerMillion("0.4"),
+    output: usdPerMillion("15"),
+  },
+  "gpt-6-luna": {
+    input: usdPerMillion("0.2"),
+    cachedInput: usdPerMillion("0.02"),
+    output: usdPerMillion("0.75"),
+  },
 };
 
 export type LlmCostInput = {
@@ -175,8 +197,8 @@ export function calculateLlmCostNanos(
 ): LlmCost {
   const inputTokens = positiveInteger(input.inputTokens);
   const pricing =
-    input.model === "gpt-6-astra" && inputTokens > 272_000
-      ? GPT_6_ASTRA_LONG_CONTEXT_PRICE
+    inputTokens > 272_000 && GPT_6_LONG_CONTEXT_PRICE_PER_MILLION[input.model]
+      ? GPT_6_LONG_CONTEXT_PRICE_PER_MILLION[input.model]
       : PRICE_PER_MILLION[input.model];
   if (!pricing) {
     return {

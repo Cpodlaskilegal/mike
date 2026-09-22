@@ -10,6 +10,7 @@ import {
   CLAUDE_REASONING_MODEL_IDS,
   CLAUDE_MAIN_MODEL_IDS,
   GEMINI_MAIN_MODEL_IDS,
+  GPT6_MODEL_IDS,
   GPT56_MODEL_IDS,
   GPT56_REASONING_EFFORTS,
   LEGACY_ASSISTANT_MODEL_STORAGE_KEY,
@@ -75,6 +76,42 @@ test("exports the exact GPT-5.6 model and effort contracts", () => {
   ]);
   assert.equal(ASSISTANT_GENERATION_STORAGE_KEY, "docket.assistant-generation-settings.v1");
   assert.equal(LEGACY_ASSISTANT_MODEL_STORAGE_KEY, "docket.selectedModel");
+});
+
+test("GPT-6 Sol and Luna are selectable and keep their model IDs in saved and outgoing settings", () => {
+  assert.deepEqual(GPT6_MODEL_IDS, ["gpt-6-sol", "gpt-6-luna"]);
+
+  for (const [model, label] of [
+    ["gpt-6-sol", "GPT-6 Sol"],
+    ["gpt-6-luna", "GPT-6 Luna"],
+  ] as const) {
+    assert.equal(MODELS.find(({ id }) => id === model)?.label, label);
+    assert.equal(TABULAR_MODELS.some(({ id }) => id === model), false);
+    assert.equal(ALLOWED_MAIN_MODEL_IDS.has(model), true);
+    assert.equal(isOpenAiReasoningModel(model), true);
+    assert.equal(getModelProvider(model), "openai");
+    assert.deepEqual(assistantReasoningEffortsFor(model, "standard"), GPT56_REASONING_EFFORTS);
+    assert.deepEqual(assistantReasoningEffortsFor(model, "pro"), PRO_REASONING_EFFORTS);
+
+    const selected = selectAssistantEffort(
+      selectAssistantModel(defaultAssistantGenerationSettings(), model),
+      "none",
+    );
+    assert.equal(selected.standardEffort, "none");
+    const restored = deserializeAssistantGenerationSettings({
+      versioned: serializeAssistantGenerationSettings(selected),
+    });
+    assert.equal(restored.model, model);
+    assert.equal(restored.standardEffort, "none");
+    assert.deepEqual(buildAssistantGenerationPayload(
+      effectiveAssistantGenerationSettings(restored),
+    ), { model, reasoning_effort: "none", reasoning_mode: "standard" });
+
+    const pro = setAssistantReasoningMode(restored, "pro");
+    assert.deepEqual(buildAssistantGenerationPayload(
+      effectiveAssistantGenerationSettings(pro),
+    ), { model, reasoning_effort: "medium", reasoning_mode: "pro" });
+  }
 });
 
 test("offers the latest Claude models while retaining existing selections", () => {
@@ -189,7 +226,7 @@ test("Astra preserves model and effort across storage and OpenAI model switches"
   assert.equal(restored.standardEffort, "xhigh");
 
   const pro = selectAssistantEffort(setAssistantReasoningMode(restored, "pro"), "max");
-  for (const model of [...GPT56_MODEL_IDS, ASTRA_MODEL_ID]) {
+  for (const model of OPENAI_MAIN_MODEL_IDS) {
     const switched = selectAssistantModel(pro, model);
     assert.equal(switched.reasoningMode, "pro");
     assert.equal(switched.proEffort, "max");

@@ -6,8 +6,14 @@ export const GPT56_MODEL_IDS = [
 
 export const ASTRA_MODEL_ID = "gpt-6-astra";
 
+export const GPT6_MODEL_IDS = [
+    "gpt-6-sol",
+    "gpt-6-luna",
+] as const;
+
 export const OPENAI_MAIN_MODEL_IDS = [
     ASTRA_MODEL_ID,
+    ...GPT6_MODEL_IDS,
     ...GPT56_MODEL_IDS,
 ] as const;
 

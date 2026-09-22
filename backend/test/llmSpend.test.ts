@@ -56,6 +56,74 @@ test("prices every GPT-5.6 family model at its exact per-million rate", async ()
   }
 });
 
+test("prices GPT-6 Sol and Luna at their short-context rates", async () => {
+  const spend = await loadSpend();
+  const cases = [
+    ["gpt-6-sol", 10_400_000_000n],
+    ["gpt-6-luna", 520_000_000n],
+  ] as const;
+
+  for (const [model, expectedTotal] of cases) {
+    const result = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 200_000,
+      outputTokens: 1_000_000,
+    });
+    assert.equal(result.pricingStatus, "priced", model);
+    assert.equal(result.totalCostNanos, expectedTotal, model);
+  }
+});
+
+test("switches GPT-6 Sol and Luna to full-request long-context rates above 272K input", async () => {
+  const spend = await loadSpend();
+  const cases = [
+    ["gpt-6-sol", 544_000_000n, 1_088_004_000n],
+    ["gpt-6-luna", 27_200_000n, 54_400_200n],
+  ] as const;
+
+  for (const [model, shortBoundary, longBoundary] of cases) {
+    const atBoundary = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 272_000,
+      outputTokens: 0,
+    });
+    const aboveBoundary = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 272_001,
+      outputTokens: 0,
+    });
+    assert.equal(atBoundary.inputCostNanos, shortBoundary, model);
+    assert.equal(aboveBoundary.inputCostNanos, longBoundary, model);
+  }
+});
+
+test("prices GPT-6 Sol and Luna cached reads, writes, and output at long-context rates", async () => {
+  const spend = await loadSpend();
+  const cases = [
+    ["gpt-6-sol", 3_200_000_000n, 540_000_000n, 15_000_000_000n],
+    ["gpt-6-luna", 160_000_000n, 27_000_000n, 750_000_000n],
+  ] as const;
+
+  for (const [model, inputCost, cachedCost, outputCost] of cases) {
+    const result = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model,
+      inputTokens: 1_000_000,
+      cachedInputTokens: 100_000,
+      cacheCreation5mTokens: 100_000,
+      outputTokens: 1_000_000,
+    });
+    assert.equal(result.pricingStatus, "priced", model);
+    assert.equal(result.inputCostNanos, inputCost, model);
+    assert.equal(result.cachedInputCostNanos, cachedCost, model);
+    assert.equal(result.outputCostNanos, outputCost, model);
+    assert.equal(result.totalCostNanos, inputCost + cachedCost + outputCost, model);
+  }
+});
+
 test("prices Astra at standard rates through the 272K input boundary", async () => {
   const spend = await loadSpend();
   const result = spend.calculateLlmCostNanos({

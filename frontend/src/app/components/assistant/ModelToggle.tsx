@@ -28,6 +28,18 @@ export const MODELS: ModelOption[] = [
         description: "Complex reasoning and agentic work",
     },
     {
+        id: "gpt-6-sol",
+        label: "GPT-6 Sol",
+        group: "OpenAI",
+        description: "Balanced intelligence and cost",
+    },
+    {
+        id: "gpt-6-luna",
+        label: "GPT-6 Luna",
+        group: "OpenAI",
+        description: "Efficient high-volume work",
+    },
+    {
         id: "gpt-5.6-sol",
         label: "GPT-5.6 Sol",
         group: "OpenAI",
