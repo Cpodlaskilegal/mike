@@ -19,6 +19,8 @@ export const GEMINI_MAIN_MODELS = [
 ] as const;
 export const OPENAI_MAIN_MODELS = [
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -124,6 +126,22 @@ const OPENAI_MAIN_MODEL_REGISTRY = {
         supportedReasoningEfforts: ASTRA_REASONING_EFFORTS,
         supportedReasoningModes: ["standard", "pro"],
         defaultReasoningEffort: "max",
+        streamingByMode: { standard: true, pro: false },
+    },
+    "gpt-6-sol": {
+        selectionModel: "gpt-6-sol",
+        providerModel: "gpt-6-sol",
+        supportedReasoningEfforts: ASSISTANT_REASONING_EFFORTS,
+        supportedReasoningModes: ["standard", "pro"],
+        defaultReasoningEffort: "medium",
+        streamingByMode: { standard: true, pro: false },
+    },
+    "gpt-6-luna": {
+        selectionModel: "gpt-6-luna",
+        providerModel: "gpt-6-luna",
+        supportedReasoningEfforts: ASSISTANT_REASONING_EFFORTS,
+        supportedReasoningModes: ["standard", "pro"],
+        defaultReasoningEffort: "medium",
         streamingByMode: { standard: true, pro: false },
     },
     "gpt-5.6-sol": {

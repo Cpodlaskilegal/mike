@@ -41,6 +41,8 @@ function sourceSection(
 test("defines the canonical OpenAI main-model contract", () => {
     assert.deepEqual(OPENAI_MAIN_MODELS, [
         "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -106,6 +108,43 @@ test("routes Astra directly with its supported efforts and Pro mode", () => {
         "low",
     );
     assert.equal(isTabularModelId("gpt-6-astra"), false);
+});
+
+test("routes GPT-6 Sol and Luna directly with Medium defaults and supported efforts", () => {
+    for (const model of ["gpt-6-sol", "gpt-6-luna"] as const) {
+        assert.deepEqual(resolveMainModelRequest({ model }), {
+            requestedModel: model,
+            selectionModel: model,
+            providerModel: model,
+            provider: "openai",
+            reasoningEffort: "medium",
+            reasoningMode: "standard",
+            status: "direct",
+        });
+        assert.equal(isTabularModelId(model), false);
+
+        for (const reasoning_mode of ["standard", "pro"] as const) {
+            for (const reasoning_effort of ASSISTANT_REASONING_EFFORTS) {
+                const result = parseMainModelRequest({
+                    model,
+                    reasoning_effort,
+                    reasoning_mode,
+                });
+                assert.equal(result.ok, true, `${model}: ${reasoning_mode}/${reasoning_effort}`);
+                if (!result.ok) continue;
+                assert.equal(result.value.providerModel, model);
+                assert.equal(result.value.status, "direct");
+                assert.equal(result.value.reasoningMode, reasoning_mode);
+                assert.equal(
+                    result.value.reasoningEffort,
+                    reasoning_mode === "pro" &&
+                        (reasoning_effort === "none" || reasoning_effort === "low")
+                        ? "medium"
+                        : reasoning_effort,
+                );
+            }
+        }
+    }
 });
 
 test("defines only the production-account-accessible Claude main models", () => {
