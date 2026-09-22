@@ -116,6 +116,7 @@ test("GPT-6 Sol and Luna are selectable and keep their model IDs in saved and ou
 
 test("offers the latest Claude models while retaining existing selections", () => {
   assert.deepEqual(CLAUDE_MAIN_MODEL_IDS, [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
@@ -123,6 +124,7 @@ test("offers the latest Claude models while retaining existing selections", () =
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
+    "claude-haiku-4-5",
   ]);
   assert.deepEqual(GEMINI_MAIN_MODEL_IDS, [
     "gemini-3.1-pro-preview",
@@ -153,6 +155,78 @@ test("offers the latest Claude models while retaining existing selections", () =
     TABULAR_MODELS.filter(({ group }) => group === "Anthropic").map(({ id }) => id),
     ["claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
   );
+});
+
+test("Opus 5.5 starts at Medium and keeps its effort separate from other Claude models", () => {
+  const opus = selectAssistantModel(defaultAssistantGenerationSettings(), "claude-opus-5-5");
+  assert.equal(MODELS.find(({ id }) => id === opus.model)?.label, "Claude Opus 5.5");
+  assert.equal(TABULAR_MODELS.some(({ id }) => id === opus.model), false);
+  assert.equal(ALLOWED_MAIN_MODEL_IDS.has(opus.model), true);
+  assert.equal(getModelProvider(opus.model), "claude");
+  assert.deepEqual(assistantReasoningEffortsFor(opus.model, "standard"), CLAUDE_REASONING_EFFORTS);
+  assert.equal(opus.claudeEffort, "high");
+  assert.deepEqual(effectiveAssistantGenerationSettings(opus), {
+    model: "claude-opus-5-5",
+    reasoningEffort: "medium",
+    reasoningMode: "standard",
+  });
+  assert.deepEqual(buildAssistantGenerationPayload(effectiveAssistantGenerationSettings(opus)), {
+    model: "claude-opus-5-5",
+    reasoning_effort: "medium",
+  });
+  const oldPreference = deserializeAssistantGenerationSettings({
+    versioned: JSON.stringify({
+      version: 1,
+      model: "claude-opus-5-5",
+      standardEffort: "low",
+      claudeEffort: "max",
+    }),
+  });
+  assert.equal(effectiveAssistantGenerationSettings(oldPreference).reasoningEffort, "medium");
+  assert.equal(oldPreference.claudeEffort, "max");
+  assert.equal(effectiveAssistantGenerationSettings(
+    selectAssistantModel(oldPreference, "claude-fable-5-1"),
+  ).reasoningEffort, "max");
+  assert.equal(JSON.parse(serializeAssistantGenerationSettings(oldPreference)).opus55Effort, undefined);
+
+  const opusMax = selectAssistantEffort(opus, "max");
+  assert.equal(opusMax.opus55Effort, "max");
+  assert.equal(opusMax.claudeEffort, "high");
+  const fable = selectAssistantModel(opusMax, "claude-fable-5-1");
+  assert.equal(effectiveAssistantGenerationSettings(fable).reasoningEffort, "high");
+  const fableXhigh = selectAssistantEffort(fable, "xhigh");
+  assert.equal(fableXhigh.opus55Effort, "max");
+  assert.equal(effectiveAssistantGenerationSettings(
+    selectAssistantModel(fableXhigh, "claude-opus-5-5"),
+  ).reasoningEffort, "max");
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: serializeAssistantGenerationSettings(fableXhigh),
+  });
+  assert.equal(restored.claudeEffort, "xhigh");
+  assert.equal(restored.opus55Effort, "max");
+  assert.deepEqual(buildAssistantGenerationPayload(effectiveAssistantGenerationSettings(
+    selectAssistantModel(restored, "claude-opus-5-5"),
+  )), { model: "claude-opus-5-5", reasoning_effort: "max" });
+  assert.equal(effectiveAssistantGenerationSettings(
+    selectAssistantModel(restored, "claude-fable-5-1"),
+  ).reasoningEffort, "xhigh");
+});
+
+test("Haiku 4.5 can be saved as a main model without reasoning-effort controls", () => {
+  const haiku = selectAssistantModel(defaultAssistantGenerationSettings(), "claude-haiku-4-5");
+  assert.equal(MODELS.find(({ id }) => id === haiku.model)?.label, "Claude Haiku 4.5");
+  assert.equal(TABULAR_MODELS.some(({ id }) => id === haiku.model), true);
+  assert.equal(ALLOWED_MAIN_MODEL_IDS.has(haiku.model), true);
+  assert.equal(getModelProvider(haiku.model), "claude");
+  assert.equal(isClaudeReasoningModel(haiku.model), false);
+  assert.equal(assistantReasoningEffortsFor(haiku.model, "standard"), null);
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: serializeAssistantGenerationSettings(haiku),
+  });
+  assert.equal(restored.model, "claude-haiku-4-5");
+  assert.deepEqual(buildAssistantGenerationPayload(
+    effectiveAssistantGenerationSettings(restored),
+  ), { model: "claude-haiku-4-5" });
 });
 
 test("defaults the main OpenAI picker to Astra without changing tabular models", () => {
@@ -296,6 +370,7 @@ test("exposes exact provider-specific efforts and keeps GPT Pro off Opus 5", () 
 
 test("exposes Claude effort controls for all current reasoning models", () => {
   assert.deepEqual(CLAUDE_REASONING_MODEL_IDS, [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-sonnet-5",
@@ -314,12 +389,15 @@ test("exposes Claude effort controls for all current reasoning models", () => {
   }
 });
 
-test("current Claude models preserve shared Claude effort separately from OpenAI settings", () => {
+test("existing Claude models preserve shared Claude effort separately from OpenAI settings", () => {
   const openaiPro = setAssistantReasoningMode(
     selectAssistantEffort(defaultAssistantGenerationSettings(), "xhigh"),
     "pro",
   );
-  for (const model of CLAUDE_REASONING_MODEL_IDS) {
+  const sharedEffortModels = CLAUDE_REASONING_MODEL_IDS.filter(
+    (model) => model !== "claude-opus-5-5",
+  );
+  for (const model of sharedEffortModels) {
     const selected = selectAssistantModel(openaiPro, model);
     assert.equal(selected.reasoningMode, "standard");
     assert.equal(selected.claudeEffort, "high");
@@ -337,7 +415,7 @@ test("current Claude models preserve shared Claude effort separately from OpenAI
       reasoningEffort: "max",
       reasoningMode: "standard",
     });
-    for (const nextModel of CLAUDE_REASONING_MODEL_IDS) {
+    for (const nextModel of sharedEffortModels) {
       assert.equal(effectiveAssistantGenerationSettings(
         selectAssistantModel(rehydrated, nextModel),
       ).reasoningEffort, "max");

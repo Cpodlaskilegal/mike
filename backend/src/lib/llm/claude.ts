@@ -24,6 +24,7 @@ import {
 } from "./types";
 import {
     CLAUDE_REASONING_EFFORTS,
+    defaultClaudeReasoningEffort,
     supportsClaudeReasoningEffort,
     type ClaudeReasoningEffort,
 } from "./models";
@@ -42,6 +43,7 @@ const MAX_TOKENS = 16384;
 // Higher effort needs enough room for both reasoning and the user-visible answer.
 // https://platform.claude.com/docs/en/build-with-claude/effort
 const HIGH_EFFORT_MAX_TOKENS = 64000;
+const SIGNED_PREFIX_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5"]);
 
 function client(override?: string | null): Anthropic {
     const apiKey = override?.trim() || process.env.ANTHROPIC_API_KEY || "";
@@ -49,9 +51,10 @@ function client(override?: string | null): Anthropic {
 }
 
 function resolveClaudeEffort(
+    model: string,
     reasoningEffort: StreamChatParams["reasoningEffort"],
 ): ClaudeReasoningEffort {
-    if (reasoningEffort === undefined) return "high";
+    if (reasoningEffort === undefined) return defaultClaudeReasoningEffort(model);
     if (
         (CLAUDE_REASONING_EFFORTS as readonly string[]).includes(
             reasoningEffort,
@@ -73,7 +76,7 @@ function thinkingOptions(
         return {
             thinking: { type: "adaptive", display: "summarized" },
             output_config: {
-                effort: resolveClaudeEffort(reasoningEffort),
+                effort: resolveClaudeEffort(model, reasoningEffort),
             },
         };
     }
@@ -112,6 +115,12 @@ export type ClaudeStreamingRequestInput = {
 export function buildClaudeStreamingRequest(
     input: ClaudeStreamingRequestInput,
 ): MessageStreamParams {
+    if (
+        input.model === "claude-opus-5-5" &&
+        (input.toolChoice?.type === "any" || input.toolChoice?.type === "tool")
+    ) {
+        throw new Error("Claude Opus 5.5 does not support forced tool choice");
+    }
     return {
         model: input.model,
         system: input.systemPrompt,
@@ -132,7 +141,7 @@ export function buildClaudeStreamingRequest(
     };
 }
 
-/** Build one tool-loop request without rewriting Fable 5.1's signed prefix. */
+/** Build one tool-loop request without rewriting signed thinking prefixes. */
 export function buildClaudeToolLoopRequest(
     input: ClaudeStreamingRequestInput & {
         systemPrompt: string;
@@ -146,11 +155,11 @@ export function buildClaudeToolLoopRequest(
         input.tools ?? [],
         input.systemPrompt,
     );
-    if (plan.finalSynthesis && input.model === "claude-fable-5-1") {
-        // Fable 5.1 validates every earlier token before a preserved thinking
+    if (plan.finalSynthesis && SIGNED_PREFIX_MODELS.has(input.model)) {
+        // These models validate every earlier token before a preserved thinking
         // block, including system and tool definitions. Disable execution via
         // tool_choice and append the instruction after the completed results.
-        // https://platform.claude.com/docs/en/models/fable-5-1/migration-guide
+        // https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5
         return {
             finalSynthesis: true,
             request: buildClaudeStreamingRequest({

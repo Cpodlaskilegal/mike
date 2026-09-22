@@ -3,8 +3,9 @@ import type { Provider, ReasoningMode } from "./types";
 // ---------------------------------------------------------------------------
 // Canonical model IDs
 // ---------------------------------------------------------------------------
-// Main-chat tier (top-end) — user picks one of these per message.
+// Main-chat models — user picks one of these per message.
 export const CLAUDE_MAIN_MODELS = [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-fable-5",
@@ -12,6 +13,7 @@ export const CLAUDE_MAIN_MODELS = [
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
+    "claude-haiku-4-5",
 ] as const;
 export const GEMINI_MAIN_MODELS = [
     "gemini-3.1-pro-preview",
@@ -73,11 +75,16 @@ export const CLAUDE_OPUS_5_REASONING_EFFORTS = CLAUDE_REASONING_EFFORTS;
 export type ClaudeOpus5ReasoningEffort = ClaudeReasoningEffort;
 
 export const CLAUDE_REASONING_MODELS = [
+    "claude-opus-5-5",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-sonnet-5",
     "claude-opus-5",
 ] as const;
+
+export function defaultClaudeReasoningEffort(model: string): ClaudeReasoningEffort {
+    return model === "claude-opus-5-5" ? "medium" : "high";
+}
 
 export function supportsClaudeReasoningEffort(
     model: unknown,
@@ -326,7 +333,7 @@ export function resolveMainModelRequest(
             provider: "claude",
             reasoningEffort: isClaudeReasoningEffort(request.reasoning_effort)
                 ? request.reasoning_effort
-                : "high",
+                : defaultClaudeReasoningEffort(request.model),
             status: "direct",
         };
     }
@@ -436,7 +443,7 @@ export function parseMainModelRequest(
 
     if (model && isNonOpenAiMainRequestModel(model)) {
         if (supportsClaudeReasoningEffort(model)) {
-            let reasoningEffort: ClaudeReasoningEffort = "high";
+            let reasoningEffort: ClaudeReasoningEffort = defaultClaudeReasoningEffort(model);
             if (hasOwn(raw, "reasoning_effort")) {
                 if (!isClaudeReasoningEffort(raw.reasoning_effort)) {
                     return parseFailure(
