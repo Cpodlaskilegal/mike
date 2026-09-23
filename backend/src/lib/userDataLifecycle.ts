@@ -208,7 +208,8 @@ export async function buildDocketDataExport(
     workflow_open_source_submissions,
   ] = await Promise.all([
     one(
-      `select display_name, organisation, tier, tabular_model, legal_research_us,
+      `select display_name, organisation, personal_instructions, tier,
+              tabular_model, legal_research_us,
               created_at, updated_at
          from user_profiles where user_id = $1`,
       [userId],

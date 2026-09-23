@@ -16,6 +16,8 @@ create table if not exists public.user_profiles (
   user_id text not null unique references public.app_users(id) on delete cascade,
   display_name text,
   organisation text,
+  personal_instructions text not null default ''
+    check (char_length(personal_instructions) <= 5000),
   tier text not null default 'Free',
   message_credits_used integer not null default 0,
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
@@ -28,6 +30,14 @@ create table if not exists public.user_profiles (
 );
 
 create index if not exists idx_user_profiles_user on public.user_profiles(user_id);
+
+create table if not exists public.firm_instructions (
+  id integer primary key default 1 check (id = 1),
+  instructions text not null default '' check (char_length(instructions) <= 5000),
+  updated_by_user_id text references public.app_users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
 -- A Docket data-deletion request is reviewed against legal retention before
 -- any application data is removed. Microsoft Entra identities are never

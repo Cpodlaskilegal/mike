@@ -1,6 +1,11 @@
 import path from "path";
 import { createHash, randomUUID } from "crypto";
 import {
+    formatFirmInstructions,
+    formatPersonalInstructions,
+    type CustomInstructions,
+} from "./customInstructionsPrompt";
+import {
     downloadFile,
     generatedDocKey,
     storageKey,
@@ -1153,11 +1158,17 @@ export function buildMessages(
     systemPromptExtra?: string,
     docIndex?: DocIndex,
     includeResearchTools = false,
+    customInstructions?: CustomInstructions,
 ) {
     let systemContent = SYSTEM_PROMPT;
 
     if (includeResearchTools) {
         systemContent += `\n\n${COURTLISTENER_SYSTEM_PROMPT}`;
+    }
+
+    if (customInstructions) {
+        const firmInstructions = formatFirmInstructions(customInstructions.firmInstructions);
+        if (firmInstructions) systemContent += `\n\n${firmInstructions}`;
     }
 
     if (systemPromptExtra) {
@@ -1206,6 +1217,14 @@ export function buildMessages(
 
     const compacted = compactChatHistory(history);
     const formatted: unknown[] = [{ role: "system", content: systemContent }];
+    if (customInstructions) {
+        const personalInstructions = formatPersonalInstructions(
+            customInstructions.personalInstructions,
+        );
+        if (personalInstructions) {
+            formatted.push({ role: "user", content: personalInstructions });
+        }
+    }
     if (compacted.compactedPrefix) {
         formatted.push({
             role: "user",

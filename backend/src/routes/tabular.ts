@@ -27,6 +27,12 @@ import {
     throwIfAborted,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
+import { getEffectiveCustomInstructions } from "../lib/userInstructions";
+import {
+    formatFirmInstructions,
+    formatPersonalInstructions,
+    type CustomInstructions,
+} from "../lib/customInstructionsPrompt";
 import {
     checkProjectAccess,
     ensureReviewAccess,
@@ -1381,10 +1387,11 @@ function extractTabularAnnotations(
 // Build messages for tabular chat
 // ---------------------------------------------------------------------------
 
-function buildTabularMessages(
+export function buildTabularMessages(
     messages: ChatMessage[],
     tabularStore: TabularCellStore,
     reviewTitle: string,
+    customInstructions?: CustomInstructions,
 ): unknown[] {
     const docList = tabularStore.documents
         .map((d, i) => `- ROW:${i} "${d.filename}"`)
@@ -1424,7 +1431,23 @@ Rules:
 - Do not fabricate cell content
 - Answer in clear, concise prose. You may use markdown formatting.`;
 
-    const formatted: unknown[] = [{ role: "system", content: systemContent }];
+    const firmInstructions = customInstructions
+        ? formatFirmInstructions(customInstructions.firmInstructions)
+        : "";
+    const formatted: unknown[] = [{
+        role: "system",
+        content: firmInstructions
+            ? `${systemContent}\n\n${firmInstructions}`
+            : systemContent,
+    }];
+    if (customInstructions) {
+        const personalInstructions = formatPersonalInstructions(
+            customInstructions.personalInstructions,
+        );
+        if (personalInstructions) {
+            formatted.push({ role: "user", content: personalInstructions });
+        }
+    }
     for (const msg of messages) {
         formatted.push({ role: msg.role, content: msg.content ?? "" });
     }
@@ -1574,12 +1597,6 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         }
     }
 
-    const apiMessages = buildTabularMessages(
-        messages,
-        tabularStore,
-        review.title || "Untitled Review",
-    );
-
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -1599,6 +1616,13 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
 
         const { tabular_model: tabularModel, api_keys: apiKeys } =
             await getUserModelSettings(userId, db);
+        const customInstructions = await getEffectiveCustomInstructions(userId, db);
+        const apiMessages = buildTabularMessages(
+            messages,
+            tabularStore,
+            review.title || "Untitled Review",
+            customInstructions,
+        );
         throwIfAborted(streamAbort.signal);
         const { fullText, events } = await runLLMStream({
             apiMessages,

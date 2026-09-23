@@ -170,6 +170,20 @@ The existing `20260723_practicepanther_access_control.sql` approval table is
 reused; the Box change does not require a new table. A tool-catalog refresh
 discovers tools newly enabled by the Box administrator.
 
+## Custom Instructions
+
+Under **Settings > Instructions**, each user can save personal instructions.
+Administrators can also save firm-wide instructions that everyone can read.
+Firm-wide instructions take priority over personal preferences. Both apply to
+new Assistant, Project Assistant, and Tabular Review chat replies. They do not
+change the separate structured cell-extraction or title-generation prompts,
+and they do not grant access to tools or authorize external actions. Both
+instruction fields are empty until someone saves them.
+
+For an existing database, apply
+`backend/migrations/20260923_custom_instructions.sql` before deploying the
+backend code that reads these settings.
+
 ## Install
 
 Install each app package:

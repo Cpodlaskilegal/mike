@@ -24,6 +24,7 @@ import {
   type ProviderRunProgress,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
+import { getEffectiveCustomInstructions } from "../lib/userInstructions";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine, toChatStreamError } from "../lib/chatErrors";
 import { safeErrorLog } from "../lib/safeError";
@@ -1206,12 +1207,14 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     );
     const { api_keys: apiKeys, legal_research_us: legalResearchUs } =
       await getUserModelSettings(userId, db);
+    const customInstructions = await getEffectiveCustomInstructions(userId, db);
     const apiMessages = buildMessages(
       enrichedMessages,
       docAvailability,
       undefined,
       undefined,
       legalResearchUs,
+      customInstructions,
     );
     const ownMailboxIntent =
       latestUserMessageHasOwnMailboxIntent(streamMessages);

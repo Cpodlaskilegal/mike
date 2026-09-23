@@ -34,10 +34,17 @@ import {
 } from "../lib/mcpConnectors";
 import {
   getUserRole,
+  getUserRoleStrict,
   isAdminUser,
   normalizeUserRole,
   type AppUserRole,
 } from "../lib/userRoles";
+import {
+  getEffectiveCustomInstructions,
+  parseCustomInstructionsBody,
+  saveFirmInstructions,
+  savePersonalInstructions,
+} from "../lib/userInstructions";
 import {
   buildDocketDataExport,
   createDataDeletionRequest,
@@ -456,6 +463,62 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
   const apiKeyStatus = await getUserApiKeyStatus(userId, db);
   res.json({ ...data, apiKeyStatus });
 });
+
+// GET /user/instructions
+userRouter.get("/instructions", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerSupabase();
+  try {
+    const [instructions, role] = await Promise.all([
+      getEffectiveCustomInstructions(userId, db),
+      getUserRoleStrict(db, userId),
+    ]);
+    res.json({
+      ...instructions,
+      canEditFirmInstructions: role === "admin",
+    });
+  } catch (error) {
+    console.error("[user/instructions] load failed", safeErrorLog(error));
+    res.status(500).json({ detail: "Unable to load custom instructions" });
+  }
+});
+
+// PUT /user/instructions/personal
+userRouter.put("/instructions/personal", requireAuth, async (req, res) => {
+  const parsed = parseCustomInstructionsBody(req.body);
+  if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+  try {
+    const personalInstructions = await savePersonalInstructions(
+      res.locals.userId as string,
+      parsed.instructions,
+    );
+    res.json({ personalInstructions });
+  } catch (error) {
+    console.error("[user/instructions/personal] save failed", safeErrorLog(error));
+    res.status(500).json({ detail: "Unable to save personal instructions" });
+  }
+});
+
+// PUT /user/instructions/firm
+userRouter.put(
+  "/instructions/firm",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const parsed = parseCustomInstructionsBody(req.body);
+    if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+    try {
+      const firmInstructions = await saveFirmInstructions(
+        res.locals.userId as string,
+        parsed.instructions,
+      );
+      res.json({ firmInstructions });
+    } catch (error) {
+      console.error("[user/instructions/firm] save failed", safeErrorLog(error));
+      res.status(500).json({ detail: "Unable to save firm instructions" });
+    }
+  },
+);
 
 // GET /user/api-keys
 userRouter.get("/api-keys", requireAuth, async (_req, res) => {

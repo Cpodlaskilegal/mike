@@ -295,6 +295,36 @@ export async function updateUserProfile(payload: {
   });
 }
 
+export interface UserInstructions {
+  personalInstructions: string;
+  firmInstructions: string;
+  canEditFirmInstructions: boolean;
+}
+
+export async function getUserInstructions(): Promise<UserInstructions> {
+  return apiRequest<UserInstructions>("/user/instructions");
+}
+
+export async function updatePersonalInstructions(
+  instructions: string,
+): Promise<{ personalInstructions: string }> {
+  return apiRequest<{ personalInstructions: string }>("/user/instructions/personal", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instructions }),
+  });
+}
+
+export async function updateFirmInstructions(
+  instructions: string,
+): Promise<{ firmInstructions: string }> {
+  return apiRequest<{ firmInstructions: string }>("/user/instructions/firm", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instructions }),
+  });
+}
+
 export interface AdminUser {
   id: string;
   email: string;
