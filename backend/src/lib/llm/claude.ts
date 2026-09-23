@@ -8,6 +8,7 @@ import type {
     MessageStreamParams,
     StopReason,
     Tool,
+    ToolUnion,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
     StreamChatParams,
@@ -23,6 +24,7 @@ import {
     throwIfAborted,
 } from "./types";
 import {
+    CLAUDE_MAIN_MODELS,
     CLAUDE_REASONING_EFFORTS,
     defaultClaudeReasoningEffort,
     supportsClaudeReasoningEffort,
@@ -44,6 +46,34 @@ const MAX_TOKENS = 16384;
 // https://platform.claude.com/docs/en/build-with-claude/effort
 const HIGH_EFFORT_MAX_TOKENS = 64000;
 const SIGNED_PREFIX_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5"]);
+const MAX_SERVER_TOOL_CONTINUATIONS = 5;
+const MAIN_CLAUDE_MODELS = new Set<string>(CLAUDE_MAIN_MODELS);
+
+/**
+ * The basic web tool versions work without dynamic filtering on older models.
+ * Later fetch versions depend on model-specific code-execution support. Code
+ * execution itself runs in Anthropic's sandbox, including its Bash facility;
+ * it does not execute commands on Docket's host.
+ */
+export function claudeHostedTools(model: string): ToolUnion[] {
+    if (!MAIN_CLAUDE_MODELS.has(model)) return [];
+    return [
+        { type: "web_search_20250305", name: "web_search", max_uses: 5 },
+        // Anthropic explicitly excludes web fetch on Opus 5. Keep search and
+        // code execution available there instead of making every chat fail 400.
+        // https://platform.claude.com/docs/en/models/opus-5/migration-guide
+        ...(model === "claude-opus-5"
+            ? []
+            : [{
+                  type: "web_fetch_20250910" as const,
+                  name: "web_fetch" as const,
+                  max_uses: 5,
+                  max_content_tokens: 25_000,
+                  citations: { enabled: true },
+              }]),
+        { type: "code_execution_20260521", name: "code_execution" },
+    ];
+}
 
 function client(override?: string | null): Anthropic {
     const apiKey = override?.trim() || process.env.ANTHROPIC_API_KEY || "";
@@ -102,8 +132,9 @@ export type ClaudeStreamingRequestInput = {
     model: string;
     systemPrompt?: string;
     messages: MessageParam[];
-    tools?: Tool[];
+    tools?: ToolUnion[];
     toolChoice?: MessageStreamParams["tool_choice"];
+    containerId?: string;
     enableThinking?: boolean;
     reasoningEffort?: StreamChatParams["reasoningEffort"];
 };
@@ -127,6 +158,7 @@ export function buildClaudeStreamingRequest(
         messages: input.messages,
         ...(input.tools?.length ? { tools: input.tools } : {}),
         ...(input.toolChoice ? { tool_choice: input.toolChoice } : {}),
+        ...(input.containerId ? { container: input.containerId } : {}),
         max_tokens:
             supportsClaudeReasoningEffort(input.model) &&
             (input.reasoningEffort === "xhigh" ||
@@ -155,6 +187,19 @@ export function buildClaudeToolLoopRequest(
         input.tools ?? [],
         input.systemPrompt,
     );
+    if (plan.finalSynthesis && hasPendingClaudeServerTool(input.messages)) {
+        // A server tool called alongside a Docket tool is still pending until
+        // the next request. Anthropic requires the same tool definitions and a
+        // user message containing only client tool_result blocks; an extra
+        // final-response user message would make the continuation invalid.
+        return {
+            finalSynthesis: true,
+            request: buildClaudeStreamingRequest({
+                ...input,
+                toolChoice: { type: "none" },
+            }),
+        };
+    }
     if (plan.finalSynthesis && SIGNED_PREFIX_MODELS.has(input.model)) {
         // These models validate every earlier token before a preserved thinking
         // block, including system and tool definitions. Disable execution via
@@ -185,10 +230,68 @@ export function buildClaudeToolLoopRequest(
     };
 }
 
-function toNativeMessages(
+function hasPendingClaudeServerTool(messages: MessageParam[]): boolean {
+    const pending = new Set<string>();
+    for (const message of messages) {
+        if (message.role !== "assistant" || !Array.isArray(message.content)) {
+            continue;
+        }
+        for (const block of message.content) {
+            if (block.type === "server_tool_use") {
+                pending.add(block.id);
+            } else if ("tool_use_id" in block) {
+                pending.delete(String(block.tool_use_id));
+            }
+        }
+    }
+    return pending.size > 0;
+}
+
+export function toNativeMessages(
     messages: StreamChatParams["messages"],
 ): MessageParam[] {
-    return messages.map((m) => ({ role: m.role, content: m.content }));
+    return messages.map((m) => {
+        if (!m.media?.length) return { role: m.role, content: m.content };
+        if (m.role !== "user") {
+            throw new Error("Claude media can only be attached to user messages.");
+        }
+        const content: ContentBlockParam[] = [{ type: "text", text: m.content }];
+        for (const media of m.media) {
+            const mime = media.mimeType.toLowerCase();
+            if (
+                mime === "image/jpeg" ||
+                mime === "image/png" ||
+                mime === "image/gif" ||
+                mime === "image/webp"
+            ) {
+                content.push({ type: "text", text: `Image: ${media.filename}` });
+                content.push({
+                    type: "image",
+                    source: {
+                        type: "base64",
+                        media_type: mime,
+                        data: media.base64Data,
+                    },
+                });
+            } else if (mime === "application/pdf") {
+                content.push({
+                    type: "document",
+                    source: {
+                        type: "base64",
+                        media_type: "application/pdf",
+                        data: media.base64Data,
+                    },
+                    title: media.filename,
+                    citations: { enabled: true },
+                });
+            } else {
+                throw new Error(
+                    `Claude cannot understand ${mime || "unknown media"} natively in this Assistant.`,
+                );
+            }
+        }
+        return { role: m.role, content };
+    });
 }
 
 function elapsedSeconds(startedAt: number): number {
@@ -222,6 +325,46 @@ export type ClaudeIterationContent = {
     toolCalls: NormalizedToolCall[];
     assistantBlocks: ContentBlock[];
 };
+
+/** Preserve a human-readable link for each verified web source in the turn. */
+export function claudeWebSources(blocks: ContentBlock[]): string[] {
+    const sources: string[] = [];
+    const seen = new Set<string>();
+    const add = (raw: string) => {
+        try {
+            const url = new URL(raw);
+            if (url.protocol !== "http:" && url.protocol !== "https:") return;
+            const value = url.toString();
+            if (seen.has(value)) return;
+            seen.add(value);
+            sources.push(value);
+        } catch {
+            // Malformed provider metadata is not a user-facing source.
+        }
+    };
+    for (const block of blocks) {
+        if (block.type === "text") {
+            for (const citation of block.citations ?? []) {
+                if (citation.type === "web_search_result_location") {
+                    add(citation.url);
+                }
+            }
+        } else if (
+            block.type === "web_fetch_tool_result" &&
+            block.content.type === "web_fetch_result"
+        ) {
+            add(block.content.url);
+        }
+    }
+    return sources;
+}
+
+function formatClaudeWebSources(sources: string[]): string {
+    if (!sources.length) return "";
+    return `\n\nSources: ${sources
+        .map((url, index) => `[${index + 1}](${url.replaceAll("(", "%28").replaceAll(")", "%29")})`)
+        .join(", ")}`;
+}
 
 /**
  * Keep response blocks untouched so adaptive-thinking signatures remain valid
@@ -272,6 +415,16 @@ export function buildClaudeToolContinuation(
             })),
         },
     ];
+}
+
+/** Server tools have no client result; replay the paused assistant blocks. */
+export function buildClaudePausedContinuation(
+    assistantBlocks: ContentBlock[],
+): MessageParam {
+    return {
+        role: "assistant",
+        content: assistantBlocks as unknown as ContentBlockParam[],
+    };
 }
 
 export class ClaudeStopReasonError extends Error {
@@ -415,112 +568,158 @@ export async function streamClaude(
     } = params;
     const maxToolIterations = normalizeMaxToolIterations(params.maxIterations);
     const anthropic = client(apiKeys?.claude);
-    const claudeTools = toClaudeTools(tools) as unknown as Tool[];
+    const claudeTools: ToolUnion[] = [
+        ...(toClaudeTools(tools) as unknown as Tool[]),
+        ...claudeHostedTools(model),
+    ];
 
     const messages = toNativeMessages(params.messages);
     let fullText = "";
+    let containerId: string | undefined;
+    let serverToolContinuations = 0;
+    const webSources = new Set<string>();
     const traceId = params.aiObservability?.traceId || randomUUID();
     const parentId = traceId;
 
     for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
-        const generationId = randomUUID();
-        const requestStartedAt = Date.now();
         let iterationText = "";
         const { finalSynthesis, request } = buildClaudeToolLoopRequest({
             model,
             systemPrompt,
             messages,
             tools: claudeTools,
+            containerId,
             iteration: iter,
             maxToolIterations,
             enableThinking,
             reasoningEffort: params.reasoningEffort,
         });
-        const stream = anthropic.messages.stream(request, {
-            signal: params.abortSignal,
-        });
+        let requestForAttempt = request;
+        let final: Anthropic.Message;
+        let iteration: ClaudeIterationContent;
 
-        let sawThinking = false;
-
-        stream.on("text", (delta) => {
-            callbacks.onContentDelta?.(delta);
-        });
-        if (enableThinking) {
-            stream.on("thinking", (delta) => {
-                sawThinking = true;
-                callbacks.onReasoningDelta?.(delta);
+        // Anthropic executes hosted tools internally. A long server-side run
+        // can return pause_turn, which must be replayed verbatim with the same
+        // tool definitions before Docket handles another client tool round.
+        while (true) {
+            throwIfAborted(params.abortSignal);
+            const generationId = randomUUID();
+            const requestStartedAt = Date.now();
+            const stream = anthropic.messages.stream(requestForAttempt, {
+                signal: params.abortSignal,
             });
+            let sawThinking = false;
+
+            stream.on("text", (delta) => {
+                callbacks.onContentDelta?.(delta);
+            });
+            if (enableThinking) {
+                stream.on("thinking", (delta) => {
+                    sawThinking = true;
+                    callbacks.onReasoningDelta?.(delta);
+                });
+            }
+
+            final = await waitForClaudeFinalMessage(
+                stream,
+                params.abortSignal,
+            );
+            if (sawThinking) callbacks.onReasoningBlockEnd?.();
+            throwIfAborted(params.abortSignal);
+            containerId = final.container?.id ?? containerId;
+            iteration = extractClaudeIterationContent(final);
+            iterationText += iteration.text;
+            fullText += iteration.text;
+            for (const source of claudeWebSources(iteration.assistantBlocks)) {
+                webSources.add(source);
+            }
+            for (const call of iteration.toolCalls) {
+                callbacks.onToolCallStart?.(call);
+            }
+
+            const usage = await recordClaudeUsage({
+                model,
+                response: final,
+                params,
+            });
+            await captureAiGeneration({
+                distinctId: params.aiObservability?.distinctId,
+                traceId,
+                generationId,
+                parentId,
+                sessionId: params.aiObservability?.sessionId,
+                spanName: params.aiObservability?.spanName || "Chat completion",
+                route: params.aiObservability?.route,
+                chatId: params.aiObservability?.chatId,
+                projectId: params.aiObservability?.projectId,
+                model,
+                provider: "anthropic",
+                stream: true,
+                latencySeconds: elapsedSeconds(requestStartedAt),
+                input: aiInputMessages(
+                    typeof requestForAttempt.system === "string"
+                        ? requestForAttempt.system
+                        : systemPrompt,
+                    params.messages,
+                ),
+                output: iteration.text,
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+                totalTokens: usage.totalTokens,
+                inputCostUsd: spendUsd(
+                    usage.cost.inputCostNanos + usage.cost.cachedInputCostNanos,
+                ),
+                outputCostUsd: spendUsd(usage.cost.outputCostNanos),
+                totalCostUsd: spendUsd(usage.cost.totalCostNanos),
+                metadata: {
+                    iteration: iter + 1,
+                    server_tool_continuations: serverToolContinuations,
+                    web_search_requests:
+                        final.usage.server_tool_use?.web_search_requests ?? 0,
+                    web_fetch_requests:
+                        final.usage.server_tool_use?.web_fetch_requests ?? 0,
+                    tool_count: finalSynthesis ? 0 : claudeTools.length,
+                    function_call_count: iteration.toolCalls.length,
+                    final_synthesis: finalSynthesis,
+                    ...params.aiObservability?.metadata,
+                },
+            });
+
+            if (final.stop_reason !== "pause_turn") break;
+            serverToolContinuations += 1;
+            if (serverToolContinuations > MAX_SERVER_TOOL_CONTINUATIONS) {
+                throw new ClaudeStopReasonError(
+                    "pause_turn",
+                    "Claude server tools paused too many times before completing the response.",
+                    true,
+                );
+            }
+            const paused = buildClaudePausedContinuation(
+                iteration.assistantBlocks,
+            );
+            requestForAttempt = {
+                ...requestForAttempt,
+                messages: [...requestForAttempt.messages, paused],
+                ...(containerId ? { container: containerId } : {}),
+            };
+            if (!finalSynthesis) messages.push(paused);
         }
 
-        const final = await waitForClaudeFinalMessage(
-            stream,
-            params.abortSignal,
-        );
-        if (sawThinking) callbacks.onReasoningBlockEnd?.();
-        throwIfAborted(params.abortSignal);
-        const stopReason = final.stop_reason;
-        const iteration = extractClaudeIterationContent(final);
-        iterationText += iteration.text;
-        fullText += iteration.text;
-        for (const call of iteration.toolCalls) {
-            callbacks.onToolCallStart?.(call);
-        }
-
-        const usage = await recordClaudeUsage({
-            model,
-            response: final,
-            params,
-        });
-        await captureAiGeneration({
-            distinctId: params.aiObservability?.distinctId,
-            traceId,
-            generationId,
-            parentId,
-            sessionId: params.aiObservability?.sessionId,
-            spanName: params.aiObservability?.spanName || "Chat completion",
-            route: params.aiObservability?.route,
-            chatId: params.aiObservability?.chatId,
-            projectId: params.aiObservability?.projectId,
-            model,
-            provider: "anthropic",
-            stream: true,
-            latencySeconds: elapsedSeconds(requestStartedAt),
-            input: aiInputMessages(
-                typeof request.system === "string"
-                    ? request.system
-                    : systemPrompt,
-                params.messages,
-            ),
-            output: iterationText,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            totalTokens: usage.totalTokens,
-            inputCostUsd: spendUsd(
-                usage.cost.inputCostNanos + usage.cost.cachedInputCostNanos,
-            ),
-            outputCostUsd: spendUsd(usage.cost.outputCostNanos),
-            totalCostUsd: spendUsd(usage.cost.totalCostNanos),
-            metadata: {
-                iteration: iter + 1,
-                tool_count: finalSynthesis ? 0 : claudeTools.length,
-                function_call_count: iteration.toolCalls.length,
-                final_synthesis: finalSynthesis,
-                ...params.aiObservability?.metadata,
-            },
-        });
-
-        assertUsableClaudeStopReason(stopReason);
+        assertUsableClaudeStopReason(final.stop_reason);
 
         if (finalSynthesis) {
             assertFinalSynthesisResult("claude", {
-                text: iteration.text,
+                text: iterationText,
                 toolCallCount: iteration.toolCalls.length,
                 providerResponseId: final.id,
             });
             break;
         }
-        if (stopReason !== "tool_use" || !iteration.toolCalls.length) break;
+        if (final.stop_reason !== "tool_use") break;
+        if (!iteration.toolCalls.length) {
+            throw new Error("Claude returned tool_use without a client tool call.");
+        }
         if (!runTools) {
             throw new Error(
                 "Claude requested a tool, but no tool executor is available.",
@@ -536,6 +735,12 @@ export async function streamClaude(
         );
     }
 
+    const sourceFooter = formatClaudeWebSources([...webSources]);
+    if (sourceFooter) {
+        fullText += sourceFooter;
+        if (callbacks.onSources) callbacks.onSources(sourceFooter);
+        else callbacks.onContentDelta?.(sourceFooter);
+    }
     return { fullText };
 }
 

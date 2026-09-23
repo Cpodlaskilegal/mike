@@ -7,6 +7,7 @@ import { getProject, uploadProjectDocument } from "@/app/lib/docketApi";
 import type { DocketDocument } from "./types";
 import { DocFileIcon } from "./FileDirectory";
 import { VersionChip } from "./VersionChip";
+import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 
 interface Props {
     open: boolean;
@@ -257,7 +258,7 @@ export function AddProjectDocsModal({
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt"
+                            accept={SUPPORTED_DOCUMENT_ACCEPT}
                             multiple
                             className="hidden"
                             onChange={handleUpload}

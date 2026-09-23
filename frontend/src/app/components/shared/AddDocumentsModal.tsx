@@ -14,6 +14,7 @@ import { FileDirectory } from "./FileDirectory";
 import { useDirectoryData, invalidateDirectoryCache } from "./useDirectoryData";
 import { OwnerOnlyModal } from "./OwnerOnlyModal";
 import { useAuth } from "@/contexts/AuthContext";
+import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 
 export { invalidateDirectoryCache };
 
@@ -264,7 +265,7 @@ export function AddDocumentsModal({
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt"
+                            accept={SUPPORTED_DOCUMENT_ACCEPT}
                             multiple
                             className="hidden"
                             onChange={handleUpload}

@@ -10,6 +10,7 @@ import {
     useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 import {
     ChevronLeft,
     ChevronRight,
@@ -903,7 +904,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     <input
                                         ref={fileInputRef}
                                         type="file"
-                                        accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt"
+                                        accept={SUPPORTED_DOCUMENT_ACCEPT}
                                         multiple
                                         className="hidden"
                                         onChange={(e) =>

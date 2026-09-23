@@ -14,6 +14,7 @@ import { toGeminiTools } from "./tools";
 
 type GeminiPart = {
     text?: string;
+    inlineData?: { mimeType: string; data: string };
     // Set by Gemini when the text content is a thought summary rather than
     // final-answer prose. Requires `thinkingConfig.includeThoughts: true`.
     thought?: boolean;
@@ -23,6 +24,13 @@ type GeminiPart = {
         name: string;
         response: Record<string, unknown>;
     };
+    // Gemini 3 returns built-in tool activity in these parts when
+    // includeServerSideToolInvocations is enabled. Keep each part intact for
+    // the next function-call iteration, including its thoughtSignature.
+    toolCall?: Record<string, unknown>;
+    toolResponse?: Record<string, unknown>;
+    executableCode?: Record<string, unknown>;
+    codeExecutionResult?: Record<string, unknown>;
     // Gemini 3 returns a thoughtSignature on parts that contain reasoning or
     // a functionCall. It must be echoed back verbatim on the same part when
     // we replay the model's turn, or the API rejects the next call.
@@ -42,8 +50,60 @@ function client(override?: string | null): GoogleGenAI {
 function toNativeContents(messages: StreamChatParams["messages"]): GeminiContent[] {
     return messages.map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
+        parts: [
+            { text: m.content },
+            ...(m.role === "user"
+                ? (m.media ?? []).map((media) => ({
+                      inlineData: {
+                          mimeType: media.mimeType,
+                          data: media.base64Data,
+                      },
+                  }))
+                : []),
+        ],
     }));
+}
+
+function groundingUrls(chunk: unknown): { url: string; title: string }[] {
+    const candidate = (chunk as {
+        candidates?: {
+            groundingMetadata?: {
+                groundingChunks?: {
+                    web?: { uri?: string; title?: string };
+                    retrievedContext?: { uri?: string; title?: string };
+                }[];
+            };
+            urlContextMetadata?: {
+                urlMetadata?: {
+                    retrievedUrl?: string;
+                    urlRetrievalStatus?: string;
+                }[];
+            };
+        }[];
+    })?.candidates?.[0];
+    const urls: { url: string; title: string }[] = [];
+    for (const source of candidate?.groundingMetadata?.groundingChunks ?? []) {
+        const item = source.web ?? source.retrievedContext;
+        if (!item?.uri) continue;
+        try {
+            const url = new URL(item.uri);
+            if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+            urls.push({ url: url.toString(), title: item.title?.trim() || url.hostname });
+        } catch {
+            // Ignore malformed provider metadata rather than emitting a bad link.
+        }
+    }
+    for (const item of candidate?.urlContextMetadata?.urlMetadata ?? []) {
+        if (!item.retrievedUrl || item.urlRetrievalStatus?.includes("ERROR")) continue;
+        try {
+            const url = new URL(item.retrievedUrl);
+            if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+            urls.push({ url: url.toString(), title: url.hostname });
+        } catch {
+            // Ignore malformed provider metadata.
+        }
+    }
+    return urls;
 }
 
 export async function streamGemini(
@@ -58,6 +118,7 @@ export async function streamGemini(
 
     const contents: GeminiContent[] = toNativeContents(params.messages);
     let fullText = "";
+    const sources = new Map<string, string>();
 
     for (let iter = 0; iter <= maxToolIterations; iter++) {
         throwIfAborted(params.abortSignal);
@@ -77,9 +138,19 @@ export async function streamGemini(
             contents: contents as never,
             config: {
                 systemInstruction: iterationSystemPrompt,
-                tools: iterationTools.length
-                    ? [{ functionDeclarations: iterationTools } as never]
-                    : undefined,
+                tools: finalSynthesis
+                    ? undefined
+                    : [
+                          { googleSearch: {} },
+                          { urlContext: {} },
+                          { codeExecution: {} },
+                          ...(iterationTools.length
+                              ? [{ functionDeclarations: iterationTools }]
+                              : []),
+                      ],
+                toolConfig: finalSynthesis
+                    ? undefined
+                    : { includeServerSideToolInvocations: true },
                 // When enabled, ask Gemini to surface thought summaries.
                 // When disabled, explicitly zero the thinking budget so the
                 // model skips thinking entirely (saves tokens and latency
@@ -93,7 +164,7 @@ export async function streamGemini(
 
         // Per-iteration accumulators.
         const textParts: string[] = [];
-        const callParts: GeminiPart[] = [];
+        const modelParts: GeminiPart[] = [];
         const toolCalls: NormalizedToolCall[] = [];
         let sawThinking = false;
 
@@ -118,6 +189,10 @@ export async function streamGemini(
                 ]);
                 if (done) break;
 
+                for (const source of groundingUrls(chunk)) {
+                    sources.set(source.url, source.title);
+                }
+
                 const parts =
                     (
                         chunk as {
@@ -128,6 +203,7 @@ export async function streamGemini(
                     ).candidates?.[0]?.content?.parts ?? [];
 
                 for (const part of parts) {
+                    modelParts.push(part);
                     if (part.text) {
                         if (part.thought) {
                             sawThinking = true;
@@ -138,9 +214,6 @@ export async function streamGemini(
                         }
                     }
                     if (part.functionCall) {
-                        // Preserve the whole part (including thoughtSignature)
-                        // so it can be echoed verbatim in the replay turn.
-                        callParts.push(part);
                         const call: NormalizedToolCall = {
                             id:
                                 part.functionCall.id ??
@@ -187,11 +260,9 @@ export async function streamGemini(
         const results = await runTools(toolCalls);
         throwIfAborted(params.abortSignal);
 
-        // Append the model's turn (text + functionCall parts, in that order)
-        // and the matching functionResponse turn.
-        const modelParts: GeminiPart[] = [];
-        if (textParts.length) modelParts.push({ text: textParts.join("") });
-        for (const cp of callParts) modelParts.push(cp);
+        // Preserve Gemini's original text, built-in tool activity, function
+        // calls and thought signatures. Reconstructing this from the visible
+        // answer would break Gemini 3's built-in/custom-tool combination.
         contents.push({ role: "model", parts: modelParts });
 
         contents.push({
@@ -209,6 +280,17 @@ export async function streamGemini(
                 };
             }),
         });
+    }
+
+    if (sources.size) {
+        const links = [...sources].slice(0, 12).map(([url, title], index) => {
+            const label = title.replace(/[\[\]\\\r\n]/g, " ").slice(0, 100);
+            return `${index + 1}. [${label}](${url})`;
+        });
+        const sourceText = `\n\nSources:\n${links.join("\n")}`;
+        fullText += sourceText;
+        if (params.callbacks?.onSources) params.callbacks.onSources(sourceText);
+        else params.callbacks?.onContentDelta?.(sourceText);
     }
 
     return { fullText };

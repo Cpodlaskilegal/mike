@@ -4,12 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 /**
- * /display returns PDF bytes when a PDF rendition exists, raw spreadsheet bytes
- * for Excel files, or raw DOCX bytes otherwise. Reporting the type lets callers
- * swap between PDF, spreadsheet, and DOCX renderers.
+ * /display returns PDF bytes when a PDF rendition exists, original media or
+ * spreadsheet bytes for those files, or raw DOCX bytes otherwise. Reporting
+ * the type lets callers select the matching renderer.
  */
 export type DocResult =
     | { type: "pdf"; buffer: ArrayBuffer }
+    | { type: "image"; objectUrl: string }
+    | { type: "audio"; objectUrl: string }
+    | { type: "video"; objectUrl: string }
     | { type: "spreadsheet"; buffer: ArrayBuffer }
     | { type: "docx" }
     | null;
@@ -19,6 +22,18 @@ function isSpreadsheetContentType(contentType: string): boolean {
         contentType.includes("spreadsheetml") ||
         contentType.includes("ms-excel")
     );
+}
+
+function previewableMediaType(
+    contentType: string,
+): "image" | "audio" | "video" | null {
+    if (["image/png", "image/jpeg", "image/webp"].includes(contentType))
+        return "image";
+    if (["audio/mpeg", "audio/wav", "audio/mp4"].includes(contentType))
+        return "audio";
+    if (["video/mp4", "video/webm"].includes(contentType))
+        return "video";
+    return null;
 }
 
 export function useFetchSingleDoc(
@@ -41,6 +56,7 @@ export function useFetchSingleDoc(
         setResult(null);
 
         let cancelled = false;
+        let mediaObjectUrl: string | null = null;
 
         (async () => {
             try {
@@ -67,11 +83,20 @@ export function useFetchSingleDoc(
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 if (cancelled) return;
 
-                const contentType =
-                    response.headers.get("content-type") ?? "";
+                const contentType = (response.headers.get("content-type") ?? "")
+                    .split(";")[0]
+                    .trim()
+                    .toLowerCase();
+                const mediaType = previewableMediaType(contentType);
                 if (contentType.includes("application/pdf")) {
                     const buffer = await response.arrayBuffer();
                     if (!cancelled) setResult({ type: "pdf", buffer });
+                } else if (mediaType) {
+                    const blob = await response.blob();
+                    if (!cancelled) {
+                        mediaObjectUrl = URL.createObjectURL(blob);
+                        setResult({ type: mediaType, objectUrl: mediaObjectUrl });
+                    }
                 } else if (isSpreadsheetContentType(contentType)) {
                     const buffer = await response.arrayBuffer();
                     if (!cancelled) setResult({ type: "spreadsheet", buffer });
@@ -92,6 +117,7 @@ export function useFetchSingleDoc(
         return () => {
             cancelled = true;
             prevKeyRef.current = null;
+            if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
         };
     }, [documentId, versionId]);
 

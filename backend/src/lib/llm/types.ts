@@ -16,6 +16,15 @@ export type OpenAIToolSchema = {
 export type LlmMessage = {
     role: "user" | "assistant";
     content: string;
+    /** Original user media, supplied only on the current turn when supported. */
+    media?: LlmMedia[];
+};
+
+export type LlmMedia = {
+    filename: string;
+    mimeType: string;
+    /** Raw file bytes encoded as base64; never persisted in chat history. */
+    base64Data: string;
 };
 
 export type NormalizedToolCall = {
@@ -33,7 +42,16 @@ export type StreamCallbacks = {
     onReasoningDelta?: (text: string) => void;
     onReasoningBlockEnd?: () => void;
     onContentDelta?: (text: string) => void;
+    /** Provider-grounded public URLs, emitted separately from document citation JSON. */
+    onSources?: (markdown: string) => void;
     onToolCallStart?: (call: NormalizedToolCall) => void;
+    /** Hosted image generation returns bytes that the Docket route must persist. */
+    onGeneratedImage?: (image: {
+        provider: "openai";
+        mimeType: "image/png";
+        base64Data: string;
+        filename?: string;
+    }) => void | Promise<void>;
 };
 
 /**
