@@ -385,7 +385,7 @@ async function refreshOAuthAccessToken(row: OAuthTokenRow, db: Db) {
   return updated;
 }
 
-async function oauthBearerToken(connector: ConnectorRow, db: Db) {
+export async function oauthBearerToken(connector: ConnectorRow, db: Db) {
   let token = await loadOAuthToken(connector.id, db);
   if (!token?.encrypted_access_token) {
     throw new McpOAuthRequiredError();

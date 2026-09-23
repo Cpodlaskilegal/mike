@@ -80,6 +80,7 @@ export type McpToolEvent = {
 };
 
 export type McpExecutionContext = {
+    signal?: AbortSignal;
     actorEmail?: string | null;
     chatId?: string | null;
     assistantMessageId?: string | null;
