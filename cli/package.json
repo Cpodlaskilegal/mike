@@ -1,0 +1,19 @@
+{
+  "name": "@docket/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "docket": "./bin/docket.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^5.5.0"
+  },
+  "license": "AGPL-3.0-only"
+}
