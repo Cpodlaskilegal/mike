@@ -102,6 +102,74 @@ test("builds separately typed Standard streaming requests for every OpenAI main 
   }
 });
 
+test("offers hosted web and image generation with one compatible execution tool per GPT request", () => {
+  for (const model of OPENAI_MAIN_MODELS) {
+    const shellTools = adapter.buildOpenAIAssistantTools(
+      model,
+      [{ type: "function", function: { name: "read_document", description: "Read", parameters: { type: "object" } } }],
+      { imageGeneration: true },
+    );
+    assert.deepEqual(
+      shellTools.map((tool) => tool.type),
+      ["function", "web_search", "shell", "image_generation"],
+    );
+    assert.deepEqual(
+      (shellTools.find((tool) => tool.type === "shell") as { environment: unknown }).environment,
+      { type: "container_auto", network_policy: { type: "disabled" } },
+    );
+    const codeTools = adapter.buildOpenAIAssistantTools(model, [], {
+      imageGeneration: true,
+      executionTool: "code_interpreter",
+    });
+    assert.deepEqual(codeTools.map((tool) => tool.type), ["web_search", "code_interpreter", "image_generation"]);
+    assert.deepEqual(
+      (codeTools.find((tool) => tool.type === "code_interpreter") as { container: unknown }).container,
+      { type: "auto", network_policy: { type: "disabled" } },
+    );
+  }
+  assert.deepEqual(
+    adapter.buildOpenAIAssistantTools("gpt-5.4-mini", [], { imageGeneration: true }),
+    [],
+    "tabular and utility calls should not receive hosted Assistant tools",
+  );
+  assert.equal(
+    adapter.buildOpenAIAssistantTools("gpt-6-sol", [], { imageGeneration: false })
+      .some((tool) => tool.type === "image_generation"),
+    false,
+    "image generation requires a durable output handler",
+  );
+});
+
+test("routes explicit terminal requests to shell and data work to code interpreter", () => {
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Run this Bash command" }]), "shell");
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Plot this CSV data" }]), "code_interpreter");
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Please review this clause" }]), "shell");
+});
+
+test("maps image and PDF media to native input parts and rejects unsupported audio", () => {
+  const input = adapter.toOpenAIInput([{ role: "user", content: "Review these", media: [
+    { filename: "photo.png", mimeType: "image/png", base64Data: "aGVsbG8=" },
+    { filename: "brief.pdf", mimeType: "application/pdf", base64Data: "cGRm" },
+  ] }]);
+  assert.deepEqual(input, [{
+    type: "message",
+    role: "user",
+    content: [
+      { type: "input_text", text: "Review these" },
+      { type: "input_image", detail: "auto", image_url: "data:image/png;base64,aGVsbG8=" },
+      { type: "input_file", filename: "brief.pdf", file_data: "data:application/pdf;base64,cGRm" },
+    ],
+  }]);
+  assert.throws(
+    () => adapter.toOpenAIInput([{ role: "user", content: "Listen", media: [
+      { filename: "private.mp3", mimeType: "audio/mpeg", base64Data: "c2VjcmV0" },
+    ] }]),
+    (error: unknown) => error instanceof Error &&
+      error.name === "OPENAI_UNSUPPORTED_MEDIA" &&
+      !error.message.includes("c2VjcmV0"),
+  );
+});
+
 test("builds Pro as a stored background request without inventing a model slug", () => {
   for (const model of OPENAI_MAIN_MODELS) {
     const request = adapter.buildOpenAIProBackgroundRequest({
@@ -361,6 +429,50 @@ test("returns tool calls instead of treating a tool iteration as empty", () => {
     kind: "tool_calls",
     text: "",
   });
+});
+
+test("accepts image-only and hosted-tool-only responses for delivery or continuation", () => {
+  const imageResponse = responseFixture({
+    output: [{ id: "img_1", type: "image_generation_call", status: "completed", result: "cG5n" } as ResponseOutputItem],
+  });
+  assert.deepEqual(adapter.extractCompletedOpenAIOutput(imageResponse), {
+    kind: "hosted_tools",
+    text: "",
+  });
+  assert.deepEqual(adapter.generatedOpenAIImages(imageResponse), ["cG5n"]);
+
+  const searchResponse = responseFixture({
+    output: [{ id: "ws_1", type: "web_search_call", status: "completed", action: { type: "search", queries: ["example"] } } as ResponseOutputItem],
+  });
+  assert.deepEqual(adapter.extractCompletedOpenAIOutput(searchResponse), {
+    kind: "hosted_tools",
+    text: "",
+  });
+  assert.deepEqual(adapter.buildToolContinuationInput(searchResponse, []), searchResponse.output);
+});
+
+test("renders only cited public web URLs as clickable source links", () => {
+  const response = responseFixture({
+    output: [{
+      id: "msg_citations",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{
+        type: "output_text",
+        text: "Supported fact",
+        annotations: [
+          { type: "url_citation", start_index: 0, end_index: 14, title: "Official [Source]", url: "https://example.org/article" },
+          { type: "url_citation", start_index: 0, end_index: 14, title: "Duplicate", url: "https://example.org/article" },
+          { type: "url_citation", start_index: 0, end_index: 14, title: "Bad", url: "javascript:alert(1)" },
+        ],
+      }],
+    } as ResponseOutputItem],
+  });
+  assert.equal(
+    adapter.openAIWebCitationLinks(response),
+    "- [Official  Source](<https://example.org/article>)",
+  );
 });
 
 test("throws a named safe error for an empty completed response", () => {

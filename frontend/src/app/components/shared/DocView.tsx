@@ -576,6 +576,45 @@ export function DocView({
         );
     }
 
+    if (
+        result?.type === "image" ||
+        result?.type === "audio" ||
+        result?.type === "video"
+    ) {
+        return (
+            <div
+                className={`flex flex-1 min-h-0 items-center justify-center overflow-auto bg-gray-100 p-4 ${bordered ? "border border-gray-200" : ""} ${rounded ? "rounded-xl" : ""}`}
+            >
+                {/* The object URL holds bytes fetched with the user's auth token. */}
+                {result.type === "image" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                        src={result.objectUrl}
+                        alt="Document image"
+                        className="max-h-full max-w-full object-contain shadow-md"
+                    />
+                ) : result.type === "audio" ? (
+                    <audio
+                        controls
+                        preload="metadata"
+                        src={result.objectUrl}
+                        aria-label="Document audio"
+                        className="w-full max-w-xl"
+                    />
+                ) : (
+                    <video
+                        controls
+                        playsInline
+                        preload="metadata"
+                        src={result.objectUrl}
+                        aria-label="Document video"
+                        className="max-h-full max-w-full shadow-md"
+                    />
+                )}
+            </div>
+        );
+    }
+
     return (
         <div
             className={`relative flex flex-col flex-1 overflow-hidden ${bordered ? "border border-gray-200" : ""} ${rounded ? "rounded-xl" : ""}`}

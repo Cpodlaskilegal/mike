@@ -7,6 +7,15 @@ export const SUPPORTED_DOCUMENT_EXTENSIONS = [
   ".xls",
   ".pptx",
   ".ppt",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".mp4",
+  ".webm",
 ] as const;
 
 export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_DOCUMENT_EXTENSIONS.join(",");

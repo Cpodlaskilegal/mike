@@ -160,6 +160,53 @@ test("keeps older Claude model thinking behavior unchanged", () => {
   assert.deepEqual(request.output_config, { effort: "high" });
 });
 
+test("enables supported hosted web and sandboxed code tools for every main Claude model", () => {
+  const models = [
+    "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5",
+    "claude-fable-5", "claude-opus-5", "claude-opus-4-8",
+    "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5",
+  ];
+  for (const model of models) {
+    const expected = [
+      { type: "web_search_20250305", name: "web_search", max_uses: 5 },
+      ...(model === "claude-opus-5" ? [] : [{
+        type: "web_fetch_20250910", name: "web_fetch", max_uses: 5,
+        max_content_tokens: 25_000, citations: { enabled: true },
+      }]),
+      { type: "code_execution_20260521", name: "code_execution" },
+    ];
+    assert.deepEqual(adapter.claudeHostedTools(model), expected);
+  }
+  assert.deepEqual(adapter.claudeHostedTools("claude-sonnet-4-5"), []);
+});
+
+test("passes original image and PDF bytes to Claude while rejecting unsupported media", () => {
+  const request = adapter.toNativeMessages([{
+    role: "user",
+    content: "Compare these attachments.",
+    media: [
+      { filename: "picture.png", mimeType: "image/png", base64Data: "aW1hZ2U=" },
+      { filename: "contract.pdf", mimeType: "application/pdf", base64Data: "cGRm" },
+    ],
+  }]);
+  assert.deepEqual(request, [{
+    role: "user",
+    content: [
+      { type: "text", text: "Compare these attachments." },
+      { type: "text", text: "Image: picture.png" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
+      {
+        type: "document", title: "contract.pdf", citations: { enabled: true },
+        source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+      },
+    ],
+  }]);
+  assert.throws(() => adapter.toNativeMessages([{
+    role: "user", content: "Listen.",
+    media: [{ filename: "recording.mp3", mimeType: "audio/mpeg", base64Data: "YQ==" }],
+  }]), /cannot understand audio\/mpeg natively/);
+});
+
 test("preserves thinking signatures and all assistant blocks across a tool continuation", () => {
   const assistantBlocks: ContentBlock[] = [
     {
@@ -341,6 +388,101 @@ test("Fable 5.1 preserves signed prefixes through multiple tool rounds and final
     String(final.messages[5].content),
     /citation and output-format requirement/,
   );
+});
+
+test("continues paused hosted tools and mixed client tools without losing sources or container state", async (t) => {
+  const { pool } = await import("../src/lib/supabase");
+  t.mock.method(pool, "connect", async () => ({
+    async query() { return { rows: [], rowCount: 0 }; },
+    release() {},
+  }));
+  const paused = messageFixture({
+    content: [{
+      type: "server_tool_use", id: "srv_search", name: "web_search",
+      input: { query: "current filing rule" }, caller: { type: "direct" },
+    }],
+    stopReason: "pause_turn",
+  });
+  const mixed = {
+    ...messageFixture({
+      content: [
+        {
+          type: "web_search_tool_result", tool_use_id: "srv_search",
+          caller: { type: "direct" },
+          content: [{ type: "web_search_result", title: "Current rule", page_age: null,
+            url: "https://example.org/rule", encrypted_content: "opaque" }],
+        },
+        {
+          type: "server_tool_use", id: "srv_fetch", name: "web_fetch",
+          input: { url: "https://example.org/rule" }, caller: { type: "direct" },
+        },
+        {
+          type: "tool_use", id: "tool_doc", name: "read_document",
+          input: { document_id: "doc_1" }, caller: { type: "direct" },
+        },
+      ],
+      stopReason: "tool_use",
+    }),
+    container: { id: "container_1", expires_at: "2026-09-24T00:00:00Z" },
+  } as Anthropic.Message;
+  const completed = messageFixture({
+    content: [
+      {
+        type: "web_fetch_tool_result", tool_use_id: "srv_fetch",
+        caller: { type: "direct" },
+        content: {
+          type: "web_fetch_result", url: "https://example.org/rule",
+          retrieved_at: "2026-09-23T00:00:00Z",
+          content: {
+            type: "document", title: "Current rule", citations: { enabled: true },
+            source: { type: "text", media_type: "text/plain", data: "Rule text" },
+          },
+        },
+      },
+      {
+        type: "text", text: "The current rule matches the document.",
+        citations: [{ type: "web_search_result_location", cited_text: "Rule text",
+          encrypted_index: "opaque_index", title: "Current rule", url: "https://example.org/rule" }],
+      },
+    ],
+    stopReason: "end_turn",
+  });
+  const responses = [paused, mixed, completed];
+  const requests: MessageStreamParams[] = [];
+  t.mock.method(Anthropic.Messages.prototype, "stream", (request: MessageStreamParams) => {
+    const response = responses[requests.length];
+    assert.ok(response, "Claude should stop after the completed turn");
+    requests.push(structuredClone(request));
+    return { on() {}, abort() {}, async finalMessage() { return response; } };
+  });
+  const toolCalls: string[] = [];
+  const result = await adapter.streamClaude({
+    model: "claude-fable-5-1", systemPrompt: "Cite your sources.",
+    messages: [{ role: "user", content: "Check the rule and my document." }],
+    tools: [{ type: "function", function: { name: "read_document", description: "Read one document",
+      parameters: tools[0].input_schema } }],
+    maxIterations: 1,
+    apiKeys: { claude: "test-only-not-a-real-key" },
+    async runTools(calls) {
+      toolCalls.push(...calls.map((call) => call.name));
+      return calls.map((call) => ({ tool_use_id: call.id, content: "Document text" }));
+    },
+  });
+  assert.deepEqual(toolCalls, ["read_document"]);
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    assert.deepEqual(request.tools, requests[0].tools);
+  }
+  assert.equal(requests[1].messages[1].role, "assistant");
+  assert.deepEqual(requests[1].messages[1].content, paused.content);
+  assert.equal(requests[2].container, "container_1");
+  assert.deepEqual(requests[2].tool_choice, { type: "none" });
+  assert.deepEqual(requests[2].messages.at(-1), {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "tool_doc", content: "Document text" }],
+  });
+  assert.match(result.fullText, /The current rule matches the document/);
+  assert.match(result.fullText, /Sources: \[1\]\(https:\/\/example\.org\/rule\)/);
 });
 
 test("Fable 5.1 final synthesis works with a zero tool budget and no tool definitions", () => {

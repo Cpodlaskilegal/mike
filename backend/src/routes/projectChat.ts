@@ -890,6 +890,10 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       exemplarRequestMessages: streamMessages,
       docStore,
       docIndex,
+      nativeMediaDocumentIds: [
+        ...(lastUser?.files ?? []).map((file) => file.document_id),
+        ...(attached_documents ?? []).map((file) => file.document_id),
+      ].filter((id): id is string => typeof id === "string"),
       userId,
       userEmail,
       db,
