@@ -1229,6 +1229,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
 
     const { fullText, events } = await runLLMStream({
       apiMessages,
+      exemplarRequestMessages: streamMessages,
       docStore,
       docIndex,
       userId,

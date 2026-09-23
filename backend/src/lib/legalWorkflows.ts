@@ -5,7 +5,7 @@ import type { SystemWorkflow } from "./systemWorkflows";
  * Source inventory, access mapping, and validation limits: docs/legal-workflows.md.
  * These are on-demand Docket playbooks; they do not provision tools or permissions.
  */
-export const LEGAL_WORKFLOW_VERSION = "docket-legal-v1";
+export const LEGAL_WORKFLOW_VERSION = "docket-legal-v2";
 
 const LEGAL_WORKFLOW_FOUNDATION = `## Working with the user's materials
 
@@ -62,7 +62,7 @@ export const LEGAL_WORKFLOWS: SystemWorkflow[] = [
         `## Drafting procedure
 
 1. Identify the document type, audience, requested relief or commercial objective, represented side, controlling jurisdiction, posture, and requested format. Read the relevant record and instructions before drafting. If there is an existing document to revise, use it as the base and do not restart from scratch.
-2. Look first among supplied or accessible project files for a similar filed pleading or approved exemplar, then a suitable toolbox/standard form. Search connected firm sources only if the current user's tools and permissions allow it. Read the chosen exemplar and identify its filename/source. When none is accessible, say so briefly and proceed from the supplied record; ask for a specific form only when its absence prevents the requested work. Never imply a firm template was searched if no search occurred.
+2. Unless the user explicitly selects a source document, search the designated firm exemplar library and its descendants first, using only the current user's available tools and permissions. In Docket, follow the system's configured Docket Exemplar Library search and inspect any supplied search results. Read and assess library candidates before using them. Broaden to project files, older matter documents, or other forms only when no suitable library example is found or library access is unavailable; disclose that fallback, the source date, and any incomplete search or unreadable content. A library file is not automatically approved, current, or ready to sign. When no exemplar is accessible, say so briefly and proceed from the supplied record; ask for a specific form only when its absence prevents the requested work. Never imply a firm template was searched if no search occurred.
 3. Preserve the exemplar's useful structure, caption conventions, headings, voice, and document-specific formatting. Replicate an accessible DOCX with replicate_document when that tool is available and the user wants its structure preserved, then edit the copy. Otherwise use the supported generation tools and disclose material formatting limits. Do not add full justification merely to make a court document look formal. Include captions, signature blocks, certificates, proposed orders, exhibits, and local-rule elements only where appropriate; leave unsupported fields clearly bracketed.
 4. Draft the actual requested document. Tie factual allegations to the record and legal propositions to checked authority. Use precise relief, consistent definitions, and internally consistent obligations and remedies. Preserve deliberate negotiating positions. Do not add unsupported boilerplate, facts, concessions, waived rights, or relief outside the instruction.
 5. Reconcile the completed draft against the instructions and sources. Return the draft or requested Word artifact, plus a short separate attorney note: exemplar used (or unavailable), material drafting choices, bracketed facts, authority gaps, and decisions needing review. Do not stop at a drafting plan when enough information exists to draft.`,

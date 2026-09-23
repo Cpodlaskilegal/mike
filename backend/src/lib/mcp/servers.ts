@@ -19,6 +19,10 @@ import {
     boxToolRequiresApproval,
 } from "./boxAccessPolicy";
 import {
+    readBoxFileContentFallback,
+    shouldFallbackBoxFileContent,
+} from "./boxFileContent";
+import {
     authConfigPatch,
     decryptAuthConfig,
     guardedFetch,
@@ -44,6 +48,7 @@ import {
     discoverOAuthMetadata,
     loadMcpConnectorOAuthToken,
     McpOAuthRequiredError,
+    oauthBearerToken,
     startUserMcpConnectorOAuth,
 } from "./oauth";
 import {
@@ -557,6 +562,7 @@ export async function setUserMcpToolEnabled(
 export async function buildUserMcpTools(
     userId: string,
     db: Db = createServerSupabase(),
+    options: { managedBy?: "box" | "practicepanther" } = {},
 ): Promise<OpenAIToolSchema[]> {
     await ensureDefaultConnectorsForUser(userId, db);
     let role;
@@ -612,6 +618,7 @@ export async function buildUserMcpTools(
         if (!connector) return [];
         const toolName = String(raw.tool_name);
         const managedBy = backendManagedBy(connector);
+        if (options.managedBy && managedBy !== options.managedBy) return [];
         let approvalRequired = false;
         if (managedBy === "practicepanther") {
             const decision = authorizePracticePantherTool({ role, toolName });
@@ -972,24 +979,51 @@ async function executeMcpToolCallAuthorized(
     try {
         return await withMcpClient(
             connector,
-            (client) =>
-                executeResolvedMcpToolCall({
+            (client) => {
+                const callTool: McpCallTool = (name, toolArgs) =>
+                    client.callTool(
+                        { name, arguments: toolArgs },
+                        undefined,
+                        {
+                            timeout: MCP_REQUEST_TIMEOUT_MS,
+                            maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS,
+                        },
+                    );
+                return executeResolvedMcpToolCall({
                     userId,
                     connector,
                     tool,
                     args,
                     db,
                     context,
-                    callTool: (name, toolArgs) =>
-                        client.callTool(
-                            { name, arguments: toolArgs },
-                            undefined,
-                            {
-                                timeout: MCP_REQUEST_TIMEOUT_MS,
-                                maxTotalTimeout: MCP_REQUEST_TIMEOUT_MS,
-                            },
-                        ),
-                }),
+                    callTool,
+                    boxContentFallback: managedBy === "box" && connector.auth_type === "oauth"
+                        ? async (fileId) => {
+                            // The fallback must not make a disabled or approval-gated
+                            // metadata tool available through a different read path.
+                            const { data, error } = await db
+                                .from("user_mcp_connector_tools")
+                                .select("*")
+                                .eq("connector_id", connector.id)
+                                .eq("tool_name", "get_file_details")
+                                .eq("enabled", true)
+                                .maybeSingle();
+                            if (error || !data || boxToolRequiresApproval(data as ToolCacheRow)) {
+                                throw new Error("Box download fallback requires an enabled file-details read tool.");
+                            }
+                            return readBoxFileContentFallback({
+                                fileId,
+                                getFileDetails: () => callTool("get_file_details", {
+                                    file_id: fileId,
+                                    fields: ["id", "name", "size", "extension", "download_url"],
+                                }),
+                                getAccessToken: () => oauthBearerToken(connector, db),
+                                signal: context.signal,
+                            });
+                        }
+                        : undefined,
+                });
+            },
             db,
         );
     } catch (err) {
@@ -1550,6 +1584,7 @@ export async function executeResolvedMcpToolCall(params: {
     db: Db;
     context?: McpExecutionContext;
     callTool: McpCallTool;
+    boxContentFallback?: (fileId: string) => Promise<unknown>;
 }): Promise<{ content: string; event: McpToolEvent }> {
     const context = params.context ?? {};
     const started = Date.now();
@@ -1570,11 +1605,35 @@ export async function executeResolvedMcpToolCall(params: {
     );
 
     if (actionKind === "read") {
+        const boxRefs: Record<string, string> = {};
+        if (backendManagedBy(params.connector) === "box") {
+            for (const key of ["file_id", "folder_id", "ancestor_folder_id"]) {
+                const value = params.args[key];
+                if (typeof value === "string" && /^\d+$/.test(value)) boxRefs[key] = value;
+            }
+        }
         try {
-            const result = await params.callTool(
-                params.tool.tool_name,
-                params.args,
-            );
+            let result: unknown;
+            try {
+                result = await params.callTool(params.tool.tool_name, params.args);
+            } catch (error) {
+                if (params.boxContentFallback && shouldFallbackBoxFileContent(error)) {
+                    result = error;
+                } else {
+                    throw error;
+                }
+            }
+            if (
+                backendManagedBy(params.connector) === "box" &&
+                params.tool.tool_name === "get_file_content" &&
+                typeof params.args.file_id === "string" &&
+                /^\d+$/.test(params.args.file_id) &&
+                shouldFallbackBoxFileContent(result) &&
+                params.boxContentFallback
+            ) {
+                result = await params.boxContentFallback(params.args.file_id);
+                boxRefs.read_method = "download_fallback";
+            }
             if (mcpCallFailed(result))
                 throw new Error(mcpCallErrorMessage(result));
             const content = stringifyMcpResult(result);
@@ -1589,19 +1648,20 @@ export async function executeResolvedMcpToolCall(params: {
                 status: "ok",
                 duration_ms: Date.now() - started,
                 result_size_chars: content.length,
+                target_refs: boxRefs,
                 practicepanther_audit_status: "not_required",
                 ...auditContextColumns(context),
             });
             return {
                 content,
-                event: toolEvent({
+                event: { ...toolEvent({
                     connector: params.connector,
                     tool: params.tool,
                     status: "ok",
                     actionKind,
                     actorEmail,
                     practicePantherAuditStatus: "not_required",
-                }),
+                }), ...(Object.keys(boxRefs).length ? { result_summary: JSON.stringify(boxRefs) } : {}) },
             };
         } catch (err) {
             const message =
@@ -1618,6 +1678,7 @@ export async function executeResolvedMcpToolCall(params: {
                 error_message: message,
                 duration_ms: Date.now() - started,
                 result_size_chars: 0,
+                target_refs: boxRefs,
                 practicepanther_audit_status: "not_required",
                 ...auditContextColumns(context),
             });
