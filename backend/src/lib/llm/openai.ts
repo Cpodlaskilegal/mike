@@ -299,7 +299,10 @@ export function toOpenAIInput(messages: StreamChatParams["messages"]): ResponseI
 export function buildOpenAIAssistantTools(
     model: string,
     tools: StreamChatParams["tools"] = [],
-    options: { imageGeneration: boolean } = { imageGeneration: false },
+    options: {
+        imageGeneration: boolean;
+        executionTool?: "shell" | "code_interpreter";
+    } = { imageGeneration: false },
 ): Tool[] {
     const functionTools: Tool[] = tools.map((t) => ({
         type: "function",
@@ -314,21 +317,43 @@ export function buildOpenAIAssistantTools(
     return [
         ...functionTools,
         { type: "web_search" },
-        {
-            type: "code_interpreter",
-            container: { type: "auto", network_policy: { type: "disabled" } },
-        },
-        {
-            type: "shell",
-            environment: {
-                type: "container_auto",
-                network_policy: { type: "disabled" },
-            },
-        },
+        // The Responses API rejects code_interpreter and shell with managed
+        // containers in the same request. Shell can run code too; choose the
+        // specialized interpreter when the current user asks for data work.
+        ...(options.executionTool === "code_interpreter"
+            ? ([{
+                  type: "code_interpreter",
+                  container: {
+                      type: "auto",
+                      network_policy: { type: "disabled" },
+                  },
+              }] as Tool[])
+            : ([{
+                  type: "shell",
+                  environment: {
+                      type: "container_auto",
+                      network_policy: { type: "disabled" },
+                  },
+              }] as Tool[])),
         ...(options.imageGeneration
             ? ([{ type: "image_generation" }] as Tool[])
             : []),
     ];
+}
+
+export function selectOpenAIExecutionTool(
+    messages: StreamChatParams["messages"],
+): "shell" | "code_interpreter" {
+    const latestUserText = [...messages]
+        .reverse()
+        .find((message) => message.role === "user")?.content ?? "";
+    if (/\b(shell|bash|terminal|command[- ]line|cli|zsh|powershell|curl|git)\b/i.test(latestUserText)) {
+        return "shell";
+    }
+    if (/\b(python|pandas|numpy|dataframe|statistics?|plot|chart|graph|csv|quantitative|calculation)\b/i.test(latestUserText)) {
+        return "code_interpreter";
+    }
+    return "shell";
 }
 
 function parseToolArguments(raw: string): Record<string, unknown> {
@@ -1321,6 +1346,7 @@ export async function streamOpenAI(
     const openai = client(params.apiKeys?.openai);
     const openaiTools = buildOpenAIAssistantTools(model, tools, {
         imageGeneration: Boolean(callbacks.onGeneratedImage),
+        executionTool: selectOpenAIExecutionTool(params.messages),
     });
     const hostedWebEnabled = openaiTools.some(
         (tool) => tool.type === "web_search",

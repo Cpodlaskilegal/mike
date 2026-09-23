@@ -102,24 +102,29 @@ test("builds separately typed Standard streaming requests for every OpenAI main 
   }
 });
 
-test("offers hosted web, isolated code and shell, and persisted image generation to every main GPT", () => {
+test("offers hosted web and image generation with one compatible execution tool per GPT request", () => {
   for (const model of OPENAI_MAIN_MODELS) {
-    const tools = adapter.buildOpenAIAssistantTools(
+    const shellTools = adapter.buildOpenAIAssistantTools(
       model,
       [{ type: "function", function: { name: "read_document", description: "Read", parameters: { type: "object" } } }],
       { imageGeneration: true },
     );
     assert.deepEqual(
-      tools.map((tool) => tool.type),
-      ["function", "web_search", "code_interpreter", "shell", "image_generation"],
+      shellTools.map((tool) => tool.type),
+      ["function", "web_search", "shell", "image_generation"],
     );
     assert.deepEqual(
-      (tools.find((tool) => tool.type === "code_interpreter") as { container: unknown }).container,
-      { type: "auto", network_policy: { type: "disabled" } },
-    );
-    assert.deepEqual(
-      (tools.find((tool) => tool.type === "shell") as { environment: unknown }).environment,
+      (shellTools.find((tool) => tool.type === "shell") as { environment: unknown }).environment,
       { type: "container_auto", network_policy: { type: "disabled" } },
+    );
+    const codeTools = adapter.buildOpenAIAssistantTools(model, [], {
+      imageGeneration: true,
+      executionTool: "code_interpreter",
+    });
+    assert.deepEqual(codeTools.map((tool) => tool.type), ["web_search", "code_interpreter", "image_generation"]);
+    assert.deepEqual(
+      (codeTools.find((tool) => tool.type === "code_interpreter") as { container: unknown }).container,
+      { type: "auto", network_policy: { type: "disabled" } },
     );
   }
   assert.deepEqual(
@@ -133,6 +138,12 @@ test("offers hosted web, isolated code and shell, and persisted image generation
     false,
     "image generation requires a durable output handler",
   );
+});
+
+test("routes explicit terminal requests to shell and data work to code interpreter", () => {
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Run this Bash command" }]), "shell");
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Plot this CSV data" }]), "code_interpreter");
+  assert.equal(adapter.selectOpenAIExecutionTool([{ role: "user", content: "Please review this clause" }]), "shell");
 });
 
 test("maps image and PDF media to native input parts and rejects unsupported audio", () => {
