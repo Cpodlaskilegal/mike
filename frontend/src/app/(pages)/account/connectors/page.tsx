@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box as BoxIcon,
   Check,
@@ -76,6 +76,7 @@ export default function ConnectorsPage() {
   const [savedId, setSavedId] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const focusedPracticePantherAnchor = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,6 +116,19 @@ export default function ConnectorsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (
+      loading ||
+      focusedPracticePantherAnchor.current ||
+      window.location.hash !== "#practicepanther-connection"
+    ) return;
+    const target = document.getElementById("practicepanther-connection");
+    if (!target) return;
+    target.scrollIntoView({ block: "start" });
+    target.focus({ preventScroll: true });
+    focusedPracticePantherAnchor.current = true;
+  }, [connectors, loading]);
 
   const replaceConnector = (connector: McpConnectorSummary) => {
     setConnectors((prev) => {
@@ -606,7 +620,27 @@ function ConnectorPanel({
       : connector.tools;
 
   return (
-    <div className="rounded-md border border-gray-200 bg-white p-4">
+    <div
+      id={
+        connector.managedBy === "practicepanther" &&
+        connector.authType === "oauth"
+          ? "practicepanther-connection"
+          : undefined
+      }
+      tabIndex={
+        connector.managedBy === "practicepanther" &&
+        connector.authType === "oauth"
+          ? -1
+          : undefined
+      }
+      aria-label={
+        connector.managedBy === "practicepanther" &&
+        connector.authType === "oauth"
+          ? "PracticePanther connection"
+          : undefined
+      }
+      className="scroll-mt-6 rounded-md border border-gray-200 bg-white p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">

@@ -9,6 +9,7 @@ import { AssistantGenerationSettingsProvider } from "@/app/contexts/AssistantGen
 import { SidebarContext } from "@/app/contexts/SidebarContext";
 import { AppSidebar } from "@/app/components/shared/AppSidebar";
 import { DocketTutorial } from "@/app/components/tutorial/DocketTutorial";
+import { PracticePantherConnectPrompt } from "@/components/PracticePantherConnectPrompt";
 
 export function DocketLayoutClient({
     children,
@@ -103,6 +104,7 @@ export function DocketLayoutClient({
                                         <Menu className="h-5 w-5" />
                                     </button>
                                 </div>
+                                <PracticePantherConnectPrompt />
                                 <main className="flex-1 overflow-y-auto md:overflow-hidden w-full h-full">
                                     {children}
                                 </main>
