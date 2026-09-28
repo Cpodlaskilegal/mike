@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box as BoxIcon,
   Check,
@@ -76,6 +76,7 @@ export default function ConnectorsPage() {
   const [savedId, setSavedId] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const focusedPracticePantherAnchor = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,10 +118,16 @@ export default function ConnectorsPage() {
   }, [load]);
 
   useEffect(() => {
-    if (loading || window.location.hash !== "#practicepanther-connection") return;
+    if (
+      loading ||
+      focusedPracticePantherAnchor.current ||
+      window.location.hash !== "#practicepanther-connection"
+    ) return;
     const target = document.getElementById("practicepanther-connection");
-    target?.scrollIntoView({ block: "start" });
-    target?.focus({ preventScroll: true });
+    if (!target) return;
+    target.scrollIntoView({ block: "start" });
+    target.focus({ preventScroll: true });
+    focusedPracticePantherAnchor.current = true;
   }, [connectors, loading]);
 
   const replaceConnector = (connector: McpConnectorSummary) => {
