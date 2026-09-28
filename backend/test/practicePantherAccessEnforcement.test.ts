@@ -10,6 +10,7 @@ import type {
   McpApprovalRow,
 } from "../src/lib/mcp/approvals";
 import type { AppUserRole } from "../src/lib/userRoles";
+import { PRACTICEPANTHER_POLICY_VERSION } from "../src/lib/mcp/practicePantherAccessPolicy";
 
 process.env.DATABASE_URL ??=
   "postgresql://docket:unused@127.0.0.1:5432/docket";
@@ -267,7 +268,7 @@ test("runtime denies non-admin admin-only tools despite forged cache flags", asy
     db,
   );
   assert.equal(result.event.status, "error");
-  assert.equal(result.event.policy_version, "2026-07-23.1");
+  assert.equal(result.event.policy_version, PRACTICEPANTHER_POLICY_VERSION);
   assert.match(
     String(audits[0]?.error_message),
     /Access denied by PracticePanther policy: admin_only/,

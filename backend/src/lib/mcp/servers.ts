@@ -40,6 +40,7 @@ import {
     backendManagedBy,
     ensureDefaultMcpConnectors,
     isBackendManagedMcpConnector,
+    isRetiredPracticePantherConnector,
     managedConnectorDisplayName,
 } from "./defaults";
 import {
@@ -438,6 +439,9 @@ export async function refreshUserMcpConnectorTools(
     db: Db = createServerSupabase(),
 ): Promise<McpConnectorSummary> {
     const connector = await loadConnector(userId, connectorId, db);
+    if (isRetiredPracticePantherConnector(connector)) {
+        throw new Error("This legacy PracticePanther connector has been retired. Connect the per-user PracticePanther connector instead.");
+    }
     const managedBy = backendManagedBy(connector);
     const isPracticePanther = managedBy === "practicepanther";
     const now = new Date().toISOString();
@@ -577,7 +581,7 @@ export async function buildUserMcpTools(
     }
     const { data: connectors, error: connectorsError } = await db
         .from("user_mcp_connectors")
-        .select("id, name, server_url, tool_policy")
+        .select("id, name, server_url, auth_type, tool_policy")
         .eq("enabled", true)
         .eq("user_id", userId);
     if (connectorsError) {
@@ -588,12 +592,38 @@ export async function buildUserMcpTools(
         return [];
     }
     const connectorRows = (connectors ?? []) as Array<
-        Pick<ConnectorRow, "id" | "name" | "server_url" | "tool_policy">
+        Pick<ConnectorRow, "id" | "name" | "server_url" | "auth_type" | "tool_policy">
     >;
     if (!connectorRows.length) return [];
     const connectorById = new Map(
         connectorRows.map((connector) => [connector.id, connector]),
     );
+    const practicePantherOAuthIds = connectorRows
+        .filter((connector) =>
+            backendManagedBy(connector) === "practicepanther" &&
+            connector.auth_type === "oauth" &&
+            !isRetiredPracticePantherConnector(connector),
+        )
+        .map((connector) => connector.id);
+    const connectedPracticePantherIds = new Set<string>();
+    if (practicePantherOAuthIds.length) {
+        const { data: oauthRows, error: oauthError } = await db
+            .from("user_mcp_oauth_tokens")
+            .select("connector_id, encrypted_access_token")
+            .in("connector_id", practicePantherOAuthIds);
+        if (oauthError) {
+            console.error("[mcp-connectors] failed to load PracticePanther OAuth status", {
+                userId,
+                error: oauthError.message,
+            });
+        } else {
+            for (const row of oauthRows ?? []) {
+                if (row.encrypted_access_token) {
+                    connectedPracticePantherIds.add(String(row.connector_id));
+                }
+            }
+        }
+    }
 
     const { data, error } = await db
         .from("user_mcp_connector_tools")
@@ -616,8 +646,14 @@ export async function buildUserMcpTools(
         const raw = row as Record<string, unknown>;
         const connector = connectorById.get(String(raw.connector_id));
         if (!connector) return [];
+        if (isRetiredPracticePantherConnector(connector)) return [];
         const toolName = String(raw.tool_name);
         const managedBy = backendManagedBy(connector);
+        if (
+            managedBy === "practicepanther" &&
+            connector.auth_type === "oauth" &&
+            !connectedPracticePantherIds.has(connector.id)
+        ) return [];
         if (options.managedBy && managedBy !== options.managedBy) return [];
         let approvalRequired = false;
         if (managedBy === "practicepanther") {
@@ -680,7 +716,12 @@ async function resolveCallableTool(
         .maybeSingle();
     if (connectorError || !connector) return null;
     const connectorRow = connector as ConnectorRow;
+    if (isRetiredPracticePantherConnector(connectorRow)) return null;
     const managedBy = backendManagedBy(connectorRow);
+    if (managedBy === "practicepanther" && connectorRow.auth_type === "oauth") {
+        const token = await loadMcpConnectorOAuthToken(connectorRow, db);
+        if (!token?.encrypted_access_token) return null;
+    }
     if (managedBy !== "practicepanther") {
         if (
             !tool.enabled ||

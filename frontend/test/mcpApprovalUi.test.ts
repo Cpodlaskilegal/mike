@@ -84,6 +84,46 @@ test("custom connector confirmation tools remain blocked and busy Box toggles re
   assert.match(textContent(connectorPanel(null)), /Requires confirmation; disabled for chat/);
 });
 
+test("PracticePanther offers each user an OAuth action before tools are available", async () => {
+  const calls: string[] = [];
+  const connector = {
+    id: "pp-connector", name: "PracticePanther MCP", managedBy: "practicepanther",
+    authType: "oauth", enabled: true, oauthConnected: false, tools: [],
+  };
+  const tree = connectorPanel("practicepanther", {
+    connector,
+    isAdmin: false,
+    onPracticePantherConnection: async (id: string) => { calls.push(id); },
+  });
+  assert.match(textContent(tree), /Connect your own PracticePanther account/);
+  const connect = elements(tree).find(
+    (node) => node.type === "button" && textContent(node) === "Connect PracticePanther",
+  );
+  assert.ok(connect, "Connect must be visible even with no discovered tools");
+  assert.equal(connect.props.disabled, false);
+  (connect.props.onClick as () => void)();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["pp-connector"]);
+
+  const connected = connectorPanel("practicepanther", {
+    connector: { ...connector, oauthConnected: true },
+  });
+  assert.match(textContent(connected), /Your PracticePanther account is connected/);
+  assert.ok(elements(connected).some(
+    (node) => node.type === "button" && textContent(node) === "Check connection",
+  ));
+  assert.doesNotMatch(textContent(connectorPanel("box")), /Connect PracticePanther/);
+
+  const legacy = connectorPanel("practicepanther", {
+    connector: { ...connector, authType: "none", enabled: false },
+  });
+  assert.match(textContent(legacy), /Legacy PracticePanther connector retired/);
+  assert.doesNotMatch(textContent(legacy), /Connect your own PracticePanther account/);
+  assert.ok(!elements(legacy).some(
+    (node) => node.type === "button" && textContent(node) === "Connect PracticePanther",
+  ));
+});
+
 function approvalCard(status: string | null, overrides: Record<string, unknown> = {}) {
   const approval = status ? {
     id: "approval-id", connectorName: "Box", toolName: "upload_file", status,

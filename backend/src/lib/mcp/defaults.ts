@@ -5,6 +5,8 @@ export type BackendManagedConnectorKey = "practicepanther" | "box";
 
 const DEFAULT_PRACTICEPANTHER_MCP_SERVER_URL =
     "https://wild-spark-qn7iy.run.mcp-use.com/mcp";
+const PRACTICEPANTHER_USER_MCP_SERVER_URL_ENV =
+    "PRACTICEPANTHER_USER_MCP_SERVER_URL";
 const DEFAULT_BOX_MCP_SERVER_URL = "https://mcp.box.com";
 
 type ManagedConnectorSpec = {
@@ -48,6 +50,38 @@ function normalizeUrl(rawUrl: string): string | null {
     }
 }
 
+function perUserPracticePantherRequested(): boolean {
+    return !!process.env[PRACTICEPANTHER_USER_MCP_SERVER_URL_ENV]?.trim();
+}
+
+function hostname(rawUrl: string): string | null {
+    try {
+        return new URL(rawUrl).hostname.toLowerCase();
+    } catch {
+        return null;
+    }
+}
+
+function legacyPracticePantherHosts(): Set<string> {
+    return new Set(
+        [
+            DEFAULT_PRACTICEPANTHER_MCP_SERVER_URL,
+            process.env.PRACTICEPANTHER_MCP_SERVER_URL,
+        ]
+            .filter((url): url is string => !!url)
+            .map(hostname)
+            .filter((url): url is string => !!url),
+    );
+}
+
+export function managedMcpAuthType(
+    key: BackendManagedConnectorKey,
+): ConnectorRow["auth_type"] {
+    return key === "practicepanther" && perUserPracticePantherRequested()
+        ? "oauth"
+        : managedConnectorSpec(key)?.authType ?? "none";
+}
+
 export function practicePantherMcpServerUrl(): string | null {
     return managedMcpServerUrl("practicepanther");
 }
@@ -69,6 +103,16 @@ function enabledManagedConnectorSpecs() {
 export function managedMcpServerUrl(key: BackendManagedConnectorKey): string | null {
     const spec = managedConnectorSpec(key);
     if (!spec || process.env[spec.enabledEnv] === "false") return null;
+    if (key === "practicepanther" && perUserPracticePantherRequested()) {
+        const serverUrl = normalizeUrl(
+            process.env[PRACTICEPANTHER_USER_MCP_SERVER_URL_ENV]!.trim(),
+        );
+        // A misconfigured cutover must never point the per-user OAuth connector
+        // back at a shared-identity service.
+        return serverUrl && !legacyPracticePantherHosts().has(hostname(serverUrl) ?? "")
+            ? serverUrl
+            : null;
+    }
     return normalizeUrl(process.env[spec.serverUrlEnv] || spec.defaultServerUrl);
 }
 
@@ -86,11 +130,35 @@ export function backendManagedBy(
     const policyKey = policyManagedConnector(connector);
     if (policyKey) return policyKey;
 
+    if (legacyPracticePantherHosts().has(hostname(connector.server_url) ?? "")) {
+        return "practicepanther";
+    }
+
     for (const spec of enabledManagedConnectorSpecs()) {
         const serverUrl = managedMcpServerUrl(spec.key);
         if (serverUrl && connector.server_url === serverUrl) return spec.key;
     }
     return null;
+}
+
+export function isPrimaryPracticePantherConnector(
+    connector: Pick<ConnectorRow, "server_url" | "auth_type"> &
+        Partial<Pick<ConnectorRow, "tool_policy">>,
+): boolean {
+    const activeUrl = practicePantherMcpServerUrl();
+    return !!activeUrl &&
+        connector.server_url === activeUrl &&
+        connector.auth_type === managedMcpAuthType("practicepanther") &&
+        backendManagedBy(connector) === "practicepanther";
+}
+
+export function isRetiredPracticePantherConnector(
+    connector: Pick<ConnectorRow, "server_url" | "auth_type"> &
+        Partial<Pick<ConnectorRow, "tool_policy">>,
+): boolean {
+    return perUserPracticePantherRequested() &&
+        backendManagedBy(connector) === "practicepanther" &&
+        !isPrimaryPracticePantherConnector(connector);
 }
 
 export function isBackendManagedMcpConnector(
@@ -211,7 +279,13 @@ async function ensureDefaultMcpConnector(
         const update: Record<string, unknown> = {};
         if (!row.enabled) update.enabled = true;
         if (row.name !== spec.name) update.name = spec.name;
-        if (row.auth_type !== spec.authType) update.auth_type = spec.authType;
+        const authType = managedMcpAuthType(spec.key);
+        if (row.auth_type !== authType) update.auth_type = authType;
+        if (spec.key === "practicepanther" && authType === "oauth" && row.encrypted_auth_config) {
+            update.encrypted_auth_config = null;
+            update.auth_config_iv = null;
+            update.auth_config_tag = null;
+        }
         const nextPolicy = managedToolPolicy(row, spec);
         if (!sameToolPolicy(row.tool_policy, nextPolicy)) {
             update.tool_policy = nextPolicy;
@@ -239,7 +313,7 @@ async function ensureDefaultMcpConnector(
             name: spec.name,
             transport: "streamable_http",
             server_url: serverUrl,
-            auth_type: spec.authType,
+            auth_type: managedMcpAuthType(spec.key),
             enabled: true,
             tool_policy: {
                 managedBy: "backend",
@@ -256,10 +330,29 @@ async function ensureDefaultMcpConnector(
     await copyToolsFromTemplate(spec, userId, data as ConnectorRow, db);
 }
 
+async function retireLegacyPracticePantherConnectors(userId: string, db: Db) {
+    if (!perUserPracticePantherRequested()) return;
+    const { data, error } = await db
+        .from("user_mcp_connectors")
+        .select("*")
+        .eq("user_id", userId);
+    if (error) throw error;
+    for (const row of (data ?? []) as ConnectorRow[]) {
+        if (!row.enabled || !isRetiredPracticePantherConnector(row)) continue;
+        const { error: updateError } = await db
+            .from("user_mcp_connectors")
+            .update({ enabled: false, updated_at: new Date().toISOString() })
+            .eq("user_id", userId)
+            .eq("id", row.id);
+        if (updateError) throw updateError;
+    }
+}
+
 export async function ensureDefaultMcpConnectors(
     userId: string,
     db: Db,
 ): Promise<void> {
+    await retireLegacyPracticePantherConnectors(userId, db);
     for (const spec of enabledManagedConnectorSpecs()) {
         await ensureDefaultMcpConnector(spec, userId, db);
     }

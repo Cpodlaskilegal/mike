@@ -310,7 +310,7 @@ export function buildPracticePantherAuditNote(params: {
     const error = contextValue(params.error);
     if (error) lines.push(`Error: ${error}`);
     lines.push(
-        "PracticePanther uses a shared API identity. The actor email above is the authenticated Docket session user responsible for this assistant action.",
+        "The actor email above identifies the authenticated Docket session user responsible for this assistant action. PracticePanther records identify the connected account that performed the API call.",
     );
 
     const note: Record<string, unknown> = {

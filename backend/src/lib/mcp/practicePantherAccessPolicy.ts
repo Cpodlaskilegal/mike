@@ -1,6 +1,6 @@
 import type { AppUserRole } from "../userRoles";
 
-export const PRACTICEPANTHER_POLICY_VERSION = "2026-07-23.1";
+export const PRACTICEPANTHER_POLICY_VERSION = "2026-09-28.1";
 
 export const ADMIN_ONLY_PRACTICEPANTHER_TOOLS = [
   "BankAccounts_GetBankAccount",
@@ -61,6 +61,7 @@ export const READ_ALL_PRACTICEPANTHER_TOOLS = [
   "Files_GetFiles",
   "Matters_GetMatter",
   "Matters_GetMatters",
+  "Messages_GetMessageAsync",
   "Messages_GetMessagesAsync",
   "Notes_GetNote",
   "Notes_GetNotes",
@@ -97,6 +98,8 @@ export const WRITE_WITH_APPROVAL_PRACTICEPANTHER_TOOLS = [
   "Files_Delete",
   "Matters_PutAccount",
   "Matters_PostAccount",
+  "Matters_PutMatter",
+  "Matters_PostMatter",
   "Matters_Delete",
   "Messages_PutMessage",
   "Messages_PostMessage",
@@ -109,6 +112,8 @@ export const WRITE_WITH_APPROVAL_PRACTICEPANTHER_TOOLS = [
   "Relationships_Delete",
   "Tasks_PutAccount",
   "Tasks_PostAccount",
+  "Tasks_PutTask",
+  "Tasks_PostTask",
   "Tasks_Delete",
   "TimeEntries_PutAccount",
   "TimeEntries_PostAccount",
