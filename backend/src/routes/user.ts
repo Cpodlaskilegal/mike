@@ -32,6 +32,7 @@ import {
   type McpApprovalRow,
   updateUserMcpConnector,
 } from "../lib/mcpConnectors";
+import { practicePantherMcpServerUrl } from "../lib/mcp/defaults";
 import {
   getUserRole,
   getUserRoleStrict,
@@ -936,7 +937,17 @@ userRouter.post(
         db,
       );
       if (
+        connector.managedBy === "practicepanther" &&
+        (connector.authType !== "oauth" ||
+          connector.serverUrl !== practicePantherMcpServerUrl())
+      ) {
+        return void res.status(400).json({
+          detail: "This legacy PracticePanther connector has been retired. Connect the per-user PracticePanther connector instead.",
+        });
+      }
+      if (
         connector.managedBy !== "box" &&
+        connector.managedBy !== "practicepanther" &&
         !(await isAdminUser(db, userId))
       ) {
         return void res.status(403).json({

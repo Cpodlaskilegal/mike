@@ -253,6 +253,22 @@ export default function ConnectorsPage() {
     }
   };
 
+  const handlePracticePantherConnection = async (connectorId: string) => {
+    setBusy(`oauth:${connectorId}`);
+    setError(null);
+    try {
+      await refreshOrAuthorize(connectorId);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to connect PracticePanther.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleConnectorEnabled = async (
     connector: McpConnectorSummary,
     enabled: boolean,
@@ -535,6 +551,7 @@ export default function ConnectorsPage() {
               isAdmin={isAdmin}
               busy={busy}
               onRefresh={handleRefresh}
+              onPracticePantherConnection={handlePracticePantherConnection}
               onDelete={handleDelete}
               onConnectorEnabled={handleConnectorEnabled}
               onToolEnabled={handleToolEnabled}
@@ -551,6 +568,7 @@ function ConnectorPanel({
   isAdmin,
   busy,
   onRefresh,
+  onPracticePantherConnection,
   onDelete,
   onConnectorEnabled,
   onToolEnabled,
@@ -559,6 +577,7 @@ function ConnectorPanel({
   isAdmin: boolean;
   busy: string | null;
   onRefresh: (connectorId: string) => Promise<void>;
+  onPracticePantherConnection: (connectorId: string) => Promise<void>;
   onDelete: (connectorId: string) => Promise<void>;
   onConnectorEnabled: (
     connector: McpConnectorSummary,
@@ -571,8 +590,14 @@ function ConnectorPanel({
   ) => Promise<void>;
 }) {
   const isBackendManaged = connector.managedBy !== null;
+  const isRetiredPracticePanther =
+    connector.managedBy === "practicepanther" &&
+    connector.authType !== "oauth" &&
+    !connector.enabled;
   const displayedTools =
-    connector.managedBy === "practicepanther" && !isAdmin
+    isRetiredPracticePanther
+      ? []
+      : connector.managedBy === "practicepanther" && !isAdmin
       ? connector.tools.filter(
           (tool) =>
             tool.practicePantherPolicy === "read_all" ||
@@ -620,7 +645,7 @@ function ConnectorPanel({
             />
             Enabled
           </label>
-          {(isBackendManaged || isAdmin) && (
+          {(isBackendManaged || isAdmin) && !isRetiredPracticePanther && (
             <button
               type="button"
               onClick={() => void onRefresh(connector.id)}
@@ -650,11 +675,40 @@ function ConnectorPanel({
       </div>
 
       {connector.managedBy === "practicepanther" && (
-        <p className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
-          Tool access is fixed by Docket policy. Reads are available according
-          to role; permitted writes pause for the initiating user&apos;s
-          one-time approval.
-        </p>
+        <div className="mt-3 space-y-2 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+          {connector.authType === "oauth" ? (
+            <p>
+              {connector.oauthConnected
+                ? "Your PracticePanther account is connected."
+                : "Connect your own PracticePanther account to use its tools in Docket."}
+            </p>
+          ) : isRetiredPracticePanther ? (
+            <p>Legacy PracticePanther connector retired.</p>
+          ) : (
+            <p>The firm-managed PracticePanther connector is active.</p>
+          )}
+          {!isRetiredPracticePanther && (
+            <p>
+              Tool access is fixed by Docket policy. Reads are available according
+              to role; permitted writes pause for the initiating user&apos;s
+              one-time approval.
+            </p>
+          )}
+          {connector.authType === "oauth" && (
+            <button
+              type="button"
+              onClick={() => void onPracticePantherConnection(connector.id)}
+              disabled={busy === `oauth:${connector.id}`}
+              className="rounded-md border border-blue-300 bg-white px-3 py-1.5 font-medium text-blue-800 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-50"
+            >
+              {busy === `oauth:${connector.id}`
+                ? "Checking PracticePanther"
+                : connector.oauthConnected
+                  ? "Check connection"
+                  : "Connect PracticePanther"}
+            </button>
+          )}
+        </div>
       )}
       {connector.managedBy === "box" && (
         <p className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
@@ -666,7 +720,11 @@ function ConnectorPanel({
 
       <div className="mt-4 space-y-2">
         {displayedTools.length === 0 ? (
-          <p className="text-xs text-gray-500">No tools discovered yet.</p>
+          <p className="text-xs text-gray-500">
+            {isRetiredPracticePanther
+              ? "This connector's tools are unavailable."
+              : "No tools discovered yet."}
+          </p>
         ) : (
           displayedTools.map((tool) => (
             <div

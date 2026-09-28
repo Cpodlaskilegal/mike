@@ -105,12 +105,17 @@ connectors.
   `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/user/mcp-connectors/oauth/callback`.
   Each Docket user must authorize their own managed Box connector; Box MCP calls
   run with that user's Box permissions.
-- PracticePanther is connected by default as a backend-managed MCP connector
-  using `PRACTICEPANTHER_MCP_SERVER_URL`, which currently points at
-  `https://wild-spark-qn7iy.run.mcp-use.com/mcp`. The backend auto-provisions
-  the connector for authenticated users and keeps existing read/status tool
-  cache behavior while disabling obvious mutating tools such as
-  create/update/delete plus `pp_api_request` pending a human-confirmation path.
+- For the per-user PracticePanther cutover, set
+  `PRACTICEPANTHER_USER_MCP_SERVER_URL` on `mike-api` to the separate Manufact
+  service's exact HTTPS `/mcp` URL. The backend provisions a managed OAuth
+  connector for each Docket user and disables the old shared-identity rows.
+  The Manufact service must allow Docket's exact redirect URI:
+  `https://mike-api.kindwater-f73a2b5e.eastus2.azurecontainerapps.io/user/mcp-connectors/oauth/callback`.
+  Each user must authorize their own PracticePanther account in **Account >
+  Connectors**. An invalid URL fails closed; do not point this variable at the
+  legacy `PRACTICEPANTHER_MCP_SERVER_URL`. Validate two distinct users through
+  `pp_oauth_status` and `Users_Me` before accepting the cutover. The original
+  shared URL remains in `PRACTICEPANTHER_MCP_SERVER_URL` for rollback only.
 - Current deployed backend image tag:
   `202607092215-admin-spend-reports`.
 - Current deployed frontend image tag:

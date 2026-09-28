@@ -9,24 +9,58 @@ import {
   practicePantherToolPolicy,
 } from "../src/lib/mcp/practicePantherAccessPolicy";
 
-test("the reviewed PracticePanther policy covers exactly 104 unique tools", () => {
+test("the reviewed PracticePanther policy covers 109 unique current and legacy tools", () => {
   assert.ok(PRACTICEPANTHER_POLICY_VERSION);
   assert.equal(ADMIN_ONLY_PRACTICEPANTHER_TOOLS.length, 36);
-  assert.equal(READ_ALL_PRACTICEPANTHER_TOOLS.length, 34);
-  assert.equal(WRITE_WITH_APPROVAL_PRACTICEPANTHER_TOOLS.length, 34);
+  assert.equal(READ_ALL_PRACTICEPANTHER_TOOLS.length, 35);
+  assert.equal(WRITE_WITH_APPROVAL_PRACTICEPANTHER_TOOLS.length, 38);
 
   const all = [
     ...ADMIN_ONLY_PRACTICEPANTHER_TOOLS,
     ...READ_ALL_PRACTICEPANTHER_TOOLS,
     ...WRITE_WITH_APPROVAL_PRACTICEPANTHER_TOOLS,
   ];
-  assert.equal(all.length, 104);
-  assert.equal(new Set(all).size, 104);
+  assert.equal(all.length, 109);
+  assert.equal(new Set(all).size, 109);
 
   // Generated provider spellings are part of the reviewed external contract.
   assert.ok(all.includes("Expenses_GetExpensess"));
   assert.ok(all.includes("TimeEntries_GetTimeEntrys"));
   assert.ok(all.includes("BankAccounts_Delete"));
+});
+
+test("individual PracticePanther connector's new read operation is available to users", () => {
+  assert.equal(
+    authorizePracticePantherTool({
+      role: "user",
+      toolName: "Messages_GetMessageAsync",
+    }).effect,
+    "allow",
+  );
+});
+
+test("individual PracticePanther connector's matter and task writes require approval", () => {
+  for (const toolName of [
+    "Matters_PostMatter",
+    "Matters_PutMatter",
+    "Tasks_PostTask",
+    "Tasks_PutTask",
+  ]) {
+    assert.equal(
+      authorizePracticePantherTool({ role: "user", toolName }).effect,
+      "approval_required",
+      toolName,
+    );
+    assert.equal(
+      authorizePracticePantherTool({
+        role: "user",
+        toolName,
+        approvalGranted: true,
+      }).effect,
+      "allow",
+      toolName,
+    );
+  }
 });
 
 test("all nine selected capability groups are direct admin access and deny users", () => {

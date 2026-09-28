@@ -151,7 +151,11 @@ test("builds a visible PracticePanther audit note with Docket correlation", () =
   ]);
   assert.match(String(note.note), /Actor email: mike\.user@podlaskilegal\.com/);
   assert.match(String(note.note), /Docket assistant run ID: run-1/);
-  assert.match(String(note.note), /shared API identity/);
+  assert.match(
+    String(note.note),
+    /PracticePanther records identify the connected account that performed the API call/,
+  );
+  assert.doesNotMatch(String(note.note), /shared API identity/);
 
   const detached = buildPracticePantherAuditNote({
     actionId: "audit-2",
