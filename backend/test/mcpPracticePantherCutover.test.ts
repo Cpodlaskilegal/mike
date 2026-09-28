@@ -197,3 +197,105 @@ test("cutover disables the shared connector and upgrades an existing per-user ro
     else process.env.BOX_MCP_ENABLED = previousBoxEnabled;
   }
 });
+
+test("PracticePanther status ignores legacy and other users' OAuth tokens", async () => {
+  process.env.DATABASE_URL ??= "postgres://docket:unused@127.0.0.1:5432/docket";
+  const { getUserPracticePantherAuthStatus } = await import("../src/lib/mcp/servers");
+  const previousUserUrl = process.env.PRACTICEPANTHER_USER_MCP_SERVER_URL;
+  const previousBoxEnabled = process.env.BOX_MCP_ENABLED;
+  process.env.PRACTICEPANTHER_USER_MCP_SERVER_URL = userUrl;
+  process.env.BOX_MCP_ENABLED = "false";
+  const rows: Record<string, unknown>[] = [
+    {
+      id: "legacy-1",
+      user_id: "user-1",
+      server_url: legacyUrl,
+      name: "PracticePanther MCP",
+      auth_type: "none",
+      enabled: true,
+      tool_policy: { managedConnector: "practicepanther" },
+    },
+    {
+      id: "primary-1",
+      user_id: "user-1",
+      server_url: userUrl,
+      name: "PracticePanther MCP",
+      auth_type: "oauth",
+      enabled: true,
+      tool_policy: { managedBy: "backend", managedConnector: "practicepanther" },
+    },
+  ];
+  const tokens: Record<string, unknown>[] = [
+    { connector_id: "legacy-1", encrypted_access_token: "old-token" },
+    { connector_id: "primary-2", encrypted_access_token: "other-user-token" },
+  ];
+  const tools: Record<string, unknown>[] = [{ connector_id: "primary-1" }];
+  const db = {
+    from(table: string) {
+      const filters: Array<[string, unknown]> = [];
+      let patch: Record<string, unknown> | null = null;
+      let head = false;
+      const source =
+        table === "user_mcp_connectors"
+          ? rows
+          : table === "user_mcp_oauth_tokens"
+            ? tokens
+            : tools;
+      const matching = () =>
+        source.filter((row) =>
+          filters.every(([column, value]) => row[column] === value),
+        );
+      const result = () => {
+        const data = matching();
+        if (patch) data.forEach((row) => Object.assign(row, patch));
+        return { data: head ? null : data, count: head ? data.length : null, error: null };
+      };
+      const builder = {
+        select(_columns: string, options?: { head?: boolean }) {
+          head = options?.head ?? false;
+          return builder;
+        },
+        eq(column: string, value: unknown) {
+          filters.push([column, value]);
+          return builder;
+        },
+        limit(_count: number) {
+          return builder;
+        },
+        update(values: Record<string, unknown>) {
+          patch = values;
+          return builder;
+        },
+        async maybeSingle() {
+          return { ...result(), data: matching()[0] ?? null };
+        },
+        then(resolve: (value: ReturnType<typeof result>) => unknown) {
+          return Promise.resolve(result()).then(resolve);
+        },
+      };
+      return builder;
+    },
+  } as unknown as Db;
+
+  try {
+    assert.deepEqual(await getUserPracticePantherAuthStatus("user-1", db), {
+      required: true,
+      configured: true,
+      connected: false,
+      connectorId: "primary-1",
+    });
+    tokens.push({ connector_id: "primary-1", encrypted_access_token: "new-token" });
+    assert.deepEqual(await getUserPracticePantherAuthStatus("user-1", db), {
+      required: true,
+      configured: true,
+      connected: true,
+      connectorId: "primary-1",
+    });
+    assert.equal(rows[0].enabled, false);
+  } finally {
+    if (previousUserUrl === undefined) delete process.env.PRACTICEPANTHER_USER_MCP_SERVER_URL;
+    else process.env.PRACTICEPANTHER_USER_MCP_SERVER_URL = previousUserUrl;
+    if (previousBoxEnabled === undefined) delete process.env.BOX_MCP_ENABLED;
+    else process.env.BOX_MCP_ENABLED = previousBoxEnabled;
+  }
+});

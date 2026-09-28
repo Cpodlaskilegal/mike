@@ -19,6 +19,7 @@ import {
   executeMcpToolApproval,
   getMcpApprovalForUser,
   getUserMcpConnector,
+  getUserPracticePantherAuthStatus,
   listUserMcpConnectorPresets,
   listUserMcpConnectors,
   McpApprovalError,
@@ -746,6 +747,23 @@ userRouter.get("/box-auth-status", requireAuth, async (_req, res) => {
   } catch (err) {
     const detail = errorMessage(err);
     console.error("[user/box-auth-status] check failed", {
+      userId,
+      error: detail,
+    });
+    res.status(500).json({ detail });
+  }
+});
+
+// GET /user/practicepanther-auth-status
+userRouter.get("/practicepanther-auth-status", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  try {
+    res.json(
+      await getUserPracticePantherAuthStatus(userId, createServerSupabase()),
+    );
+  } catch (err) {
+    const detail = errorMessage(err);
+    console.error("[user/practicepanther-auth-status] check failed", {
       userId,
       error: detail,
     });

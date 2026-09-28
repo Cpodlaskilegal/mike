@@ -136,7 +136,8 @@ async function apiRequest<T>(path: string, init?: DocketRequestInit): Promise<T>
     if (
       code === "oauth_required" &&
       typeof window !== "undefined" &&
-      !path.includes("/oauth/")
+      !path.includes("/oauth/") &&
+      !path.startsWith("/user/mcp-connectors")
     ) {
       window.dispatchEvent(new Event("docket:box-auth-required"));
     }
@@ -431,6 +432,19 @@ export interface BoxAuthStatus {
 
 export async function getBoxAuthStatus(): Promise<BoxAuthStatus> {
   return apiRequest<BoxAuthStatus>("/user/box-auth-status");
+}
+
+export interface PracticePantherAuthStatus {
+  required: boolean;
+  configured: boolean;
+  connected: boolean;
+  connectorId: string | null;
+}
+
+export async function getPracticePantherAuthStatus(): Promise<PracticePantherAuthStatus> {
+  return apiRequest<PracticePantherAuthStatus>(
+    "/user/practicepanther-auth-status",
+  );
 }
 
 export interface McpToolSummary {

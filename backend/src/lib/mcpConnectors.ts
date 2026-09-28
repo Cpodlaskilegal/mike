@@ -19,6 +19,7 @@ export {
   persistMcpApprovalTerminalEvent,
   reconcileMcpApprovalTerminalEventsForMessage,
   getUserMcpConnector,
+  getUserPracticePantherAuthStatus,
   listUserMcpConnectors,
   refreshUserMcpConnectorTools,
   setUserMcpToolEnabled,

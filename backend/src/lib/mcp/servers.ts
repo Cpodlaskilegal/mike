@@ -40,8 +40,11 @@ import {
     backendManagedBy,
     ensureDefaultMcpConnectors,
     isBackendManagedMcpConnector,
+    isPrimaryPracticePantherConnector,
     isRetiredPracticePantherConnector,
+    managedMcpAuthType,
     managedConnectorDisplayName,
+    practicePantherMcpServerUrl,
 } from "./defaults";
 import {
     completeMcpConnectorOAuthAuthorization,
@@ -253,6 +256,66 @@ export async function listUserMcpConnectors(
         );
     }
     return summaries;
+}
+
+export async function getUserPracticePantherAuthStatus(
+    userId: string,
+    db: Db = createServerSupabase(),
+): Promise<{
+    required: boolean;
+    configured: boolean;
+    connected: boolean;
+    connectorId: string | null;
+}> {
+    const serverUrl = practicePantherMcpServerUrl();
+    const configured =
+        !!serverUrl && managedMcpAuthType("practicepanther") === "oauth";
+    if (!configured) {
+        return {
+            required: false,
+            configured: false,
+            connected: false,
+            connectorId: null,
+        };
+    }
+
+    await ensureDefaultMcpConnectors(userId, db);
+    const { data, error } = await db
+        .from("user_mcp_connectors")
+        .select("id, server_url, auth_type, enabled, tool_policy")
+        .eq("user_id", userId)
+        .eq("server_url", serverUrl)
+        .eq("auth_type", "oauth")
+        .eq("enabled", true)
+        .limit(1)
+        .maybeSingle();
+    if (error) throw error;
+
+    const connector = data as Pick<
+        ConnectorRow,
+        "id" | "server_url" | "auth_type" | "enabled" | "tool_policy"
+    > | null;
+    if (!connector || !isPrimaryPracticePantherConnector(connector)) {
+        return {
+            required: true,
+            configured: true,
+            connected: false,
+            connectorId: null,
+        };
+    }
+
+    const { data: token, error: tokenError } = await db
+        .from("user_mcp_oauth_tokens")
+        .select("encrypted_access_token")
+        .eq("connector_id", connector.id)
+        .maybeSingle();
+    if (tokenError) throw tokenError;
+    return {
+        required: true,
+        configured: true,
+        connected: !!token?.encrypted_access_token,
+        connectorId: connector.id,
+    };
 }
 
 export async function getUserMcpConnector(
