@@ -184,7 +184,7 @@ test("blocks the primary mutation when the PracticePanther audit note cannot be 
   assert.equal(updates.at(-1)?.practicepanther_audit_status, "failed");
 });
 
-test("records and tags a successful PracticePanther mutation in call order", async () => {
+test("records a successful mutation and finalizes its note with the generated path ID", async () => {
   const { db, rows, updates } = fakeDb();
   const calls: Array<{ name: string; args: AuditRow }> = [];
   const result = await executeResolvedMcpToolCall({
@@ -219,6 +219,9 @@ test("records and tags a successful PracticePanther mutation in call order", asy
     "Docket actor: mike.user@podlaskilegal.com",
   ]);
   assert.match(String(calls[2].args.subject), /SUCCEEDED/);
+  assert.equal(calls[2].args.id__path, "note-1");
+  assert.equal(calls[2].args.id, "note-1");
+  assert.equal("id__query" in calls[2].args, false);
   assert.equal(result.event.status, "ok");
   assert.equal(result.event.actor_email, "mike.user@podlaskilegal.com");
   assert.equal(result.event.practicepanther_audit_note_id, "note-1");
