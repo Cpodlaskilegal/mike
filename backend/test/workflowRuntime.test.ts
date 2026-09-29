@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
 import type { StreamChatParams } from "../src/lib/llm";
+import { toChatStreamError } from "../src/lib/chatErrors";
 
 process.env.DATABASE_URL ??= "postgres://docket:unused@127.0.0.1:5432/docket";
 process.env.NODE_ENV = "test";
@@ -268,4 +269,81 @@ test("streaming enforces its offered tools and suppresses disabled grouped resea
   assert.ok(result.events.some((event) => event.type === "workflow_applied"));
   assert.ok(result.events.every((event) => !event.type.startsWith("courtlistener_")));
   assert.ok(emissions.every((event) => !event.includes("courtlistener_find_in_case")));
+});
+
+test("exemplar preflight failure retains an already emitted tool event for durable reload", async () => {
+  const sourcePath = fileURLToPath(new URL("../src/lib/chatTools.ts", import.meta.url));
+  const moduleRequire = createRequire(sourcePath);
+  const emissions: string[] = [];
+  let providerInvocations = 0;
+  const toolEvent = {
+    type: "mcp_tool_call",
+    openai_tool_name: "mcp_box_search",
+    status: "ok",
+  };
+  const isolatedRequire = Object.assign((id: string) => {
+    if (id === "./mcpConnectors") {
+      return {
+        ...moduleRequire(id),
+        buildUserMcpTools: async () => [],
+        executeMcpToolCall: async () => ({ content: "{}", event: toolEvent }),
+      };
+    }
+    if (id === "./exemplarSearch") {
+      return {
+        ...moduleRequire(id),
+        hasExemplarIntent: () => true,
+        runExemplarSearchPreflight: async (options: {
+          execute: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+        }) => {
+          await options.execute("mcp_box_search", {});
+          throw new Error("Preflight failed after a completed read");
+        },
+      };
+    }
+    if (id === "./llm") {
+      return {
+        ...moduleRequire(id),
+        streamChatWithTools: async () => {
+          providerInvocations += 1;
+          throw new Error("Provider should not run after failed preflight");
+        },
+      };
+    }
+    return moduleRequire(id);
+  }, { resolve: moduleRequire.resolve });
+  const compiled = ts.transpileModule(readFileSync(sourcePath, "utf8"), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  });
+  const isolatedModule = { exports: {} };
+  new Function("require", "module", "exports", "__dirname", "__filename", compiled.outputText)(
+    isolatedRequire, isolatedModule, isolatedModule.exports, dirname(sourcePath), sourcePath,
+  );
+  const { runLLMStream, AssistantStreamFailureError, buildAssistantFailurePayload } =
+    isolatedModule.exports as typeof import("../src/lib/chatTools");
+
+  await assert.rejects(runLLMStream({
+    apiMessages: [{ role: "system", content: "" }, { role: "user", content: "Find an exemplar." }],
+    exemplarRequestMessages: [{ role: "user", content: "Find an exemplar." }],
+    docStore: new Map(),
+    docIndex: {},
+    userId: "alice",
+    db: { from() { throw new Error("No database access expected"); } } as unknown as Parameters<typeof runLLMStream>[0]["db"],
+    write: (line) => { emissions.push(line); },
+    model: "test-provider",
+  }), (error: unknown) => {
+    assert.ok(error instanceof AssistantStreamFailureError);
+    assert.equal(error.fullText, "");
+    assert.deepEqual(error.events, [toolEvent]);
+    const payload = buildAssistantFailurePayload(error, toChatStreamError(error), {});
+    assert.deepEqual(payload.content[0], toolEvent);
+    assert.match((payload.content.at(-1) as { text: string }).text, /response is incomplete/);
+    return true;
+  });
+  assert.equal(providerInvocations, 0);
+  assert.ok(emissions.some((line) => line.includes('"openai_tool_name":"mcp_box_search"')));
 });

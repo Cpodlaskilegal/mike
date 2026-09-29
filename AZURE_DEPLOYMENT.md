@@ -1,5 +1,8 @@
 # Docket Azure Deployment
 
+For assistant run diagnostics, source-build attribution, and the content-free
+Azure Monitor alert definition, see [Assistant run diagnostics](docs/assistant-run-operations.md).
+
 Production resources were created in Azure subscription `Azure subscription 1`
 under resource group `mike-prod-rg` in `eastus2`.
 

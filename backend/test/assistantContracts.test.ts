@@ -6,6 +6,7 @@ import {
   assertAssistantCompletionOutcome,
   extractRichCitations,
   consumeAskInputsResponse,
+  previewAskInputsResponse,
   createCitationSseBridge,
   hasAssistantCompletionOutcome,
   parseAskInputsResponsePayload,
@@ -393,7 +394,80 @@ function createAssistantContractsDb() {
     return query;
   };
 
-  return { db: { from }, tables };
+  return { db: { from, transaction: createAskInputsTransaction(tables) }, tables };
+}
+
+function createAskInputsTransaction(
+  tables: Record<string, Record<string, unknown>[]>,
+  failAt: "append" | "status" | null = null,
+) {
+  let nextFailure = failAt;
+  let previous = Promise.resolve();
+  return async function transact<T>(
+    operation: (client: {
+      query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+    }) => Promise<T>,
+  ): Promise<T> {
+    const prior = previous;
+    let release!: () => void;
+    previous = new Promise<void>((resolve) => { release = resolve; });
+    await prior;
+    const snapshot = structuredClone(tables);
+    const client = {
+      async query(sql: string, values: unknown[] = []) {
+        if (sql.includes("from public.assistant_input_requests") && sql.includes("for update")) {
+          return { rows: tables.assistant_input_requests.filter((row) =>
+            row.id === values[0] && row.chat_id === values[1]) };
+        }
+        if (sql.includes("from public.chat_messages") && sql.includes("for update")) {
+          return { rows: tables.chat_messages.filter((row) =>
+            row.id === values[0] && row.chat_id === values[1]) };
+        }
+        if (sql.includes("insert into public.assistant_input_responses")) {
+          if (tables.assistant_input_responses.some((row) => row.request_id === values[0])) {
+            throw new Error("duplicate response");
+          }
+          tables.assistant_input_responses.push({
+            request_id: values[0],
+            submitted_by_user_id: values[1],
+            response: JSON.parse(String(values[2])),
+          });
+          return { rows: [{ request_id: values[0] }] };
+        }
+        if (sql.includes("update public.chat_messages")) {
+          if (nextFailure === "append") {
+            nextFailure = null;
+            throw new Error("simulated message update failure");
+          }
+          const row = tables.chat_messages.find((message) => message.id === values[1]);
+          if (!row) return { rows: [] };
+          row.content = JSON.parse(String(values[0]));
+          return { rows: [{ id: row.id }] };
+        }
+        if (sql.includes("update public.assistant_input_requests")) {
+          if (nextFailure === "status") {
+            nextFailure = null;
+            throw new Error("simulated status update failure");
+          }
+          const row = tables.assistant_input_requests.find((request) =>
+            request.id === values[1] && request.status === "pending");
+          if (!row) return { rows: [] };
+          row.status = "resolved";
+          row.resolved_at = values[0];
+          return { rows: [{ id: row.id }] };
+        }
+        throw new Error(`Unexpected Ask Inputs SQL: ${sql}`);
+      },
+    };
+    try {
+      return await operation(client);
+    } catch (error) {
+      for (const [table, rows] of Object.entries(snapshot)) tables[table] = rows;
+      throw error;
+    } finally {
+      release();
+    }
+  };
 }
 
 test("Ask Inputs persistence binds an Entra user response to the original assistant event", async () => {
@@ -417,6 +491,23 @@ test("Ask Inputs persistence binds an Entra user response to the original assist
   assert.equal(parsed.ok, true);
   if (!parsed.ok || !parsed.response) return;
 
+  const preview = await previewAskInputsResponse(db, {
+    chatId: "chat-1",
+    submittedByUserId: "entra-user-2",
+    response: parsed.response,
+  });
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+  assert.match(preview.content, /Illinois/);
+  assert.equal(tables.assistant_input_requests[0].status, "pending");
+  assert.equal(tables.assistant_input_responses.length, 0);
+  // A failed prompt, placeholder, or run insert can now retry this same form.
+  assert.equal((await previewAskInputsResponse(db, {
+    chatId: "chat-1",
+    submittedByUserId: "entra-user-2",
+    response: parsed.response,
+  })).ok, true);
+
   const consumed = await consumeAskInputsResponse(db, {
     chatId: "chat-1",
     submittedByUserId: "entra-user-2",
@@ -427,6 +518,93 @@ test("Ask Inputs persistence binds an Entra user response to the original assist
   assert.equal(tables.assistant_input_requests[0].status, "resolved");
   const events = tables.chat_messages[0].content as { type: string }[];
   assert.equal(events.at(-1)?.type, "ask_inputs_response");
+  const duplicate = await consumeAskInputsResponse(db, {
+    chatId: "chat-1",
+    submittedByUserId: "entra-user-2",
+    response: parsed.response,
+  });
+  assert.equal(duplicate.ok, false);
+  if (!duplicate.ok) assert.equal(duplicate.status, 409);
+});
+
+for (const failedWrite of ["append", "status"] as const) {
+  test(`Ask Inputs rolls back a failed ${failedWrite} write and permits one retry`, async () => {
+    const { db, tables } = createAssistantContractsDb();
+    const saved = await persistAskInputsRequest(db, {
+      chatId: "chat-1",
+      assistantMessageId: "assistant-message-1",
+      createdByUserId: "entra-user-1",
+      event: inputRequest,
+    });
+    assert.equal(saved.ok, true);
+    const parsed = parseAskInputsResponsePayload({
+      request_id: "input-request-1",
+      responses: [
+        { id: "jurisdiction", kind: "choice", answer: "Illinois" },
+        { id: "source-documents", kind: "documents", filenames: ["Source.pdf"] },
+      ],
+    });
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok || !parsed.response) return;
+    const params = {
+      chatId: "chat-1",
+      submittedByUserId: "entra-user-2",
+      response: parsed.response,
+    };
+    const transact = createAskInputsTransaction(tables, failedWrite);
+
+    const failed = await consumeAskInputsResponse(db, params, transact);
+    assert.equal(failed.ok, false);
+    if (!failed.ok) assert.equal(failed.status, 500);
+    assert.equal(tables.assistant_input_responses.length, 0);
+    assert.equal(tables.assistant_input_requests[0].status, "pending");
+    assert.equal((tables.chat_messages[0].content as unknown[]).length, 1);
+    assert.equal((await previewAskInputsResponse(db, params)).ok, true);
+
+    const retried = await consumeAskInputsResponse(db, params, transact);
+    assert.equal(retried.ok, true);
+    assert.equal(tables.assistant_input_responses.length, 1);
+    assert.equal(tables.assistant_input_requests[0].status, "resolved");
+    const events = tables.chat_messages[0].content as { type: string }[];
+    assert.equal(events.filter((event) => event.type === "ask_inputs_response").length, 1);
+    const replay = await consumeAskInputsResponse(db, params, transact);
+    assert.equal(replay.ok, false);
+    if (!replay.ok) assert.equal(replay.status, 409);
+  });
+}
+
+test("concurrent Ask Inputs submits commit one answer and one provider continuation", async () => {
+  const { db, tables } = createAssistantContractsDb();
+  await persistAskInputsRequest(db, {
+    chatId: "chat-1",
+    assistantMessageId: "assistant-message-1",
+    createdByUserId: "entra-user-1",
+    event: inputRequest,
+  });
+  const parsed = parseAskInputsResponsePayload({
+    request_id: "input-request-1",
+    responses: [
+      { id: "jurisdiction", kind: "choice", answer: "Illinois" },
+      { id: "source-documents", kind: "documents", filenames: ["Source.pdf"] },
+    ],
+  });
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok || !parsed.response) return;
+  const params = {
+    chatId: "chat-1",
+    submittedByUserId: "entra-user-2",
+    response: parsed.response,
+  };
+  const transact = createAskInputsTransaction(tables);
+  const results = await Promise.all([
+    consumeAskInputsResponse(db, params, transact),
+    consumeAskInputsResponse(db, params, transact),
+  ]);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(results.filter((result) => !result.ok && result.status === 409).length, 1);
+  assert.equal(tables.assistant_input_responses.length, 1);
+  const events = tables.chat_messages[0].content as { type: string }[];
+  assert.equal(events.filter((event) => event.type === "ask_inputs_response").length, 1);
 });
 
 test("PostgreSQL adapter serializes the new JSON contract columns", () => {
@@ -486,6 +664,29 @@ test("general and project chat routes validate/resume inputs and persist rich ci
     assert.match(route, /createCitationSseBridge/);
     assert.match(route, /extractRichCitations/);
     assert.match(route, /citations:/);
+  }
+});
+
+test("both chat routes keep Ask Inputs pending through startup and report saved-message state", () => {
+  for (const relativePath of ["src/routes/chat.ts", "src/routes/projectChat.ts"]) {
+    const route = readFileSync(resolve(backendRoot, relativePath), "utf8");
+    const stream = route.slice(route.indexOf("// POST /chat — streaming") >= 0
+      ? route.indexOf("// POST /chat — streaming")
+      : route.indexOf("// POST /projects/:projectId/chat — streaming"));
+    const positions = [
+      stream.indexOf("await previewAskInputsResponse("),
+      stream.indexOf('runAssistantStartupStep(startDiagnostic, "prompt_persist"'),
+      stream.indexOf('runAssistantStartupStep(startDiagnostic, "placeholder_create"'),
+      stream.indexOf("await createAssistantBackgroundRun(db, {"),
+      stream.indexOf("await consumeAskInputsResponse("),
+      stream.indexOf("await runLLMStream("),
+    ];
+    assert.ok(positions.every((position) => position >= 0), `${relativePath}: missing staged step`);
+    assert.deepEqual(positions, [...positions].sort((a, b) => a - b),
+      `${relativePath}: provider work must follow durable startup and form consumption`);
+    assert.match(stream, /assistantStartupFailureResponse\(\s*startDiagnostic, chatId, false/s);
+    assert.match(stream, /assistantStartupFailureResponse\(\s*startDiagnostic, chatId, Boolean\(lastUser\)/s);
+    assert.match(stream, /assistantStartupFailureResponse\(\s*streamLifecycle, chatId, Boolean\(lastUser\)/s);
   }
 });
 

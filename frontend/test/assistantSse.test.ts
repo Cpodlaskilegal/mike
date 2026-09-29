@@ -6,8 +6,20 @@ import {
   AssistantStreamPrematureEofError,
   createAssistantStreamRequestId,
   parseAssistantStreamTerminalStatus,
+  parseAssistantStreamFailure,
   requireAssistantStreamDone,
 } from "../src/app/lib/assistantSse";
+
+test("stream error preserves safe reason, subtype, retryability, and run ID", () => {
+  assert.deepEqual(parseAssistantStreamFailure({
+    type: "stream_terminal", status: "error", runId: "run-1",
+    code: "tool_iteration_limit", retryable: true,
+    message: "The assistant reached its tool limit before finishing.",
+  }), {
+    runId: "run-1", code: "tool_iteration_limit", retryable: true,
+    message: "The assistant reached its tool limit before finishing.",
+  });
+});
 
 test("accepts only an explicitly completed assistant SSE stream", () => {
   assert.doesNotThrow(() =>

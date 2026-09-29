@@ -62,7 +62,7 @@ test("tool-loop exhaustion is a named retryable incomplete-response error", () =
   assert.equal(error.providerResponseId, "resp-1");
   assert.deepEqual(toChatStreamError(error), {
     type: "error",
-    code: "incomplete_response",
+    code: "tool_iteration_limit",
     retryable: true,
     message:
       "Docket reached its research-step limit before writing the final answer. Retry the request.",

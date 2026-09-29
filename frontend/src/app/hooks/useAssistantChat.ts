@@ -3,12 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+    AuthRequiredError,
     cancelAssistantStream,
     getChat,
     getAssistantRunStatus,
     streamChat,
     streamProjectChat,
 } from "@/app/lib/docketApi";
+import {
+    isConfirmedPreflightFailure,
+    parseAssistantHttpRejection,
+    rollbackOptimisticPreflight,
+    withDisplayedDocument,
+    type AssistantSubmissionResult,
+} from "@/app/lib/assistantRecovery";
 import { describeChatError } from "@/app/lib/chatErrors";
 import {
     assistantRequestContinuesAfterDisconnect,
@@ -16,8 +24,10 @@ import {
 } from "@/app/lib/assistantChatPayload";
 import {
     createAssistantStreamRequestId,
+    parseAssistantStreamFailure,
     parseAssistantStreamTerminalStatus,
     requireAssistantStreamDone,
+    type AssistantStreamFailure,
 } from "@/app/lib/assistantSse";
 import {
     ASSISTANT_CANCELLATION_PENDING_MESSAGE,
@@ -544,8 +554,17 @@ export function useAssistantChat({
             displayedDoc?: { filename: string; documentId: string } | null;
             askInputsResponse?: DocketAskInputsResponse;
         },
-    ): Promise<string | null> => {
-        if (!sessionReady || !message.content.trim()) return null;
+    ): Promise<AssistantSubmissionResult> => {
+        message = withDisplayedDocument(message, opts?.displayedDoc);
+        if (!sessionReady || !message.content.trim()) {
+            return {
+                kind: "preflight_failed",
+                draft: message,
+                message: !sessionReady
+                    ? "Your session is not ready. Please try again."
+                    : "Enter a message before sending.",
+            };
+        }
 
         setIsResponseLoading(true);
 
@@ -556,7 +575,7 @@ export function useAssistantChat({
             lastMessage.content === message.content;
 
         const newMessages: DocketMessage[] = isMessageAlreadyAdded
-            ? messages
+            ? [...messages.slice(0, -1), message]
             : [...messages, message];
 
         setMessages([
@@ -566,6 +585,11 @@ export function useAssistantChat({
 
         let streamedChatId: string | null = null;
         const streamRequestId = createAssistantStreamRequestId();
+        let serverRunId = streamRequestId;
+        let streamStarted = false;
+        let httpRejectedBeforeStream = false;
+        let httpStartFailure: ReturnType<typeof parseAssistantHttpRejection> | null = null;
+        let streamFailure: AssistantStreamFailure | null = null;
         let backgroundPending = false;
         let terminalStreamError: Error | null = null;
         let terminalStatus:
@@ -657,7 +681,9 @@ export function useAssistantChat({
                   }));
 
             if (!response.ok) {
+                httpRejectedBeforeStream = true;
                 const errText = await response.text();
+                httpStartFailure = parseAssistantHttpRejection(errText);
                 throw new Error(errText || `HTTP ${response.status}`);
             }
 
@@ -692,10 +718,9 @@ export function useAssistantChat({
                         const data = JSON.parse(dataStr);
 
                         if (data.type === "error") {
+                            streamFailure = parseAssistantStreamFailure(data);
                             const streamError = new Error(
-                                typeof data.message === "string"
-                                    ? data.message
-                                    : "The assistant failed before it could finish.",
+                                streamFailure.message,
                             );
                             streamError.name = "DocketStreamError";
                             terminalStreamError = streamError;
@@ -703,16 +728,32 @@ export function useAssistantChat({
                         }
 
                         if (data.type === "stream_start") {
-                            const serverRunId =
+                            streamStarted = true;
+                            const observedRunId =
                                 typeof data.runId === "string"
                                     ? data.runId
                                     : streamRequestId;
+                            serverRunId = observedRunId;
                             const active = activeStreamRef.current;
                             if (active?.streamRequestId === streamRequestId) {
-                                active.streamRequestId = serverRunId;
+                                active.streamRequestId = observedRunId;
                                 active.continuingAfterDisconnect =
                                     data.continuingAfterDisconnect === true;
                             }
+                            setMessages((prev) => {
+                                const last = prev[prev.length - 1];
+                                if (last?.role !== "assistant") return prev;
+                                const updated = [...prev];
+                                updated[updated.length - 1] = {
+                                    ...last,
+                                    assistantRun: {
+                                        streamRequestId: observedRunId,
+                                        projectId,
+                                        status: "in_progress",
+                                    },
+                                };
+                                return updated;
+                            });
                             continue;
                         }
 
@@ -728,6 +769,13 @@ export function useAssistantChat({
                             }
                             sawTerminalEvent = true;
                             terminalStatus = status;
+                            if (status === "error") {
+                                const terminalFailure = parseAssistantStreamFailure(data);
+                                if (!streamFailure || terminalFailure.code !== "stream_error") {
+                                    streamFailure = terminalFailure;
+                                }
+                                if (terminalFailure.runId) serverRunId = terminalFailure.runId;
+                            }
                             if (
                                 status === "background_pending" ||
                                 status === "cancellation_pending"
@@ -753,7 +801,7 @@ export function useAssistantChat({
                             }
                             if (status === "error" && !terminalStreamError) {
                                 terminalStreamError = new Error(
-                                    "The assistant failed before it could finish.",
+                                    streamFailure?.message ?? "The assistant failed before it could finish.",
                                 );
                                 terminalStreamError.name = "DocketStreamError";
                             }
@@ -1346,11 +1394,35 @@ export function useAssistantChat({
                 void generateTitle(finalChatIdForTitle, titleParts.join("\n"));
             }
 
-            return streamedChatId || null;
+            return { kind: "sent", chatId: streamedChatId || chatId || null };
         } catch (error: unknown) {
+            const preflightFailure = isConfirmedPreflightFailure({
+                authRequired: error instanceof AuthRequiredError,
+                httpRejectedBeforeStream,
+                streamStarted,
+                messageSaved: httpStartFailure?.messageSaved,
+                runStatus: httpStartFailure?.runStatus,
+                retryable: httpStartFailure?.retryable,
+            });
             const active = activeStreamRef.current;
-            let recoverableChatId = active?.chatId || streamedChatId || chatId;
+            const startupStatusUnconfirmed = httpStartFailure?.runStatus === "unknown" ||
+                httpStartFailure?.retryable === false;
+            const keepStartupChat = httpStartFailure?.messageSaved === true || startupStatusUnconfirmed;
+            let recoverableChatId = keepStartupChat
+                ? httpStartFailure?.chatId || active?.chatId || streamedChatId || chatId
+                : active?.chatId || streamedChatId || chatId;
+            if (keepStartupChat && recoverableChatId) {
+                if (!projectId && !initialChatId && !adoptedCreatedChatRef.current) {
+                    adoptedCreatedChatRef.current = true;
+                    adoptCreatedChat(`assistant:${recoverableChatId}`);
+                }
+                setChatId(recoverableChatId);
+                setCurrentChatId(recoverableChatId);
+                replaceBrowserUrlForChat(recoverableChatId, projectId);
+            }
             if (
+                !preflightFailure &&
+                !httpRejectedBeforeStream &&
                 terminalStatus === null &&
                 active?.continuingAfterDisconnect === true &&
                 !recoverableChatId
@@ -1379,34 +1451,60 @@ export function useAssistantChat({
                 }
             }
             const continuingRunNeedsPolling =
+                !httpRejectedBeforeStream &&
                 terminalStatus === null &&
                 active?.continuingAfterDisconnect === true &&
                 Boolean(recoverableChatId);
             if (continuingRunNeedsPolling) {
                 backgroundPending = true;
                 active.backgroundPending = true;
-                flushDrip();
-                finalizeStreamingReasoning();
-            } else {
-                stopDrip();
             }
-            const errorMessage = describeChatError(
+            flushDrip();
+            finalizeStreamingReasoning();
+            clearStreamingPlaceholders();
+            const errorMessage = streamFailure?.message ?? describeChatError(
                 error instanceof Error && error.name === "AbortError"
                     ? new Error(
                           "The assistant connection was interrupted before it finished. Retry the request.",
                       )
                     : error,
             );
+            const inferredRetryable = error instanceof Error && (
+                error.name === "AbortError" ||
+                error.name === "AssistantStreamPrematureEofError" ||
+                /failed to fetch|networkerror|timed out/i.test(error.message)
+            );
+            const errorCode = streamFailure?.code ??
+                (error instanceof Error && error.name === "AssistantStreamPrematureEofError"
+                    ? "premature_eof"
+                    : "stream_error");
             setMessages((prev) => {
+                if (preflightFailure) {
+                    return rollbackOptimisticPreflight(
+                        prev,
+                        message,
+                        isMessageAlreadyAdded ? lastMessage : undefined,
+                    );
+                }
                 const last = prev[prev.length - 1];
                 if (last?.role === "assistant") {
                     const updated = [...prev];
                     updated[updated.length - 1] = {
                         ...last,
                         error: errorMessage,
-                        ...(continuingRunNeedsPolling
-                            ? { pending: true }
-                            : {}),
+                        pending: continuingRunNeedsPolling,
+                        startFailureRequestId: httpRejectedBeforeStream
+                            ? httpStartFailure?.requestId ?? undefined
+                            : undefined,
+                        startFailureUnconfirmed: startupStatusUnconfirmed,
+                        assistantRun: httpRejectedBeforeStream ? undefined : {
+                            streamRequestId: streamFailure?.runId ?? serverRunId,
+                            projectId,
+                            status: continuingRunNeedsPolling ? "background_pending" : "failed",
+                            errorCode,
+                            safeMessage: errorMessage,
+                            retryable: streamFailure?.retryable ?? inferredRetryable,
+                        },
                     };
                     return updated;
                 }
@@ -1416,13 +1514,28 @@ export function useAssistantChat({
                         role: "assistant",
                         content: "",
                         error: errorMessage,
+                        pending: continuingRunNeedsPolling,
+                        startFailureRequestId: httpRejectedBeforeStream
+                            ? httpStartFailure?.requestId ?? undefined
+                            : undefined,
+                        startFailureUnconfirmed: startupStatusUnconfirmed,
+                        assistantRun: httpRejectedBeforeStream ? undefined : {
+                            streamRequestId: streamFailure?.runId ?? serverRunId,
+                            projectId,
+                            status: continuingRunNeedsPolling ? "background_pending" : "failed",
+                            errorCode,
+                            safeMessage: errorMessage,
+                            retryable: streamFailure?.retryable ?? inferredRetryable,
+                        },
                     },
                 ];
             });
 
             setIsResponseLoading(false);
             setIsLoadingCitations(false);
-            return null;
+            return preflightFailure
+                ? { kind: "preflight_failed", draft: message, message: errorMessage, requestId: httpStartFailure?.requestId ?? undefined }
+                : { kind: "sent", chatId: recoverableChatId ?? null };
         } finally {
             const r = readerRef.current;
             readerRef.current = null;

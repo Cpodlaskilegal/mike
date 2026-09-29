@@ -12,6 +12,8 @@ import {
 } from "./assistantBackgroundRuns";
 import {
   assistantRuntimeRevision,
+  logAssistantRunSlowOnce,
+  logAssistantRunTerminal,
   shouldContinueAssistantStreamAfterDisconnect,
 } from "./assistantStreamLifecycle";
 import {
@@ -31,10 +33,86 @@ export const ASSISTANT_BACKGROUND_STALE_MS = 30_000;
 export const ASSISTANT_BACKGROUND_RECOVERY_INTERVAL_MS = 10_000;
 export const ASSISTANT_CANCELLATION_HANDLER_GRACE_MS = 5_000;
 
+// Bounded per-process dedupe: another replica may emit the same slow run once,
+// and a run still pending after a day can emit another signal for attention.
+const recoverySlowSignals = new Map<string, number>();
+const RECOVERY_SLOW_SIGNAL_TTL_MS = 24 * 60 * 60 * 1_000;
+const MAX_RECOVERY_SLOW_SIGNALS = 10_000;
+
+function reportRecoveredSlowRun(run: AssistantBackgroundRun, now: number): void {
+  for (const [runId, reportedAt] of recoverySlowSignals) {
+    if (now - reportedAt > RECOVERY_SLOW_SIGNAL_TTL_MS) {
+      recoverySlowSignals.delete(runId);
+    }
+  }
+  const state = { logged: recoverySlowSignals.has(run.streamRequestId) };
+  const reported = logAssistantRunSlowOnce({
+    streamRequestId: run.streamRequestId,
+    traceId: run.traceId,
+    revision: run.revision,
+    gitSha: run.gitSha,
+    route: run.projectId ? "project_chat" : "chat",
+    startedAt: new Date(run.requestStartedAt).getTime(),
+  }, state, run.status, now);
+  if (reported) {
+    recoverySlowSignals.set(run.streamRequestId, now);
+    while (recoverySlowSignals.size > MAX_RECOVERY_SLOW_SIGNALS) {
+      const oldest = recoverySlowSignals.keys().next().value;
+      if (!oldest) break;
+      recoverySlowSignals.delete(oldest);
+    }
+  }
+}
+
 type RetrieveResult = {
   response: Response;
   providerRequestId: string | null;
 };
+
+function logRecoveredTerminalRun(
+  run: AssistantBackgroundRun,
+  terminalSubtype: string,
+  outputChars?: number | null,
+  hasUsableResult?: boolean | null,
+): void {
+  if (
+    run.status !== "completed" &&
+    run.status !== "failed" &&
+    run.status !== "cancelled" &&
+    run.status !== "interrupted"
+  ) {
+    return;
+  }
+  const provider = run.model.startsWith("gpt-")
+    ? "openai"
+    : run.model.startsWith("claude")
+      ? "claude"
+      : run.model.startsWith("gemini")
+        ? "gemini"
+        : "unknown";
+  logAssistantRunTerminal(
+    {
+      streamRequestId: run.streamRequestId,
+      traceId: run.traceId,
+      revision: run.revision,
+      gitSha: run.gitSha,
+      route: run.projectId ? "project_chat" : "chat",
+      startedAt: new Date(run.requestStartedAt).getTime(),
+    },
+    {
+      status: run.status,
+      terminalSubtype,
+      provider,
+      model: run.model,
+      errorCode: run.errorCode,
+      providerRequestId: run.providerRequestId,
+      providerResponseId: run.providerResponseId,
+      providerStatus: run.providerStatus,
+      outputChars,
+      hasUsableResult,
+    },
+  );
+}
 
 export type AssistantBackgroundRecoveryDependencies = {
   db: Db;
@@ -104,7 +182,6 @@ async function finalizeInterrupted(
     {
       errorCode,
       safeErrorMessage: message,
-      revision: assistantRuntimeRevision(),
     },
   );
   if (!claimed) return false;
@@ -118,9 +195,9 @@ async function finalizeInterrupted(
       errorCode,
       safeErrorMessage: message,
       completedAt: new Date(),
-      revision: assistantRuntimeRevision(),
     },
   );
+  if (finalized) logRecoveredTerminalRun(finalized, errorCode, 0);
   return Boolean(finalized);
 }
 
@@ -139,9 +216,9 @@ async function finalizeCancelled(
       errorCode: "explicit_user_cancel",
       safeErrorMessage: message,
       completedAt: new Date(),
-      revision: assistantRuntimeRevision(),
     },
   );
+  if (finalized) logRecoveredTerminalRun(finalized, "explicit_user_cancel", 0);
   return Boolean(finalized);
 }
 
@@ -169,9 +246,7 @@ async function recoverRun(
       deps.db,
       run,
       recoveryOwnerId,
-      {
-        revision: assistantRuntimeRevision(),
-      },
+      {},
     );
     if (!claimed) return false;
     const finalized = await updateAssistantBackgroundRunAsFinalizer(
@@ -184,9 +259,16 @@ async function recoverRun(
           ? { providerStatus: "completed" as const }
           : {}),
         completedAt: new Date(),
-        revision: assistantRuntimeRevision(),
       },
     );
+    if (finalized) {
+      logRecoveredTerminalRun(
+        finalized,
+        terminalStatus === "completed"
+          ? "recovered_finalization"
+          : finalized.errorCode ?? "recovered_finalization",
+      );
+    }
     return Boolean(finalized);
   }
 
@@ -252,7 +334,6 @@ async function recoverRun(
         providerStatus: response.status,
         providerResponseId: response.id,
         providerRequestId,
-        revision: assistantRuntimeRevision(),
       },
     );
     return Boolean(updated);
@@ -310,7 +391,6 @@ async function recoverRun(
       providerRequestId,
       errorCode: null,
       safeErrorMessage: null,
-      revision: assistantRuntimeRevision(),
     },
   );
   if (!claimed) return false;
@@ -329,9 +409,9 @@ async function recoverRun(
         errorCode: null,
         safeErrorMessage: null,
         completedAt: new Date(),
-        revision: assistantRuntimeRevision(),
       },
     );
+    if (finalized) logRecoveredTerminalRun(finalized, "recovered_answer");
     return Boolean(finalized);
   }
   const finalized = await updateAssistantBackgroundRunAsFinalizer(
@@ -346,9 +426,11 @@ async function recoverRun(
       errorCode: null,
       safeErrorMessage: null,
       completedAt: new Date(),
-      revision: assistantRuntimeRevision(),
     },
   );
+  if (finalized) {
+    logRecoveredTerminalRun(finalized, "recovered_answer", text.length, true);
+  }
   return Boolean(finalized);
 }
 
@@ -421,6 +503,7 @@ export async function reconcileStaleAssistantBackgroundRuns(
         // and abort its transport before finalizing the user-visible state.
         continue;
       }
+      reportRecoveredSlowRun(current, now());
       const didRecover = await recoverRun(current, randomUUID(), {
         db: dependencies.db,
         loadOpenAIKey,

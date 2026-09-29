@@ -597,3 +597,88 @@ test("gives the owning handler time to abort a cancellation without a provider I
   assert.equal(runs.get(run.streamRequestId)?.status, "cancel_requested");
   assert.equal(messages.get(run.assistantMessageId)?.content, null);
 });
+
+test("recovery emits one slow signal for an aged pending run after its route worker is gone", async () => {
+  const now = Date.now() + 100_000;
+  const run = makeRun({
+    streamRequestId: "019f7170-9f04-72c1-8364-45f504ca2159",
+    requestStartedAt: new Date(now - 660_000).toISOString(),
+    updatedAt: new Date(now - 60_000).toISOString(),
+  });
+  const { db } = createFakeDb(run);
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  try {
+    const dependencies: AssistantBackgroundRecoveryDependencies = {
+      db,
+      now: () => now,
+      listRuns: async () => [run],
+      loadOpenAIKey: async () => "test-openai-key",
+      retrieve: async () => ({
+        response: {
+          id: "resp_original",
+          model: "gpt-5.6-sol",
+          status: "in_progress",
+          output: [],
+        } as unknown as OpenAIResponse,
+        providerRequestId: "req_poll",
+      }),
+      cancel: async () => assert.fail("pending recovery must not cancel"),
+    };
+    await reconcileStaleAssistantBackgroundRuns(dependencies);
+    await reconcileStaleAssistantBackgroundRuns(dependencies);
+    const slow = lines.map((line) => JSON.parse(line))
+      .filter((record) => record.event === "assistant_run_slow");
+    assert.equal(slow.length, 1);
+    assert.equal(slow[0].run_id, run.streamRequestId);
+    assert.equal(slow[0].revision, run.revision);
+    assert.ok(slow[0].elapsed_ms >= 660_000);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("recovery emits one slow signal while Standard cancellation remains pending", async () => {
+  const now = Date.now() + 100_000;
+  const run = makeRun({
+    streamRequestId: "019f7170-9f04-72c1-8364-45f504ca2160",
+    status: "cancel_requested",
+    reasoningMode: "standard",
+    reasoningEffort: "medium",
+    requestStartedAt: new Date(now - 660_000).toISOString(),
+    updatedAt: new Date(now - 60_000).toISOString(),
+  });
+  const { db, runs } = createFakeDb(run);
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  try {
+    const dependencies: AssistantBackgroundRecoveryDependencies = {
+      db,
+      now: () => now,
+      listRuns: async () => [run],
+      loadOpenAIKey: async () => "test-openai-key",
+      retrieve: async () => ({
+        response: {
+          id: "resp_original",
+          model: "gpt-5.6-sol",
+          status: "in_progress",
+          output: [],
+        } as unknown as OpenAIResponse,
+        providerRequestId: "req_poll",
+      }),
+      cancel: async () => assert.fail("Standard run cannot use background cancellation"),
+    };
+    await reconcileStaleAssistantBackgroundRuns(dependencies);
+    await reconcileStaleAssistantBackgroundRuns(dependencies);
+    const slow = lines.map((line) => JSON.parse(line))
+      .filter((record) => record.event === "assistant_run_slow");
+    assert.equal(slow.length, 1);
+    assert.equal(slow[0].status, "cancel_requested");
+    assert.equal(slow[0].run_id, run.streamRequestId);
+    assert.equal(runs.get(run.streamRequestId)?.status, "cancel_requested");
+  } finally {
+    console.log = originalLog;
+  }
+});

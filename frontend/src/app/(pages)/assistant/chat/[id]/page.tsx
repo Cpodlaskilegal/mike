@@ -6,6 +6,8 @@ import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { ChatView } from "@/app/components/assistant/ChatView";
 import { getChat } from "@/app/lib/docketApi";
+import { preflightDraftFromResult } from "@/app/lib/assistantRecovery";
+import type { DocketMessage } from "@/app/components/shared/types";
 
 export default function AssistantChatPage() {
     const router = useRouter();
@@ -16,6 +18,7 @@ export default function AssistantChatPage() {
         useChatHistoryContext();
 
     const [initialMessages] = useState(() => newChatMessages ?? []);
+    const [preflightDraft, setPreflightDraft] = useState<DocketMessage | null>(null);
     const {
         messages,
         isResponseLoading,
@@ -63,7 +66,10 @@ export default function AssistantChatPage() {
             hasAutoSent.current = true;
             // Keep the pending launch until generation settings are ready.
             setNewChatMessages(null);
-            void handleChat(newChatMessages[0]);
+            const launchMessage = newChatMessages[0];
+            void handleChat(launchMessage).then((result) => {
+                setPreflightDraft(preflightDraftFromResult(result, launchMessage));
+            });
         }
     }, [newChatMessages, messages.length, isResponseLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -73,6 +79,7 @@ export default function AssistantChatPage() {
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
             onAskInputsSubmit={submitAskInputs}
+            recoveryDraft={preflightDraft}
             cancel={cancel}
         />
     );
