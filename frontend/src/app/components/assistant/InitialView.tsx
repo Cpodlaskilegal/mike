@@ -7,15 +7,17 @@ import { DocketIcon } from "@/components/chat/docket-icon";
 import { ChatInput } from "./ChatInput";
 import { SelectAssistantProjectModal } from "./SelectAssistantProjectModal";
 import type { DocketMessage } from "../shared/types";
+import type { AssistantSubmissionResult } from "@/app/lib/assistantRecovery";
 
 interface InitialViewProps {
-    onSubmit: (message: DocketMessage) => void;
+    onSubmit: (message: DocketMessage) => Promise<AssistantSubmissionResult> | void;
+    recoveryDraft?: DocketMessage | null;
 }
 
 const ICON_SIZE = 35;
 const GAP = 16; // gap-4 = 1rem = 16px
 
-export function InitialView({ onSubmit }: InitialViewProps) {
+export function InitialView({ onSubmit, recoveryDraft }: InitialViewProps) {
     const { user } = useAuth();
     const { profile } = useUserProfile();
     const [loaded, setLoaded] = useState(false);
@@ -79,6 +81,7 @@ export function InitialView({ onSubmit }: InitialViewProps) {
                         onSubmit={onSubmit}
                         onCancel={() => {}}
                         isLoading={false}
+                        recoveryDraft={recoveryDraft}
                         onProjectsClick={() => setProjectModalOpen(true)}
                     />
 

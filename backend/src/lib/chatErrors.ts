@@ -8,6 +8,8 @@ export type ChatStreamErrorCode =
     | "network"
     | "timeout"
     | "tool_failed"
+    | "tool_iteration_limit"
+    | "empty_response"
     | "incomplete_response"
     | "unknown";
 
@@ -16,7 +18,47 @@ export type ChatStreamErrorPayload = {
     message: string;
     code: ChatStreamErrorCode;
     retryable: boolean;
+    runId?: string;
 };
+
+function unwrapStreamFailure(err: unknown): unknown {
+    if (
+        err &&
+        typeof err === "object" &&
+        (err as { name?: unknown }).name === "ASSISTANT_STREAM_FAILURE" &&
+        "originalError" in err
+    ) {
+        return (err as { originalError: unknown }).originalError;
+    }
+    return err;
+}
+
+export function appendAssistantFailureMarker<T extends { type: string }>(
+    events: T[],
+    error: ChatStreamErrorPayload,
+): (T | { type: "content"; text: string })[] {
+    const marker = `This response is incomplete. ${error.message}`;
+    if (events.some((event) => {
+        const text = (event as { text?: unknown }).text;
+        return event.type === "content" &&
+            typeof text === "string" && text.trimStart() === marker;
+    })) return [...events];
+    const visibleText = events
+        .filter((event) => event.type === "content")
+        .map((event) => (event as { text?: unknown }).text)
+        .filter((text): text is string => typeof text === "string")
+        .join("");
+    const separator = !visibleText || visibleText.endsWith("\n\n")
+        ? ""
+        : visibleText.endsWith("\n") ? "\n" : "\n\n";
+    return [...events, { type: "content", text: `${separator}${marker}` }];
+}
+
+export function isRetryableChatStreamErrorCode(code: string | null): boolean {
+    return code !== "cancelled" && code !== "explicit_user_cancel" &&
+        code !== "missing_api_key" && code !== "model_unavailable" &&
+        code !== "request_too_large";
+}
 
 function errorStatus(err: unknown): number | null {
     if (!err || typeof err !== "object") return null;
@@ -70,6 +112,7 @@ function structuredErrorType(err: unknown): string | null {
 }
 
 export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
+    err = unwrapStreamFailure(err);
     const status = errorStatus(err);
     const text = errorText(err);
     const lower = text.toLowerCase();
@@ -107,7 +150,7 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     ) {
         return {
             type: "error",
-            code: "incomplete_response",
+            code: "tool_iteration_limit",
             retryable: true,
             message:
                 "Docket reached its research-step limit before writing the final answer. Retry the request.",
@@ -120,7 +163,7 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     ) {
         return {
             type: "error",
-            code: "incomplete_response",
+            code: "empty_response",
             retryable: true,
             message:
                 "Docket did not produce a visible final answer. Retry the request.",
@@ -249,6 +292,9 @@ export function toChatStreamError(err: unknown): ChatStreamErrorPayload {
     };
 }
 
-export function chatStreamErrorLine(err: unknown): string {
-    return `data: ${JSON.stringify(toChatStreamError(err))}\n\n`;
+export function chatStreamErrorLine(
+    err: unknown,
+    metadata: { runId?: string } = {},
+): string {
+    return `data: ${JSON.stringify({ ...toChatStreamError(err), ...metadata })}\n\n`;
 }

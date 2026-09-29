@@ -6,6 +6,8 @@ import {
   buildProjectDocContext,
   buildMessages,
   buildWorkflowStore,
+  AssistantStreamFailureError,
+  buildAssistantFailurePayload,
   enrichWithPriorEvents,
   extractAnnotations,
   latestUserMessageHasOwnMailboxIntent,
@@ -27,10 +29,13 @@ import { getUserModelSettings } from "../lib/userSettings";
 import { getEffectiveCustomInstructions } from "../lib/userInstructions";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine, toChatStreamError } from "../lib/chatErrors";
+import { assistantStartupFailureResponse, assistantStartupPlaceholderAnnotations, classifyAssistantRunCreateError, clearAssistantStartupAnnotations, persistAssistantUserMessage, recordAssistantStartupFailure } from "../lib/assistantRunPresentation";
 import { safeErrorLog } from "../lib/safeError";
 import {
   assertAssistantCompletionOutcome,
+  hasAssistantCompletionOutcome,
   consumeAskInputsResponse,
+  previewAskInputsResponse,
   createCitationSseBridge,
   extractRichCitations,
   parseAskInputsResponsePayload,
@@ -39,10 +44,15 @@ import {
   assistantStreamAbortCause,
   assistantStreamTerminalEvent,
   isAssistantStreamRequestId,
+  logAssistantRunStartFailure,
+  logAssistantRunStartUncertain,
+  logAssistantRunSlowOnce,
   logAssistantStreamLifecycle,
+  logAssistantRunTerminal,
   PRO_BACKGROUND_CUTOFF_MS,
   registerAssistantStream,
   requestAssistantStreamCancellation,
+  runAssistantStartupStep,
   shouldContinueAssistantStreamAfterDisconnect,
   unregisterAssistantStream,
 } from "../lib/assistantStreamLifecycle";
@@ -442,44 +452,23 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
 
   let streamMessages = messages;
   let isAskInputsContinuation = false;
+  let previewedAskInputsContent: string | null = null;
   if (parsedAskInputsResponse.response) {
-    const consumed = await consumeAskInputsResponse(db, {
+    const preview = await previewAskInputsResponse(db, {
       chatId,
       submittedByUserId: userId,
       response: parsedAskInputsResponse.response,
     });
-    if (!consumed.ok) {
-      return void res.status(consumed.status).json({ detail: consumed.detail });
+    if (!preview.ok) {
+      return void res.status(preview.status).json({ detail: preview.detail });
     }
-    streamMessages = replaceLatestUserMessage(messages, consumed.content);
+    previewedAskInputsContent = preview.content;
+    streamMessages = replaceLatestUserMessage(messages, preview.content);
     isAskInputsContinuation = true;
   }
 
-  const lastUser = [...streamMessages].reverse().find((m) => m.role === "user");
-  if (lastUser) {
-    await db.from("chat_messages").insert({
-      chat_id: chatId,
-      role: "user",
-      content: lastUser.content,
-      files: lastUser.files ?? null,
-      workflow: lastUser.workflow ?? null,
-    });
-  }
-
-  const { data: assistantPlaceholder } = await db
-    .from("chat_messages")
-    .insert({
-      chat_id: chatId,
-      role: "assistant",
-      content: null,
-      annotations: null,
-      citations: null,
-    })
-    .select("id")
-    .maybeSingle();
-  const assistantMessageId =
-    (assistantPlaceholder as { id?: string } | null)?.id ?? null;
-
+  // Reserve the final run ID and trace before the user row is written so its
+  // durable startup marker cannot drift on an active-ID collision.
   const streamAbort = new AbortController();
   const streamLifecycle = registerAssistantStream({
     requestedStreamId: requestedStreamId ?? null,
@@ -490,6 +479,58 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     controller: streamAbort,
     startedAt: requestStartedAt,
   });
+  const startDiagnostic = streamLifecycle;
+
+  const lastUser = [...streamMessages].reverse().find((m) => m.role === "user");
+  let userMessageId: string | null = null;
+  if (lastUser) {
+    try {
+      userMessageId = await runAssistantStartupStep(startDiagnostic, "prompt_persist", () =>
+        persistAssistantUserMessage(db, chatId, lastUser, startDiagnostic));
+    } catch (error) {
+      unregisterAssistantStream(streamLifecycle);
+      console.error("[project-chat/stream] failed to save submitted message", safeErrorLog(error));
+      return void res.status(500).json(assistantStartupFailureResponse(
+        startDiagnostic, chatId, false, "Failed to save submitted message",
+      ));
+    }
+  }
+
+  let assistantMessageId: string;
+  try {
+    assistantMessageId = await runAssistantStartupStep(startDiagnostic, "placeholder_create", async () => {
+      const { data: assistantPlaceholder, error } = await db
+        .from("chat_messages")
+        .insert({
+          chat_id: chatId,
+          role: "assistant",
+          content: null,
+          annotations: assistantStartupPlaceholderAnnotations(startDiagnostic),
+          citations: null,
+        })
+        .select("id")
+        .maybeSingle();
+      const id = (assistantPlaceholder as { id?: string } | null)?.id;
+      if (error || !id) throw new Error("Failed to create assistant response placeholder");
+      return id;
+    });
+  } catch (error) {
+    unregisterAssistantStream(streamLifecycle);
+    console.error("[project-chat/stream] failed to create assistant placeholder", safeErrorLog(error));
+    if (userMessageId) {
+      try {
+        await recordAssistantStartupFailure(db, chatId, userMessageId,
+          startDiagnostic, "placeholder_create");
+      } catch (markerError) {
+        console.error("[project-chat/stream] failed to record startup failure", safeErrorLog(markerError));
+      }
+    }
+    return void res.status(500).json(assistantStartupFailureResponse(
+      startDiagnostic, chatId, Boolean(lastUser),
+      "Failed to create the assistant response placeholder",
+    ));
+  }
+
   const backgroundRunEnabled = shouldContinueAssistantStreamAfterDisconnect(
     mainModelRequest.reasoningMode,
     mainModelRequest.reasoningEffort,
@@ -551,14 +592,43 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     backgroundRunUpdateQueue = operation.catch(() => undefined);
     return operation;
   };
-
-  if (runPersistenceEnabled) {
-    if (!assistantMessageId) {
-      unregisterAssistantStream(streamLifecycle);
-      return void res.status(500).json({
-        detail: "Failed to create the assistant response placeholder",
+  const logCommittedTerminal = async (
+    status: "completed" | "failed" | "interrupted",
+    terminalSubtype: string,
+    outputChars: number,
+    errorCode: string | null = null,
+    hasUsableResult?: boolean,
+  ): Promise<void> => {
+    try {
+      const persisted = await getAssistantBackgroundRunById(
+        db,
+        streamLifecycle.streamRequestId,
+      );
+      if (
+        persisted?.status !== status ||
+        persisted.finalizationOwner !== streamLifecycle.traceId
+      ) return;
+      logAssistantRunTerminal(streamLifecycle, {
+        status,
+        terminalSubtype,
+        provider: mainModelRequest.provider,
+        model: mainModelRequest.providerModel,
+        errorCode,
+        providerRequestId: persisted.providerRequestId,
+        providerResponseId: persisted.providerResponseId,
+        outputChars,
+        hasUsableResult,
+      });
+    } catch (error) {
+      console.error("[project-chat/stream] failed to log terminal run", {
+        run_id: streamLifecycle.streamRequestId,
+        trace_id: streamLifecycle.traceId,
+        error: safeErrorLog(error),
       });
     }
+  };
+
+  if (runPersistenceEnabled) {
     try {
       await createAssistantBackgroundRun(db, {
         streamRequestId: streamLifecycle.streamRequestId,
@@ -571,29 +641,82 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         reasoningEffort: mainModelRequest.reasoningEffort,
         traceId: streamLifecycle.traceId,
         revision: streamLifecycle.revision,
+        gitSha: streamLifecycle.gitSha,
         requestStartedAt: new Date(requestStartedAt),
       });
     } catch (error) {
-      unregisterAssistantStream(streamLifecycle);
-      await db
-        .from("chat_messages")
-        .update({
-          content: [
-            {
-              type: "content",
-              text: "Docket could not start this extended response. Please retry.",
-            },
-          ],
-        })
-        .eq("id", assistantMessageId);
-      console.error(
-        "[project-chat/stream] failed to create background run",
-        safeErrorLog(error),
+      const outcome = await classifyAssistantRunCreateError(
+        () => getAssistantBackgroundRunById(db, streamLifecycle.streamRequestId),
+        {
+          streamRequestId: streamLifecycle.streamRequestId,
+          assistantMessageId,
+          chatId,
+          userId,
+          traceId: streamLifecycle.traceId,
+        },
       );
-      return void res.status(500).json({
-        detail: "Failed to start the extended assistant response",
-      });
+      if (outcome === "committed") {
+        console.warn("[project-chat/stream] run creation acknowledgement lost", {
+          run_id: streamLifecycle.streamRequestId,
+          trace_id: streamLifecycle.traceId,
+        });
+      } else if (outcome === "unknown") {
+        unregisterAssistantStream(streamLifecycle);
+        logAssistantRunStartUncertain(streamLifecycle, "run_create");
+        console.error("[project-chat/stream] run creation status unconfirmed", {
+          run_id: streamLifecycle.streamRequestId,
+          trace_id: streamLifecycle.traceId,
+          error: safeErrorLog(error),
+        });
+        return void res.status(503).json({
+          ...assistantStartupFailureResponse(streamLifecycle, chatId, Boolean(lastUser),
+            "Docket could not confirm whether this response started. Do not resubmit it yet."),
+          run_status: "unknown",
+          retryable: false,
+        });
+      } else {
+        logAssistantRunStartFailure(streamLifecycle, "run_create");
+        unregisterAssistantStream(streamLifecycle);
+        if (userMessageId) {
+          try {
+            await recordAssistantStartupFailure(db, chatId, userMessageId,
+              startDiagnostic, "run_create");
+          } catch (markerError) {
+            console.error("[project-chat/stream] failed to record startup failure", safeErrorLog(markerError));
+          }
+        }
+        try {
+          await db
+            .from("chat_messages")
+            .update({
+              content: [
+                {
+                  type: "content",
+                  text: "Docket could not start this extended response. Please retry.",
+                },
+              ],
+            })
+            .eq("id", assistantMessageId);
+        } catch (saveError) {
+          console.error("[project-chat/stream] failed to save startup failure", safeErrorLog(saveError));
+        }
+        console.error(
+          "[project-chat/stream] failed to create background run",
+          safeErrorLog(error),
+        );
+        return void res.status(500).json(assistantStartupFailureResponse(
+          streamLifecycle, chatId, Boolean(lastUser),
+          "Failed to start the extended assistant response",
+        ));
+      }
     }
+  }
+
+  try {
+    await clearAssistantStartupAnnotations(db, chatId, userMessageId, assistantMessageId);
+  } catch (error) {
+    // The durable run suppresses any stale startup marker on chat reload.
+    console.error("[project-chat/stream] failed to clear startup marker", safeErrorLog(error));
   }
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -648,6 +771,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
   let backgroundMonitorTimer: NodeJS.Timeout | null = null;
   let backgroundMonitorInFlight = false;
   let backgroundMonitorTicks = 0;
+  const slowRunDiagnostic = { logged: false };
   let recoveryTakeoverDetected = false;
   const clearBackgroundMonitor = () => {
     if (!backgroundMonitorTimer) return;
@@ -706,6 +830,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
           if (!streamAbort.signal.aborted) streamAbort.abort();
           return;
         }
+        logAssistantRunSlowOnce(streamLifecycle, slowRunDiagnostic, persisted.status);
         backgroundMonitorTicks += 1;
         if (backgroundMonitorTicks % 5 === 0) {
           if (persisted.status === "finalizing") {
@@ -775,6 +900,16 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         continuingAfterDisconnect: backgroundRunEnabled,
       })}\n\n`,
     );
+    if (parsedAskInputsResponse.response) {
+      const consumed = await consumeAskInputsResponse(db, {
+        chatId,
+        submittedByUserId: userId,
+        response: parsedAskInputsResponse.response,
+      });
+      if (!consumed.ok || consumed.content !== previewedAskInputsContent) {
+        throw new Error("Ask Inputs response could not be committed before assistant work");
+      }
+    }
     if (backgroundRunEnabled) {
       const remaining = Math.max(
         0,
@@ -923,7 +1058,11 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       ownMailboxIntent,
     });
     throwIfAborted(streamAbort.signal);
-    assertAssistantCompletionOutcome(events);
+    try {
+      assertAssistantCompletionOutcome(events);
+    } catch (error) {
+      throw new AssistantStreamFailureError(error, fullText, events);
+    }
     if (runPersistenceEnabled) {
       await claimBackgroundRunFinalization({
         providerStatus: "completed",
@@ -990,6 +1129,10 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
           safeErrorMessage: null,
           completedAt: new Date(),
         });
+        await logCommittedTerminal(
+          "completed", "answer", fullText.length, null,
+          hasAssistantCompletionOutcome(events),
+        );
       } catch (error) {
         const current = await getAssistantBackgroundRunById(
           db,
@@ -1178,6 +1321,12 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
               "The extended response was interrupted before it finished.",
             completedAt: new Date(),
           });
+          await logCommittedTerminal(
+            "interrupted",
+            cause,
+            err instanceof AssistantStreamAbortError ? err.fullText.length : 0,
+            cause,
+          );
         } catch (persistError) {
           console.error(
             "[project-chat/stream] failed to finalize interrupted run",
@@ -1200,6 +1349,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
               type: "error",
               code: "connection_interrupted",
               retryable: true,
+              runId: streamLifecycle.streamRequestId,
               message:
                 "The assistant stream was interrupted before it finished.",
             })}\n\n`,
@@ -1215,6 +1365,10 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
               {
                 retryable: cause !== "explicit_user_cancel",
                 cancelling: cause === "explicit_user_cancel",
+                code: cause,
+                message: cause === "explicit_user_cancel"
+                  ? "Cancellation requested. Docket is confirming provider shutdown."
+                  : "The assistant stream was interrupted before it finished.",
               },
             ),
           )}\n\n`,
@@ -1223,8 +1377,18 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       }
       return;
     }
-    console.error("[project-chat/stream] error:", safeErrorLog(err));
+    console.error("[project-chat/stream] error:", {
+      run_id: streamLifecycle.streamRequestId,
+      trace_id: streamLifecycle.traceId,
+      revision: streamLifecycle.revision,
+      error: safeErrorLog(err instanceof AssistantStreamFailureError ? err.originalError : err),
+    });
     const streamError = toChatStreamError(err);
+    const failurePayload = buildAssistantFailurePayload(
+      err instanceof AssistantStreamFailureError ? err : null,
+      streamError,
+      streamDocIndex,
+    );
     let failureClaimed = false;
     let cancellationWonFailureRace = false;
     if (runPersistenceEnabled) {
@@ -1275,14 +1439,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       const { data: savedMessage, error: saveError } = await db
         .from("chat_messages")
         .update({
-          content: [
-            {
-              type: "content",
-              text: "The assistant failed before it could finish.",
-            },
-          ],
-          annotations: null,
-          citations: null,
+          ...failurePayload,
         })
         .eq("id", assistantMessageId)
         .is("content", null)
@@ -1306,6 +1463,12 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
           safeErrorMessage: streamError.message,
           completedAt: new Date(),
         });
+        await logCommittedTerminal(
+          "failed",
+          streamError.code,
+          err instanceof AssistantStreamFailureError ? err.fullText.length : 0,
+          streamError.code,
+        );
       } catch (persistError) {
         console.error(
           "[project-chat/stream] failed to finalize background failure",
@@ -1324,7 +1487,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             })}\n\n`,
           );
         } else {
-          write(chatStreamErrorLine(err));
+          write(chatStreamErrorLine(err, { runId: streamLifecycle.streamRequestId }));
         }
         write(
           `data: ${JSON.stringify(
@@ -1332,7 +1495,11 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
               streamLifecycle,
               cancellationWonFailureRace ? "cancellation_pending" : "error",
               {
-                retryable: !cancellationWonFailureRace,
+                code: cancellationWonFailureRace ? "cancelled" : streamError.code,
+                message: cancellationWonFailureRace
+                  ? "Cancellation requested. Docket is confirming provider shutdown."
+                  : streamError.message,
+                retryable: !cancellationWonFailureRace && streamError.retryable,
                 cancelling: cancellationWonFailureRace,
               },
             ),

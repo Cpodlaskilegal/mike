@@ -40,3 +40,25 @@ export function parseAssistantStreamTerminalStatus(
     ? value
     : null;
 }
+
+export interface AssistantStreamFailure {
+  runId?: string;
+  code: string;
+  retryable: boolean;
+  message: string;
+}
+
+export function parseAssistantStreamFailure(
+  value: Record<string, unknown>,
+): AssistantStreamFailure {
+  return {
+    ...(typeof value.runId === "string" && value.runId.trim()
+      ? { runId: value.runId }
+      : {}),
+    code: typeof value.code === "string" && value.code.trim()
+      ? value.code : "stream_error",
+    retryable: value.retryable === true,
+    message: typeof value.message === "string" && value.message.trim()
+      ? value.message : "The assistant failed before it could finish.",
+  };
+}

@@ -289,6 +289,11 @@ export interface DocketMessage {
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
+  /** Transient startup diagnostic ID; no durable assistant run exists yet. */
+  startFailureRequestId?: string;
+  startFailureErrorCode?: string;
+  /** Startup commit may have succeeded; disable recovery until status is confirmed. */
+  startFailureUnconfirmed?: boolean;
   /** True when the backend has created the assistant row but is still streaming. */
   pending?: boolean;
   /** Durable run metadata used to restore Stop after navigation or reload. */
@@ -301,12 +306,22 @@ export type DocketAssistantRunStatus =
   | "in_progress"
   | "background_pending"
   | "cancel_requested"
-  | "running_tools";
+  | "running_tools"
+  | "finalizing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
 
 export interface DocketAssistantRun {
   streamRequestId: string;
   projectId?: string;
   status: DocketAssistantRunStatus;
+  errorCode?: string | null;
+  safeMessage?: string | null;
+  retryable?: boolean;
+  traceId?: string;
+  revision?: string;
 }
 
 export interface CitationQuote {

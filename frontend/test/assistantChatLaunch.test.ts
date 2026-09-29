@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { preflightDraftFromResult } from "../src/app/lib/assistantRecovery";
 import { buildWorkflowLaunchMessage } from "../src/app/lib/workflowLaunch";
 
 const source = readFileSync(
@@ -62,7 +63,12 @@ test("workflow launch survives delayed session readiness and is sent exactly onc
         hasAutoSent,
         isResponseLoading: true,
         setNewChatMessages,
-        handleChat: (value: unknown) => { sent.push(value); },
+        setPreflightDraft: () => {},
+        preflightDraftFromResult: () => null,
+        handleChat: (value: unknown) => {
+            sent.push(value);
+            return Promise.resolve({ kind: "sent", chatId: "chat-1" });
+        },
     };
     pageEffectContaining("handleChat(", scope);
     assert.deepEqual(sent, []);
@@ -77,4 +83,25 @@ test("workflow launch survives delayed session readiness and is sent exactly onc
     // Even an effect replay with the previous context snapshot cannot resend it.
     pageEffectContaining("handleChat(", { ...scope, isResponseLoading: false });
     assert.deepEqual(sent, [message]);
+});
+
+test("a first-turn preflight rejection hands the original prompt and inputs to the mounted chat composer", async () => {
+    const message = buildWorkflowLaunchMessage(
+        { id: "builtin-legal-research", title: "Research a Legal Question" },
+        "Research the uploaded authorities.",
+        [{ filename: "Opinion.pdf", document_id: "source-123" }],
+    );
+    let recovered: unknown = null;
+    pageEffectContaining("handleChat(", {
+        newChatMessages: [message],
+        messages: [message],
+        hasAutoSent: { current: false },
+        isResponseLoading: false,
+        setNewChatMessages: () => {},
+        handleChat: async () => ({ kind: "preflight_failed" }),
+        setPreflightDraft: (draft: unknown) => { recovered = draft; },
+        preflightDraftFromResult,
+    });
+    await Promise.resolve();
+    assert.deepEqual(recovered, message);
 });

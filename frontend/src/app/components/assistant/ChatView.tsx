@@ -5,6 +5,15 @@ import { ArrowDown } from "lucide-react";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ChatInput } from "./ChatInput";
+import type { ChatInputHandle } from "./ChatInput";
+import { AssistantRecoveryActions } from "./AssistantRecoveryActions";
+import {
+    askInputsElementId,
+    buildContinuationDraft,
+    findRecoveryContext,
+    shouldOfferContinue,
+    type AssistantSubmissionResult,
+} from "@/app/lib/assistantRecovery";
 import {
     AssistantSidePanel,
     type AssistantSidePanelTab,
@@ -23,13 +32,14 @@ import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 interface Props {
     messages: DocketMessage[];
     isResponseLoading: boolean;
-    handleChat: (message: DocketMessage) => Promise<string | null>;
+    handleChat: (message: DocketMessage) => Promise<AssistantSubmissionResult>;
     onAskInputsSubmit?: (
         response: DocketAskInputsResponse,
         content: string,
         files: { filename: string; document_id: string }[],
     ) => void;
     projectId?: string;
+    recoveryDraft?: DocketMessage | null;
     cancel: () => void;
 }
 
@@ -39,9 +49,11 @@ export function ChatView({
     handleChat,
     onAskInputsSubmit,
     projectId,
+    recoveryDraft,
     cancel,
 }: Props) {
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
+    const chatInputHandleRef = useRef<ChatInputHandle | null>(null);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
     const [panelMounted, setPanelMounted] = useState(false);
     const [panelVisible, setPanelVisible] = useState(false);
@@ -77,7 +89,7 @@ export function ChatView({
             setPanelMounted(false);
             setSidebarOpen(true);
         }, 300);
-    }, [setSidebarOpen]);
+    }, [setSidebarOpen, setActiveTabId]);
 
     const closeTab = useCallback(
         (id: string) => {
@@ -100,7 +112,7 @@ export function ChatView({
                 return next;
             });
         },
-        [activeTabId, setSidebarOpen],
+        [activeTabId, setSidebarOpen, setActiveTabId],
     );
 
     /** One tab per document or CourtListener cluster. */
@@ -142,7 +154,7 @@ export function ChatView({
             setActiveTabId(tab.id);
             showPanel();
         },
-        [showPanel],
+        [showPanel, setActiveTabId],
     );
 
     /**
@@ -541,6 +553,7 @@ export function ChatView({
                                                 workflow={msg.workflow}
                                             />
                                         ) : (
+                                            <>
                                             <AssistantMessage
                                                 content={msg.content ?? ""}
                                                 events={msg.events}
@@ -594,6 +607,42 @@ export function ChatView({
                                                     resolvedEditStatuses
                                                 }
                                             />
+                                            {msg.error && !msg.pending && (
+                                                <AssistantRecoveryActions
+                                                    runId={msg.assistantRun?.streamRequestId}
+                                                    requestId={msg.startFailureRequestId}
+                                                    errorCode={msg.assistantRun?.errorCode ?? msg.startFailureErrorCode}
+                                                    startupSaved={!!msg.startFailureRequestId}
+                                                    statusUnconfirmed={msg.startFailureUnconfirmed}
+                                                    canContinue={
+                                                        !msg.startFailureUnconfirmed &&
+                                                        !isResponseLoading &&
+                                                        (msg.startFailureRequestId
+                                                            ? !findRecoveryContext(messages, i)?.isAskInputsResponse
+                                                            : shouldOfferContinue(msg)) &&
+                                                        !!findRecoveryContext(messages, i)
+                                                    }
+                                                    canRestore={!!findRecoveryContext(messages, i)}
+                                                    showRestore={!!msg.startFailureRequestId && !msg.startFailureUnconfirmed && !findRecoveryContext(messages, i)?.isAskInputsResponse}
+                                                    onRetryInputs={msg.startFailureRequestId && !msg.startFailureUnconfirmed && findRecoveryContext(messages, i)?.isAskInputsResponse
+                                                        ? () => {
+                                                            const requestId = findRecoveryContext(messages, i)?.askInputsRequestId;
+                                                            if (requestId) document.getElementById(askInputsElementId(requestId))?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                                        }
+                                                        : undefined}
+                                                    onContinue={() => {
+                                                        const context = findRecoveryContext(messages, i);
+                                                        if (context) chatInputHandleRef.current?.restoreDraft(buildContinuationDraft(context));
+                                                    }}
+                                                    onRestore={() => {
+                                                        const context = findRecoveryContext(messages, i);
+                                                        if (msg.startFailureRequestId && !msg.startFailureUnconfirmed && context && !context.isAskInputsResponse) {
+                                                            chatInputHandleRef.current?.restoreDraft(context.latestUser);
+                                                        }
+                                                    }}
+                                                />
+                                            )}
+                                            </>
                                         )}
                                     </div>
                                 ));
@@ -626,9 +675,11 @@ export function ChatView({
                     <div className="w-full max-w-4xl mx-auto px-4 md:px-6">
                         <div className="w-full rounded-t-[20px] bg-white">
                             <ChatInput
+                                ref={chatInputHandleRef}
                                 onSubmit={handleChat}
                                 onCancel={cancel}
                                 isLoading={isResponseLoading}
+                                recoveryDraft={recoveryDraft}
                             />
                             <div className="py-3 text-center">
                                 <p className="text-xs text-gray-500">

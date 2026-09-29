@@ -43,6 +43,15 @@ import {
 } from "@/app/components/assistant/CaseLawPanel";
 import { ChatInput } from "@/app/components/assistant/ChatInput";
 import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
+import { AssistantRecoveryActions } from "@/app/components/assistant/AssistantRecoveryActions";
+import {
+    askInputsElementId,
+    buildContinuationDraft,
+    findRecoveryContext,
+    preflightDraftFromResult,
+    shouldOfferContinue,
+    withDisplayedDocument,
+} from "@/app/lib/assistantRecovery";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
 import { DocView } from "@/app/components/shared/DocView";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
@@ -261,6 +270,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         saveChat,
     } = useChatHistoryContext();
     const [initialMessages] = useState<DocketMessage[]>(newChatMessages ?? []);
+    const [preflightDraft, setPreflightDraft] = useState<DocketMessage | null>(null);
     const {
         messages,
         isResponseLoading,
@@ -368,7 +378,15 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         ) {
             hasAutoSent.current = true;
             setNewChatMessages(null);
-            void handleChat(newChatMessages[0]);
+            const launchMessage = withDisplayedDocument(
+                newChatMessages[0],
+                activeTab
+                    ? { filename: activeTab.filename, documentId: activeTab.documentId }
+                    : null,
+            );
+            void handleChat(launchMessage).then((result) => {
+                setPreflightDraft(preflightDraftFromResult(result, launchMessage));
+            });
         }
     }, [newChatMessages, messages.length, isResponseLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1244,9 +1262,11 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             <UserMessage
                                                 content={msg.content ?? ""}
                                                 files={msg.files}
+                                                workflow={msg.workflow}
                                             />
                                         </div>
                                     ) : (
+                                        <>
                                         <AssistantMessage
                                             key={i}
                                             content={msg.content ?? ""}
@@ -1256,6 +1276,11 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                                 isResponseLoading
                                             }
                                             isError={!!msg.error}
+                                            errorMessage={
+                                                typeof msg.error === "string"
+                                                    ? msg.error
+                                                    : undefined
+                                            }
                                             annotations={msg.annotations}
                                             citations={msg.citations}
                                             onCitationClick={
@@ -1283,6 +1308,42 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                                 reloadingDocIds.has(docId)
                                             }
                                         />
+                                        {msg.error && !msg.pending && (
+                                            <AssistantRecoveryActions
+                                                runId={msg.assistantRun?.streamRequestId}
+                                                requestId={msg.startFailureRequestId}
+                                                errorCode={msg.assistantRun?.errorCode ?? msg.startFailureErrorCode}
+                                                startupSaved={!!msg.startFailureRequestId}
+                                                statusUnconfirmed={msg.startFailureUnconfirmed}
+                                                canContinue={
+                                                    !msg.startFailureUnconfirmed &&
+                                                    !isResponseLoading &&
+                                                    (msg.startFailureRequestId
+                                                        ? !findRecoveryContext(messages, i)?.isAskInputsResponse
+                                                        : shouldOfferContinue(msg)) &&
+                                                    !!findRecoveryContext(messages, i)
+                                                }
+                                                canRestore={!!findRecoveryContext(messages, i)}
+                                                showRestore={!!msg.startFailureRequestId && !msg.startFailureUnconfirmed && !findRecoveryContext(messages, i)?.isAskInputsResponse}
+                                                onRetryInputs={msg.startFailureRequestId && !msg.startFailureUnconfirmed && findRecoveryContext(messages, i)?.isAskInputsResponse
+                                                    ? () => {
+                                                        const requestId = findRecoveryContext(messages, i)?.askInputsRequestId;
+                                                        if (requestId) document.getElementById(askInputsElementId(requestId))?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                                    }
+                                                    : undefined}
+                                                onContinue={() => {
+                                                    const context = findRecoveryContext(messages, i);
+                                                    if (context) chatInputRef.current?.restoreDraft(buildContinuationDraft(context));
+                                                }}
+                                                onRestore={() => {
+                                                    const context = findRecoveryContext(messages, i);
+                                                    if (msg.startFailureRequestId && !msg.startFailureUnconfirmed && context && !context.isAskInputsResponse) {
+                                                        chatInputRef.current?.restoreDraft(context.latestUser);
+                                                    }
+                                                }}
+                                            />
+                                        )}
+                                        </>
                                     ),
                                 );
                             })()}
@@ -1297,6 +1358,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             onSubmit={handleSubmit}
                             onCancel={cancel}
                             isLoading={isResponseLoading}
+                            recoveryDraft={preflightDraft}
                             hideAddDocButton
                             projectName={project?.name}
                             projectCmNumber={project?.cm_number}

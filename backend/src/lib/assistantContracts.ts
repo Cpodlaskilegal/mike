@@ -461,7 +461,43 @@ export function findPendingAskInputsEvent(events: unknown): AskInputsEvent | nul
 /** Minimal surface shared by Docket's PostgreSQL query adapter and tests. */
 export type DocketAssistantContractsDb = {
     from(table: string): any;
+    transaction?: AskInputsTransactionRunner;
 };
+
+type AskInputsTransactionClient = {
+    query(
+        sql: string,
+        values?: unknown[],
+    ): Promise<{ rows: Record<string, unknown>[] }>;
+};
+
+export type AskInputsTransactionRunner = <T>(
+    operation: (client: AskInputsTransactionClient) => Promise<T>,
+) => Promise<T>;
+
+async function runPostgresTransaction<T>(
+    operation: (client: AskInputsTransactionClient) => Promise<T>,
+): Promise<T> {
+    // Loading the pool here keeps pure contract validation independent of DB
+    // configuration (and gives the transaction one dedicated connection).
+    const { pool } = await import("./supabase");
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const result = await operation(client);
+        await client.query("COMMIT");
+        return result;
+    } catch (error) {
+        try {
+            await client.query("ROLLBACK");
+        } catch {
+            // Preserve the original database error for the safe caller response.
+        }
+        throw error;
+    } finally {
+        client.release();
+    }
+}
 
 type PersistAskInputsRequestParams = {
     chatId: string;
@@ -534,15 +570,22 @@ type ConsumeAskInputsResponseResult =
       }
     | AssistantContractsFailure;
 
-/**
- * Resolve a pending request and append its canonical response to the original
- * assistant event for replay. Route-level Entra/project authorization is
- * intentionally performed before this function is called.
- */
-export async function consumeAskInputsResponse(
+type InspectedAskInputsResponseResult =
+    | {
+          ok: true;
+          request: AskInputsEvent;
+          response: AskInputsResponse;
+          content: string;
+          assistantMessageId: string;
+          events: unknown;
+      }
+    | AssistantContractsFailure;
+
+/** Read and validate without consuming; both chat routes authorize first. */
+async function inspectAskInputsResponse(
     db: DocketAssistantContractsDb,
     params: ConsumeAskInputsResponseParams,
-): Promise<ConsumeAskInputsResponseResult> {
+): Promise<InspectedAskInputsResponseResult> {
     try {
         const { data: rawRequest, error: requestError } = await db
             .from("assistant_input_requests")
@@ -610,58 +653,112 @@ export async function consumeAskInputsResponse(
             };
         }
 
-        // The unique request_id constraint makes a replayed browser submit
-        // safe: a second request cannot create a second answer row.
-        const { error: responseError } = await db
-            .from("assistant_input_responses")
-            .insert({
-                request_id: request.request_id,
-                submitted_by_user_id: params.submittedByUserId,
-                response: validated.response,
-            });
-        if (responseError) {
-            return {
-                ok: false,
-                status: 409,
-                detail: "Ask Inputs response has already been submitted",
-            };
-        }
-
-        const event: AskInputsResponseEvent = {
-            type: "ask_inputs_response",
-            ...validated.response,
-        };
-        const nextEvents = Array.isArray(events) ? [...events, event] : [event];
-        const { error: messageUpdateError } = await db
-            .from("chat_messages")
-            .update({ content: nextEvents })
-            .eq("id", assistantMessageId);
-        if (messageUpdateError) {
-            return {
-                ok: false,
-                status: 500,
-                detail: "Failed to record Ask Inputs response",
-            };
-        }
-        const { error: statusError } = await db
-            .from("assistant_input_requests")
-            .update({ status: "resolved", resolved_at: new Date().toISOString() })
-            .eq("id", request.request_id)
-            .eq("status", "pending");
-        if (statusError) {
-            return {
-                ok: false,
-                status: 500,
-                detail: "Failed to resolve Ask Inputs request",
-            };
-        }
         return {
             ok: true,
             request,
             response: validated.response,
-            event,
             content: validated.content,
+            assistantMessageId,
+            events,
         };
+    } catch {
+        return {
+            ok: false,
+            status: 500,
+            detail: "Failed to inspect Ask Inputs request",
+        };
+    }
+}
+
+/** Produces trusted prompt text while leaving the form retryable on startup failure. */
+export async function previewAskInputsResponse(
+    db: DocketAssistantContractsDb,
+    params: ConsumeAskInputsResponseParams,
+): Promise<{ ok: true; content: string } | AssistantContractsFailure> {
+    const inspected = await inspectAskInputsResponse(db, params);
+    return inspected.ok ? { ok: true, content: inspected.content } : inspected;
+}
+
+/**
+ * Resolve a pending request only after the new turn is durable. A row lock
+ * serializes concurrent submits; all three writes commit or roll back together.
+ */
+export async function consumeAskInputsResponse(
+    db: DocketAssistantContractsDb,
+    params: ConsumeAskInputsResponseParams,
+    transactionRunner?: AskInputsTransactionRunner,
+): Promise<ConsumeAskInputsResponseResult> {
+    const inspected = await inspectAskInputsResponse(db, params);
+    if (!inspected.ok) return inspected;
+    try {
+        return await (transactionRunner ?? db.transaction ?? runPostgresTransaction)(async (client) => {
+            const { rows: requests } = await client.query(
+                "select id, status, request, assistant_message_id from public.assistant_input_requests where id = $1 and chat_id = $2 for update",
+                [params.response.request_id, params.chatId],
+            );
+            const stored = requests[0];
+            if (!stored) {
+                return { ok: false, status: 404, detail: "Ask Inputs request not found" } as const;
+            }
+            if (stored.status !== "pending") {
+                return {
+                    ok: false,
+                    status: 409,
+                    detail: "Ask Inputs request has already been resolved",
+                } as const;
+            }
+            const requestId = cleanIdentifier(stored.id);
+            const assistantMessageId = cleanText(stored.assistant_message_id, { max: 200 });
+            const request = normalizeAskInputsEvent(stored.request, requestId ?? undefined);
+            if (!requestId || !assistantMessageId || !request) {
+                return { ok: false, status: 500, detail: "Stored Ask Inputs request is invalid" } as const;
+            }
+            const validated = validateAskInputsResponse(params.response, request);
+            if (!validated.ok) {
+                return { ok: false, status: 400, detail: validated.detail } as const;
+            }
+            const { rows: messages } = await client.query(
+                "select id, content from public.chat_messages where id = $1 and chat_id = $2 for update",
+                [assistantMessageId, params.chatId],
+            );
+            const events = messages[0]?.content;
+            const pending = findPendingAskInputsEvent(events);
+            if (!pending || pending.request_id !== request.request_id) {
+                return {
+                    ok: false,
+                    status: 409,
+                    detail: "Ask Inputs request is no longer pending in this chat",
+                } as const;
+            }
+
+            const response = validated.response;
+            const event: AskInputsResponseEvent = {
+                type: "ask_inputs_response",
+                ...response,
+            };
+            const nextEvents = Array.isArray(events) ? [...events, event] : [event];
+            await client.query(
+                "insert into public.assistant_input_responses (request_id, submitted_by_user_id, response) values ($1, $2, $3::jsonb)",
+                [request.request_id, params.submittedByUserId, JSON.stringify(response)],
+            );
+            const { rows: updatedMessages } = await client.query(
+                "update public.chat_messages set content = $1::jsonb where id = $2 returning id",
+                [JSON.stringify(nextEvents), assistantMessageId],
+            );
+            if (updatedMessages.length !== 1) throw new Error("Ask Inputs message update missed");
+            const { rows: resolvedRequests } = await client.query(
+                "update public.assistant_input_requests set status = 'resolved', resolved_at = $1 where id = $2 and status = 'pending' returning id",
+                [new Date().toISOString(), request.request_id],
+            );
+            if (resolvedRequests.length !== 1) throw new Error("Ask Inputs request update missed");
+            return {
+                ok: true,
+                request,
+                response,
+                event,
+                content: validated.content,
+            } as const;
+        });
     } catch {
         return {
             ok: false,

@@ -56,6 +56,7 @@ export type AssistantBackgroundRun = {
   reasoningEffort: string | null;
   traceId: string;
   revision: string;
+  gitSha: string | null;
   finalizationOwner: string | null;
   errorCode: string | null;
   safeErrorMessage: string | null;
@@ -81,6 +82,7 @@ export type CreateAssistantBackgroundRunInput = {
   reasoningEffort?: string | null;
   traceId: string;
   revision: string;
+  gitSha?: string | null;
   requestStartedAt?: string | Date;
 };
 
@@ -95,6 +97,7 @@ export type UpdateAssistantBackgroundRunInput = {
   reasoningEffort?: string | null;
   traceId?: string;
   revision?: string;
+  gitSha?: string | null;
   finalizationOwner?: string | null;
   errorCode?: string | null;
   safeErrorMessage?: string | null;
@@ -268,6 +271,7 @@ function parseRun(row: Record<string, unknown>): AssistantBackgroundRun {
     reasoningEffort: nullableString(row.reasoning_effort),
     traceId: requiredString(row.trace_id, "trace_id"),
     revision: requiredString(row.revision, "revision"),
+    gitSha: nullableString(row.git_sha),
     finalizationOwner: nullableString(row.finalization_owner),
     errorCode: nullableString(row.error_code),
     safeErrorMessage: nullableString(row.safe_error_message),
@@ -313,6 +317,7 @@ function assistantBackgroundRunUpdateRow(
   }
   if (input.traceId !== undefined) row.trace_id = input.traceId;
   if (input.revision !== undefined) row.revision = input.revision;
+  if (input.gitSha !== undefined) row.git_sha = input.gitSha;
   if (input.finalizationOwner !== undefined) {
     row.finalization_owner = input.finalizationOwner;
   }
@@ -351,6 +356,7 @@ export async function createAssistantBackgroundRun(
     reasoning_effort: input.reasoningEffort ?? null,
     trace_id: input.traceId,
     revision: input.revision,
+    git_sha: input.gitSha ?? null,
     updated_at: initialUpdatedAt,
     ...(input.requestStartedAt === undefined
       ? {}

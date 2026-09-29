@@ -3,6 +3,7 @@
 import {
     useState,
     useCallback,
+    useEffect,
     useRef,
     forwardRef,
     useImperativeHandle,
@@ -21,6 +22,7 @@ import { AddDocButton } from "./AddDocButton";
 import { AddDocumentsModal } from "../shared/AddDocumentsModal";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
+import { AssistantDiagnosticId } from "./AssistantDiagnosticId";
 import { ModelToggle } from "./ModelToggle";
 import { ReasoningEffortToggle } from "./ReasoningEffortToggle";
 import { ReasoningModeToggle } from "./ReasoningModeToggle";
@@ -36,15 +38,24 @@ import {
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import type { DocketDocument, DocketMessage } from "../shared/types";
+import {
+    shouldApplyRecoveryDraft,
+    shouldRestoreSubmittedDraft,
+    type AssistantSubmissionResult,
+} from "@/app/lib/assistantRecovery";
 
 export interface ChatInputHandle {
     addDoc: (doc: DocketDocument) => void;
+    restoreDraft: (message: DocketMessage) => void;
 }
 
+type AttachedDoc = Pick<DocketDocument, "id" | "filename" | "file_type">;
+
 interface Props {
-    onSubmit: (message: DocketMessage) => void;
+    onSubmit: (message: DocketMessage) => Promise<AssistantSubmissionResult> | void;
     onCancel: () => void;
     isLoading: boolean;
+    recoveryDraft?: DocketMessage | null;
     hideAddDocButton?: boolean;
     hideWorkflowButton?: boolean;
     onProjectsClick?: () => void;
@@ -57,6 +68,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         onSubmit,
         onCancel,
         isLoading,
+        recoveryDraft,
         hideAddDocButton,
         hideWorkflowButton,
         onProjectsClick,
@@ -66,7 +78,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     ref,
 ) {
     const [value, setValue] = useState("");
-    const [attachedDocs, setAttachedDocs] = useState<DocketDocument[]>([]);
+    const [submissionError, setSubmissionError] = useState<string | null>(null);
+    const [submissionRequestId, setSubmissionRequestId] = useState<string | null>(null);
+    const [deferredRecoveryDraft, setDeferredRecoveryDraft] = useState<DocketMessage | null>(null);
+    const [attachedDocs, setAttachedDocs] = useState<AttachedDoc[]>([]);
     const [selectedWorkflow, setSelectedWorkflow] = useState<{
         id: string;
         title: string;
@@ -89,21 +104,63 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const { profile } = useUserProfile();
     const apiKeys = profile?.apiKeys;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const draftEpochRef = useRef(0);
     const [docSelectorOpen, setDocSelectorOpen] = useState(false);
     const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);
 
+    const restoreDraft = useCallback((message: DocketMessage) => {
+        draftEpochRef.current += 1;
+        setValue(message.content);
+        setSubmissionError(message.error ?? null);
+        setSubmissionRequestId(message.startFailureRequestId ?? null);
+        setDeferredRecoveryDraft(null);
+        setAttachedDocs(
+            (message.files ?? [])
+                .filter((file): file is { filename: string; document_id: string } =>
+                    !!file.document_id,
+                )
+                .map((file) => ({
+                    id: file.document_id,
+                    filename: file.filename,
+                    file_type: null,
+                })),
+        );
+        setSelectedWorkflow(message.workflow ?? null);
+        requestAnimationFrame(() => {
+            const textarea = textareaRef.current;
+            if (!textarea) return;
+            textarea.style.height = "auto";
+            textarea.style.height = `${textarea.scrollHeight}px`;
+            textarea.focus();
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!recoveryDraft) return;
+        setSubmissionError(recoveryDraft.error ?? null);
+        setSubmissionRequestId(recoveryDraft.startFailureRequestId ?? null);
+        if (shouldApplyRecoveryDraft(draftEpochRef.current)) {
+            restoreDraft(recoveryDraft);
+        } else {
+            setDeferredRecoveryDraft(recoveryDraft);
+        }
+    }, [recoveryDraft, restoreDraft]);
+
     useImperativeHandle(ref, () => ({
         addDoc: (doc: DocketDocument) => {
+            draftEpochRef.current += 1;
             setAttachedDocs((prev) => {
                 if (prev.some((d) => d.id === doc.id)) return prev;
                 return [...prev, doc];
             });
         },
-    }));
+        restoreDraft,
+    }), [restoreDraft]);
 
     const handleAddDocFromProject = useCallback((doc: DocketDocument) => {
+        draftEpochRef.current += 1;
         setAttachedDocs((prev) => {
             if (prev.some((d) => d.id === doc.id)) return prev;
             return [...prev, doc];
@@ -112,6 +169,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
 
     const handleAddDocsFromSelector = useCallback(
         (selectedDocs: DocketDocument[]) => {
+            draftEpochRef.current += 1;
             setAttachedDocs((prev) => {
                 const existing = new Set(prev.map((d) => d.id));
                 return [
@@ -124,6 +182,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     );
 
     const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        draftEpochRef.current += 1;
         setValue(e.target.value);
         const el = e.target;
         el.style.height = "auto";
@@ -150,12 +209,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         const wf = selectedWorkflow;
         setSelectedWorkflow(null);
 
-        onSubmit?.({
+        const submitted: DocketMessage = {
             role: "user",
             content: query,
             files: files.length > 0 ? files : undefined,
             workflow: wf ?? undefined,
-        });
+        };
+        setSubmissionError(null);
+        setSubmissionRequestId(null);
+        setDeferredRecoveryDraft(null);
+        const submissionEpoch = ++draftEpochRef.current;
+        void (async () => {
+            try {
+                const result = await onSubmit(submitted);
+                if (shouldRestoreSubmittedDraft(result, submissionEpoch, draftEpochRef.current)) {
+                    restoreDraft({
+                        ...(result?.kind === "preflight_failed" ? result.draft ?? submitted : submitted),
+                        error: result?.kind === "preflight_failed" ? result.message : undefined,
+                        startFailureRequestId: result?.kind === "preflight_failed" ? result.requestId : undefined,
+                    });
+                } else if (result?.kind === "preflight_failed") {
+                    setSubmissionError(result.message ?? "The request could not start. Review and try again.");
+                    setSubmissionRequestId(result.requestId ?? null);
+                    setDeferredRecoveryDraft(result.draft ?? submitted);
+                }
+            } catch {
+                // An unexpected rejection cannot prove that the server never
+                // started work. Keep recovery explicit rather than preloading
+                // a request that may already have changed external data.
+            }
+        })();
     };
 
     const handleActionClick = () => {
@@ -176,6 +259,25 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     return (
         <>
             <div className="w-full">
+                {submissionError && (
+                    <div role="alert" className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                        <div>{submissionError}</div>
+                        {submissionRequestId && (
+                            <div className="mt-1">
+                                <AssistantDiagnosticId id={submissionRequestId} kind="request" />
+                            </div>
+                        )}
+                        {deferredRecoveryDraft && (
+                            <button
+                                type="button"
+                                onClick={() => restoreDraft(deferredRecoveryDraft)}
+                                className="mt-1 rounded border border-red-300 bg-white px-2 py-1 text-xs hover:bg-red-100"
+                            >
+                                Restore failed request
+                            </button>
+                        )}
+                    </div>
+                )}
                 <div className="border border-gray-300 rounded-[16px] md:rounded-[20px] bg-white">
                     {/* Attached chips */}
                     {(selectedWorkflow || attachedDocs.length > 0) && (
@@ -188,9 +290,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                     </span>
                                     <button
                                         type="button"
-                                        onClick={() =>
-                                            setSelectedWorkflow(null)
-                                        }
+                                        onClick={() => {
+                                            draftEpochRef.current += 1;
+                                            setSelectedWorkflow(null);
+                                        }}
                                         className="rounded-full p-0.5 ml-0.5 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
                                     >
                                         <X className="h-2.5 w-2.5" />
@@ -215,13 +318,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                         </span>
                                         <button
                                             type="button"
-                                            onClick={() =>
+                                            onClick={() => {
+                                                draftEpochRef.current += 1;
                                                 setAttachedDocs((prev) =>
                                                     prev.filter(
                                                         (d) => d.id !== doc.id,
                                                     ),
-                                                )
-                                            }
+                                                );
+                                            }}
                                             className="rounded-full p-0.5 ml-0.5 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
                                         >
                                             <X className="h-2.5 w-2.5" />
@@ -346,6 +450,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                 open={workflowModalOpen}
                 onClose={() => setWorkflowModalOpen(false)}
                 onSelect={(wf) => {
+                    draftEpochRef.current += 1;
                     setSelectedWorkflow({ id: wf.id, title: wf.title });
                     setWorkflowModalOpen(false);
                 }}

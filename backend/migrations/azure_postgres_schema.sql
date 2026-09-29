@@ -548,6 +548,7 @@ create table if not exists public.assistant_background_runs (
   reasoning_effort text,
   trace_id text not null,
   revision text not null,
+  git_sha text,
   finalization_owner uuid,
   error_code text,
   safe_error_message text,

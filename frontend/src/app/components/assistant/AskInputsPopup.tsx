@@ -6,6 +6,7 @@ import {
   uploadProjectDocument,
   uploadStandaloneDocument,
 } from "@/app/lib/docketApi";
+import { askInputsElementId } from "@/app/lib/assistantRecovery";
 import {
   SUPPORTED_DOCUMENT_ACCEPT,
   formatUnsupportedDocumentWarning,
@@ -161,7 +162,7 @@ export function AskInputsPopup({
   };
 
   return (
-    <section className="my-3 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/80 font-sans shadow-sm">
+    <section id={askInputsElementId(event.request_id)} className="my-3 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/80 font-sans shadow-sm">
       <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
         <div>
           <p className="text-sm font-medium text-slate-900">Docket needs a few inputs</p>

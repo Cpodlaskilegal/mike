@@ -7,14 +7,10 @@ import { supabase } from "@/lib/supabase";
 import type {
   AssistantEvent,
   DocketAskInputsResponse,
-  DocketAssistantRunStatus,
   DocketChat,
   DocketChatDetailOut,
-  DocketCitation,
-  DocketCitationAnnotation,
   DocketDocument,
   DocketFolder,
-  DocketMessage,
   DocketProject,
   DocketWorkflow,
   DocketWorkflowContributionSubmission,
@@ -22,29 +18,17 @@ import type {
   TabularReviewDetailOut,
 } from "@/app/components/shared/types";
 import type { AssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
-import { ASSISTANT_CANCELLATION_PENDING_MESSAGE } from "@/app/lib/assistantRunHydration";
+import {
+  hydrateChatMessages,
+  type ServerActiveAssistantRun,
+  type ServerChatMessage,
+} from "@/app/lib/assistantRunHydration";
 
 // Server-side shape before mapping
-interface ServerMessage {
-  id: string;
-  chat_id: string;
-  role: "user" | "assistant";
-  content: string | AssistantEvent[] | null;
-  files?: { filename: string; document_id?: string }[] | null;
-  workflow?: { id: string; title: string } | null;
-  annotations?: DocketCitationAnnotation[] | null;
-  citations?: DocketCitation[] | null;
-  created_at: string;
-}
 interface ServerChatDetailOut {
   chat: DocketChat;
-  messages: ServerMessage[];
-  active_run?: {
-    stream_request_id: string;
-    assistant_message_id: string;
-    project_id: string | null;
-    status: DocketAssistantRunStatus;
-  } | null;
+  messages: ServerChatMessage[];
+  active_run?: ServerActiveAssistantRun | null;
 }
 
 const API_BASE =
@@ -999,48 +983,7 @@ export async function listProjectChats(projectId: string): Promise<DocketChat[]>
 
 export async function getChat(chatId: string): Promise<DocketChatDetailOut> {
   const raw = await apiRequest<ServerChatDetailOut>(`/chat/${chatId}`);
-  const messages: DocketMessage[] = raw.messages.map((m) => {
-    if (m.role === "user") {
-      return {
-        role: "user",
-        content: typeof m.content === "string" ? m.content : "",
-        files: m.files ?? undefined,
-        workflow: m.workflow ?? undefined,
-      };
-    }
-    const events = Array.isArray(m.content)
-      ? (m.content as AssistantEvent[])
-      : undefined;
-    const pending = m.content == null;
-    const activeRun =
-      pending && raw.active_run?.assistant_message_id === m.id
-        ? {
-            streamRequestId: raw.active_run.stream_request_id,
-            projectId: raw.active_run.project_id ?? undefined,
-            status: raw.active_run.status,
-          }
-        : undefined;
-    return {
-      role: "assistant",
-      content:
-        events
-          ?.filter((e) => e.type === "content")
-          .map((e) => (e as { type: "content"; text: string }).text)
-          .join("") ?? "",
-      annotations: m.annotations ?? undefined,
-      citations: m.citations ?? undefined,
-      events:
-        events ??
-        (pending ? [{ type: "thinking" as const, isStreaming: true }] : undefined),
-      pending,
-      assistantRun: activeRun,
-      error:
-        activeRun?.status === "cancel_requested"
-          ? ASSISTANT_CANCELLATION_PENDING_MESSAGE
-          : undefined,
-    };
-  });
-  return { chat: raw.chat, messages };
+  return { chat: raw.chat, messages: hydrateChatMessages(raw) };
 }
 
 export async function renameChat(chatId: string, title: string): Promise<void> {

@@ -67,12 +67,13 @@ test("chat stream routes log redacted errors while preserving generic SSE errors
       `${route} must import the safe logger`,
     );
     assert.ok(
-      routeSource.includes("safeErrorLog(err)"),
+      routeSource.includes("safeErrorLog(err"),
       `${route} must not log the raw assistant error`,
     );
-    assert.ok(
-      routeSource.includes("chatStreamErrorLine(err)"),
-      `${route} must retain its structured SSE error response`,
+    assert.match(
+      routeSource,
+      /chatStreamErrorLine\(err, \{ runId: streamLifecycle\.streamRequestId \}\)/,
+      `${route} must retain its structured SSE error response with the run ID`,
     );
   }
 });

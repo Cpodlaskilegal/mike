@@ -157,6 +157,7 @@ async function createRun(db: AssistantBackgroundRunsDb) {
     reasoningEffort: "max",
     traceId: "trace-123",
     revision: "mike-api--0000042",
+    gitSha: "cc8cef6c7e9e226d71b4f287c5d0d0ce3f2abb06",
     requestStartedAt: new Date(CREATED_AT),
   });
 }
@@ -171,6 +172,11 @@ test("creates a typed durable background run using the stream request UUID", asy
   assert.equal(run.providerStatus, "queued");
   assert.equal(run.providerResponseId, "resp_123");
   assert.equal(run.providerRequestId, "req_123");
+  assert.equal(run.gitSha, "cc8cef6c7e9e226d71b4f287c5d0d0ce3f2abb06");
+  assert.equal(
+    rows.get(STREAM_REQUEST_ID)?.git_sha,
+    "cc8cef6c7e9e226d71b4f287c5d0d0ce3f2abb06",
+  );
   assert.equal(run.iteration, 1);
   assert.equal(run.requestStartedAt, CREATED_AT);
   assert.equal(
@@ -390,7 +396,20 @@ test("incremental and fresh schemas keep the same constrained table contract", (
     "utf8",
   );
 
-  assert.equal(tableDefinition(freshSchema), tableDefinition(migration));
+  const gitShaMigration = readFileSync(
+    new URL("../migrations/20260929_assistant_run_git_sha.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(
+    tableDefinition(freshSchema).replace("git_sha text, ", ""),
+    tableDefinition(migration),
+  );
+  assert.match(freshSchema, /git_sha text/i);
+  assert.match(
+    gitShaMigration,
+    /alter table public\.assistant_background_runs\s+add column if not exists git_sha text/i,
+  );
   assert.match(migration, /stream_request_id uuid primary key/i);
   assert.match(migration, /assistant_message_id uuid not null unique/i);
   assert.match(migration, /chat_messages\(id\) on delete cascade/i);
