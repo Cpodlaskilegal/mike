@@ -442,6 +442,32 @@ export function DocEditedBlock({
     );
 }
 
+export function LegalQualityBlock({ event, showConnector }: { event: Extract<AssistantEvent, { type: "legal_quality" }>; showConnector?: boolean }) {
+    const { report } = event;
+    return (
+        <EventBlock showConnector={showConnector} dotColor={report.decision === "blocked" ? "red" : "gray"}>
+            <details open={report.decision === "blocked"} className="rounded-md border border-gray-200 bg-gray-50 p-3 text-gray-700">
+                <summary className="cursor-pointer font-medium">
+                    {report.decision === "blocked" ? "Legal evidence check blocked release" : "Legal evidence check · Attorney review required"}
+                    <span className="mt-1 block text-xs font-normal">{event.target}: {report.coverage.verified} checked fields, {report.coverage.errors} errors, {report.coverage.unchecked} unchecked</span>
+                </summary>
+                <p className="mt-2 text-xs">No demonstrated mismatch in checked fields does not establish legal correctness.</p>
+                <ul className="mt-2 space-y-2 text-xs">
+                    {[...report.checks].sort((a, b) => (a.status === "error" ? -1 : a.status === "unchecked" ? 0 : 1) - (b.status === "error" ? -1 : b.status === "unchecked" ? 0 : 1)).map((check, index) => (
+                        <li key={`${check.claimId}-${check.field}-${index}`} className={check.status === "error" ? "text-red-700" : check.status === "unchecked" ? "text-amber-800" : "text-gray-600"}>
+                            <strong>{check.status === "verified" ? "Checked" : check.status === "error" ? "Error" : "Unchecked"} · {check.claimId} · {check.field.replaceAll("_", " ")}: </strong>{check.detail}
+                        </li>
+                    ))}
+                </ul>
+                <p className="mt-3 text-xs font-medium">Source coverage</p>
+                {report.coverage.sources.length ? <ul className="text-xs">{report.coverage.sources.map((source) => <li key={source.id}>{source.label} ({source.id}): {source.completeness}; {source.characters.toLocaleString()} retrieved characters</li>)}</ul> : <p className="text-xs">No source text was retrieved.</p>}
+                {report.limitations.map((limitation) => <p key={limitation} className="mt-2 text-xs">{limitation}</p>)}
+                <p className="mt-2 break-all font-mono text-[10px] text-gray-400">{report.version} · Output SHA-256 {report.outputHash}</p>
+            </details>
+        </EventBlock>
+    );
+}
+
 type CourtEvent = Extract<
     AssistantEvent,
     {

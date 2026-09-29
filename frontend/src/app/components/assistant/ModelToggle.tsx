@@ -112,7 +112,8 @@ export function ModelToggle({
     const [pendingId, setPendingId] = useState<string | null>(null);
     const [error, setError] = useState(false);
     const selected = models.find((m) => m.id === value);
-    const selectedLabel = selected?.label ?? "Model";
+    const allowAuto = models === MODELS;
+    const selectedLabel = allowAuto && value === "auto" ? "Auto" : selected?.label ?? "Model";
     const selectedAvailable = apiKeys
         ? isModelAvailable(value, apiKeys)
         : true;
@@ -165,6 +166,13 @@ export function ModelToggle({
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 z-50" side="top" align="start">
+                {allowAuto && <>
+                    <DropdownMenuItem onSelect={() => void handleSelect("auto")} disabled={disabled || !!pendingId} className="cursor-pointer">
+                        <span className="flex flex-1 flex-col"><span>Auto</span><span className="text-[11px] text-gray-400">Task, media and firm budget</span></span>
+                        {value === "auto" && <Check className="h-3.5 w-3.5 text-gray-600 ml-1" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                </>}
                 {GROUP_ORDER.filter((group) =>
                     models.some((m) => m.group === group),
                 ).map((group, gi) => {

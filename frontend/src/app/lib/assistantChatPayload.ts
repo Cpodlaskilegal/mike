@@ -9,6 +9,7 @@ import {
 
 export type AssistantGenerationPayload = {
     model: string;
+    task?: "drafting" | "research" | "summary";
     reasoning_effort?: AssistantReasoningEffort;
     reasoning_mode?: "standard" | "pro";
 };

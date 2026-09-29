@@ -1,9 +1,11 @@
 "use client";
 
+import { followResolvedDocumentVersion } from "@/app/lib/resolvedDocumentTabs";
 import { useCallback, useState, useRef, useEffect } from "react";
 import { ArrowDown } from "lucide-react";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
+import { AssistantModelSelectionDetails } from "./AssistantModelSelectionDetails";
 import { ChatInput } from "./ChatInput";
 import type { ChatInputHandle } from "./ChatInput";
 import { AssistantRecoveryActions } from "./AssistantRecoveryActions";
@@ -237,6 +239,7 @@ export function ChatView({
                 filename: args.filename,
                 versionId: args.versionId,
                 versionNumber: args.versionNumber,
+                followCurrentVersion: args.versionId === null,
             });
         },
         [upsertTab],
@@ -297,19 +300,9 @@ export function ChatView({
             // (their sync effect keys off edit.status). Without this, a
             // resolve triggered from the inline EditCard or BulkEditActions
             // leaves the panel buttons looking live.
-            setTabs((prev) =>
-                prev.map((t) =>
-                    t.kind === "edit" && t.edit.edit_id === args.editId
-                        ? {
-                              ...t,
-                              edit: { ...t.edit, status: args.status },
-                          }
-                        : t,
-                ),
-            );
-            // Accept/reject mutates bytes for this document's current
-            // version; drop the cache so the next DocxView render (or an
-            // explicit re-open) fetches the fresh file.
+            setTabs((prev) => followResolvedDocumentVersion(prev, args));
+            // Edit/current tabs follow the immutable resolved version.
+            // Explicit historical documents and citations stay pinned.
             invalidateDocxBytes(args.documentId);
         },
         [],
@@ -554,6 +547,7 @@ export function ChatView({
                                             />
                                         ) : (
                                             <>
+                                            <AssistantModelSelectionDetails selection={msg.modelSelection} instructionVersion={msg.projectInstructionVersion} />
                                             <AssistantMessage
                                                 content={msg.content ?? ""}
                                                 events={msg.events}

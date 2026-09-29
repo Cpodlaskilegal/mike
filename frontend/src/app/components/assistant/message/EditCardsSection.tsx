@@ -3,8 +3,8 @@
 import { useState, type ReactNode } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { readEditResolutionError } from "@/app/lib/editResolutionError";
 import type { DocketEditAnnotation } from "../../shared/types";
-import { applyOptimisticResolution } from "../EditCard";
 
 type PendingEdit = {
     annotation: DocketEditAnnotation;
@@ -46,6 +46,7 @@ function BulkEditActions({
     onError?: ResolveError;
 }) {
     const [busy, setBusy] = useState<"accept" | "reject" | null>(null);
+    const [resolutionError, setResolutionError] = useState<string | null>(null);
     const [progress, setProgress] = useState<{
         done: number;
         total: number;
@@ -56,6 +57,7 @@ function BulkEditActions({
     const handleAll = async (verb: "accept" | "reject") => {
         if (busy) return;
         setBusy(verb);
+        setResolutionError(null);
         setProgress({ done: 0, total: pending.length });
         try {
             const {
@@ -65,8 +67,8 @@ function BulkEditActions({
             const apiBase =
                 process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 
-            // Sequential requests preserve the document version order and
-            // leave each optimistic update reversible if a request fails.
+            // Sequential requests preserve version order. Displayed bytes
+            // change only after the API confirms the immutable new version.
             let done = 0;
             for (const { annotation } of pending) {
                 onResolveStart?.({
@@ -74,16 +76,6 @@ function BulkEditActions({
                     documentId: annotation.document_id,
                     verb,
                 });
-                let revert: (() => void) | null = null;
-                try {
-                    revert = applyOptimisticResolution(annotation, verb);
-                } catch (error) {
-                    console.error(
-                        "[BulkEditActions] optimistic update threw",
-                        error,
-                    );
-                }
-
                 try {
                     const response = await fetch(
                         `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
@@ -95,7 +87,7 @@ function BulkEditActions({
                         },
                     );
                     if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
+                        throw await readEditResolutionError(response);
                     }
                     const data = (await response.json()) as {
                         status?: "accepted" | "rejected";
@@ -113,23 +105,15 @@ function BulkEditActions({
                     });
                 } catch (error) {
                     console.error("[BulkEditActions] resolve failed", error);
-                    try {
-                        revert?.();
-                    } catch (revertError) {
-                        console.error(
-                            "[BulkEditActions] revert threw",
-                            revertError,
-                        );
-                    }
+                    const message = error instanceof Error ? error.message : "Unable to save the decision. Refresh and retry.";
+                    setResolutionError(message);
                     onError?.({
                         editId: annotation.edit_id,
                         documentId: annotation.document_id,
                         versionId: annotation.version_id ?? null,
-                        message:
-                            verb === "accept"
-                                ? "Couldn't save one or more accepts."
-                                : "Couldn't save one or more rejects.",
+                        message,
                     });
+                    break;
                 }
                 done += 1;
                 setProgress({ done, total: pending.length });
@@ -143,6 +127,7 @@ function BulkEditActions({
     const first = pending[0];
     return (
         <div className="flex flex-wrap items-center gap-2">
+            {resolutionError && <p role="alert" className="w-full text-xs text-red-700">{resolutionError}</p>}
             <button
                 type="button"
                 onClick={() => handleAll("accept")}

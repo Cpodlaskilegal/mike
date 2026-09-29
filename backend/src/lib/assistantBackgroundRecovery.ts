@@ -25,6 +25,7 @@ import {
 import { safeErrorLog } from "./safeError";
 import { createServerSupabase } from "./supabase";
 import { getUserModelSettings } from "./userSettings";
+import { createLegalQualityState, finalizeLegalOutput, type LegalQualityEvent } from "./legalOutputGate";
 
 type Db = ReturnType<typeof createServerSupabase>;
 
@@ -139,11 +140,18 @@ async function persistRecoveryMessage(
   db: Db,
   run: AssistantBackgroundRun,
   text: string,
+  rawRecoveredOutput?: string,
 ): Promise<boolean> {
+  const quality = rawRecoveredOutput === undefined ? null : finalizeLegalOutput(rawRecoveredOutput, createLegalQualityState());
+  const qualityEvent: LegalQualityEvent | null = quality ? { type: "legal_quality", target: "Recovered assistant response", report: quality.report } : null;
+  if (qualityEvent) {
+    qualityEvent.report.checks.push({ claimId: "output", field: "recovered_source_coverage", status: "unchecked", detail: "This provider response was recovered after the active handler ended. Turn source evidence was not restored; source-dependent checks require attorney review." });
+    qualityEvent.report.coverage.unchecked += 1;
+  }
   const { data, error } = await db
     .from("chat_messages")
     .update({
-      content: [{ type: "content", text }],
+      content: [...(qualityEvent ? [qualityEvent] : []), { type: "content", text }],
       annotations: null,
       citations: null,
     })
@@ -394,7 +402,7 @@ async function recoverRun(
     },
   );
   if (!claimed) return false;
-  if (!(await persistRecoveryMessage(deps.db, claimed, text))) {
+  if (!(await persistRecoveryMessage(deps.db, claimed, text, output.text))) {
     // A live finalizer saved the rich payload after our earlier read. Preserve
     // it and only close the durable lifecycle row.
     const finalized = await updateAssistantBackgroundRunAsFinalizer(

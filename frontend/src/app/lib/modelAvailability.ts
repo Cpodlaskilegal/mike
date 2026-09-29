@@ -29,6 +29,8 @@ export function isModelAvailable(
     modelId: string,
     apiKeys: ApiKeyState,
 ): boolean {
+    if (modelId === "auto") return ["openai", "claude", "gemini"].some((provider) =>
+        isProviderAvailable(provider as ModelProvider, apiKeys));
     const provider = getModelProvider(modelId);
     if (!provider) return false;
     return isProviderAvailable(provider, apiKeys);

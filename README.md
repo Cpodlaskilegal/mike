@@ -184,6 +184,60 @@ For an existing database, apply
 `backend/migrations/20260923_custom_instructions.sql` before deploying the
 backend code that reads these settings.
 
+## Project instructions and Auto model selection
+
+Open a project's **Instructions** control to view its standing instructions,
+edit permissions and the latest 50 changes. Only the owner may save changes;
+current shared members and administrators with existing project read access
+may read them. Removing a member removes instruction/history access with the
+rest of the project. Each change, including clearing the field, records its
+version, author, timestamp and full text in `project_instruction_history`.
+Saves use an expected version and an atomic transaction so concurrent edits
+cannot overwrite each other or lose their audit row.
+
+Both assistant routes apply current project instructions on every turn,
+including chats opened through the global assistant. Priority is Docket's
+mandatory rules, firm instructions, project instructions, then personal
+preferences. Current requests and selected workflows refine tasks within
+those rules. Instructions never expand access or authorize external actions.
+Each run records the project instruction version it used.
+
+The assistant composer defaults to **Auto**. Select Drafting, Research or
+Summary, or leave Task at Workflow/general to derive it from the accessible
+workflow's stored title (research/authority titles map to research; drafting,
+motion, pleading, contract, agreement, brief or letter titles map to drafting;
+other titles and general chat map to summary). The explicit task wins.
+The server policy `docket-auto-2026-09-29-v1` filters models by configured
+provider keys and authoritative attachment types. Native audio/video requires
+Gemini; an unavailable compatible provider produces an actionable error.
+Auto's choice and reason appear above the response and remain after reload.
+
+Set backend `DOCKET_AUTO_BUDGET_POLICY` to `economy`, `balanced` (default), or
+`quality`. This is a relative model/effort preference, not a dollar spending
+cap. Economy uses GPT-6 Luna, Claude Haiku 4.5, then Gemini 3 Flash. Balanced
+uses GPT-6 Sol, Claude Sonnet 5, then Gemini 3.1 Pro for drafting/research and
+the economy order for summaries. Quality uses GPT-6 Astra, Claude Opus 5.5,
+then Gemini 3.1 Pro for drafting/research and the balanced order for summaries.
+The first configured compatible provider wins. Summary and economy runs use
+Medium effort; other Auto runs use High. Auto always uses Standard mode.
+
+Choosing a model manually overrides Auto for that response; the next draft
+returns to Auto. A manual selection preserves its effort/mode and ignores
+Auto's relative budget preference, but cannot bypass provider or attachment
+capability checks. Unknown models fail rather than silently changing provider;
+documented legacy aliases keep their supported replacement and visible reason.
+Run records retain mode, selected model, reason, task, budget policy and policy
+version. Server-validated generation intent is saved with the user's message,
+so Restore/Continue keeps its manual model, task, effort and mode after reload.
+Routing does not change the assistant's recovery or tool-turn limit.
+
+Apply `backend/migrations/20260929_project_instructions_auto_models.sql`
+incrementally to existing databases before deploying these features. The
+fresh Azure schema includes the same fields and history table. Validation
+uses synthetic tasks/providers; these initial preferences should be tuned
+only after measuring output quality and cost. No provider call is required
+to test routing.
+
 ## Install
 
 Install each app package:

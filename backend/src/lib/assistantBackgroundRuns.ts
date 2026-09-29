@@ -1,5 +1,6 @@
 import type { createServerSupabase } from "./supabase";
 import type { ProviderRunProgress } from "./llm/types";
+import { assistantModelSelectionFromRow, type AssistantModelSelection } from "./assistantModelPolicy";
 
 export const ASSISTANT_BACKGROUND_RUN_STATUSES = [
   "starting",
@@ -52,6 +53,8 @@ export type AssistantBackgroundRun = {
   status: AssistantBackgroundRunStatus;
   providerStatus: AssistantBackgroundProviderStatus | null;
   model: string;
+  modelSelection?: AssistantModelSelection;
+  projectInstructionVersion?: number;
   reasoningMode: string | null;
   reasoningEffort: string | null;
   traceId: string;
@@ -78,6 +81,8 @@ export type CreateAssistantBackgroundRunInput = {
   status?: AssistantBackgroundRunStatus;
   providerStatus?: AssistantBackgroundProviderStatus | null;
   model: string;
+  modelSelection?: AssistantModelSelection;
+  projectInstructionVersion?: number;
   reasoningMode?: string | null;
   reasoningEffort?: string | null;
   traceId: string;
@@ -267,6 +272,8 @@ function parseRun(row: Record<string, unknown>): AssistantBackgroundRun {
     status: parseStatus(row.status),
     providerStatus: parseProviderStatus(row.provider_status),
     model: requiredString(row.model, "model"),
+    ...(assistantModelSelectionFromRow(row) ? { modelSelection: assistantModelSelectionFromRow(row) } : {}),
+    ...(Number.isInteger(row.project_instruction_version) ? { projectInstructionVersion: row.project_instruction_version as number } : {}),
     reasoningMode: nullableString(row.reasoning_mode),
     reasoningEffort: nullableString(row.reasoning_effort),
     traceId: requiredString(row.trace_id, "trace_id"),
@@ -352,6 +359,14 @@ export async function createAssistantBackgroundRun(
     status: input.status ?? "starting",
     provider_status: input.providerStatus ?? null,
     model: input.model,
+    ...(input.modelSelection ? {
+      model_selection_mode: input.modelSelection.mode,
+      model_selection_reason: input.modelSelection.reason,
+      model_policy_version: input.modelSelection.policyVersion,
+      model_task: input.modelSelection.task,
+      model_budget_policy: input.modelSelection.budgetPolicy,
+    } : {}),
+    ...(input.projectInstructionVersion === undefined ? {} : { project_instruction_version: input.projectInstructionVersion }),
     reasoning_mode: input.reasoningMode ?? null,
     reasoning_effort: input.reasoningEffort ?? null,
     trace_id: input.traceId,

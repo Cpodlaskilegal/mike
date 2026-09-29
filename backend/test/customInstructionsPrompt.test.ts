@@ -9,7 +9,7 @@ test("custom instructions keep firm rules at system priority and personal rules 
   const firm = formatFirmInstructions(" Use the firm's preferred citation style. ");
   const personal = formatPersonalInstructions(" Keep answers concise. ");
   assert.match(firm, /Docket's mandatory citation, tool, authorization, and safety rules remain in force/);
-  assert.match(firm, /Firm-wide instructions take priority over personal instructions/);
+  assert.match(firm, /Firm-wide instructions take priority over project and personal instructions/);
   assert.match(firm, /cannot grant access to data or tools/);
   assert.match(firm, /Use the firm's preferred citation style/);
   assert.match(personal, /STANDING PERSONAL INSTRUCTIONS/);

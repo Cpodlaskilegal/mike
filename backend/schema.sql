@@ -308,12 +308,25 @@ create table if not exists public.projects (
   cm_number text,
   visibility text not null default 'private',
   shared_with jsonb not null default '[]'::jsonb,
+  instructions text not null default '' check (char_length(instructions) <= 5000),
+  instruction_version integer not null default 0 check (instruction_version >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_projects_user on public.projects(user_id);
 create index if not exists projects_shared_with_idx on public.projects using gin (shared_with);
+
+create table if not exists public.project_instruction_history (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  version integer not null check (version > 0),
+  instructions text not null check (char_length(instructions) <= 5000),
+  edited_by_user_id text references public.app_users(id) on delete set null,
+  editor_email text not null,
+  created_at timestamptz not null default now(),
+  unique (project_id, version)
+);
 
 create table if not exists public.project_subfolders (
   id uuid primary key default gen_random_uuid(),

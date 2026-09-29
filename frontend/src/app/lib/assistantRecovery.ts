@@ -134,6 +134,7 @@ export function buildContinuationDraft(
       ...priorRequestText,
     ].join("\n"),
     files: files.length ? files : undefined,
+    ...(latest.generation || original?.generation ? { generation: { ...(latest.generation ?? original?.generation) } as DocketMessage["generation"] } : {}),
     workflow: latest.workflow
       ? { ...latest.workflow }
       : original?.workflow ? { ...original.workflow } : undefined,

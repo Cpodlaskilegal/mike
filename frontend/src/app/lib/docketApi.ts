@@ -664,6 +664,31 @@ export async function getProjectPeople(
   return apiRequest<ProjectPeople>(`/projects/${projectId}/people`);
 }
 
+export interface ProjectInstructions {
+  instructions: string;
+  version: number;
+  owner_user_id: string;
+  can_edit: boolean;
+  history?: {
+    version: number;
+    instructions: string;
+    edited_by_user_id: string | null;
+    editor_email: string;
+    created_at: string;
+  }[];
+}
+
+export async function getProjectInstructions(projectId: string): Promise<ProjectInstructions> {
+  return apiRequest<ProjectInstructions>(`/projects/${encodeURIComponent(projectId)}/instructions`);
+}
+
+export async function saveProjectInstructions(projectId: string, instructions: string, expectedVersion: number): Promise<ProjectInstructions> {
+  return apiRequest<ProjectInstructions>(`/projects/${encodeURIComponent(projectId)}/instructions`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instructions, expected_version: expectedVersion }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Documents
 // ---------------------------------------------------------------------------

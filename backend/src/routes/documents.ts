@@ -1,6 +1,7 @@
 import { requireAuth } from "../middleware/auth";
 import { createAsyncRouter } from "../middleware/asyncRouteErrors";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerSupabase, pool } from "../lib/supabase";
+import { EditResolutionError, resolveDocumentEdit } from "../lib/documentEditResolution";
 import {
   buildContentDisposition,
   downloadFile,
@@ -1157,203 +1158,52 @@ async function handleEditResolution(
   const userEmail = res.locals.userEmail as string | undefined;
   const { documentId, editId } = req.params;
   const db = createServerSupabase();
-
-  console.log(`[edit-resolution] incoming ${mode}`, {
-    userId,
-    documentId,
-    editId,
-  });
-
-  const { data: edit, error: editErr } = await db
-    .from("document_edits")
-    .select("id, document_id, change_id, del_w_id, ins_w_id, status")
-    .eq("id", editId)
-    .eq("document_id", documentId)
-    .single();
-  console.log(`[edit-resolution] fetched edit row`, { edit, editErr });
-  if (!edit) {
-    console.log(`[edit-resolution] edit not found, returning 404`);
-    return void res.status(404).json({ detail: "Edit not found" });
-  }
-  // Idempotent: if the edit is already resolved, return the current doc
-  // state so stale UI (e.g. an old chat reloaded in a new session) can
-  // reconcile without throwing.
-  if (edit.status !== "pending") {
-    console.log(`[edit-resolution] edit already resolved`, {
-      editId,
-      status: edit.status,
-    });
-    const { data: doc } = await db
-      .from("documents")
-      .select("current_version_id, filename, user_id, project_id")
-      .eq("id", documentId)
-      .single();
-    if (!doc) {
-      console.log(`[edit-resolution] doc not found for resolved edit`);
-      return void res.status(404).json({ detail: "Document not found" });
-    }
-    const accessResolved = await ensureDocAccess(doc, userId, userEmail, db);
-    if (!accessResolved.ok) {
-      console.log(`[edit-resolution] doc access denied for resolved edit`);
-      return void res.status(404).json({ detail: "Document not found" });
-    }
-    const activeForResolved = await loadActiveVersion(documentId, db);
-    const payload = {
-      ok: true,
-      already_resolved: true,
-      status: edit.status,
-      version_id: doc.current_version_id ?? null,
-      download_url: activeForResolved
-        ? buildDownloadUrl(
-            activeForResolved.storage_path,
-            (doc.filename as string) ?? "document.docx",
-          )
-        : null,
-      remaining_pending: 0,
-    };
-    console.log(`[edit-resolution] returning already-resolved payload`, payload);
-    return void res.status(200).json(payload);
-  }
-
-  const { data: doc, error: docErr } = await db
+  const { data: doc, error } = await db
     .from("documents")
-    .select("id, current_version_id, user_id, project_id")
+    .select("id, user_id, project_id")
     .eq("id", documentId)
-    .single();
-  console.log(`[edit-resolution] fetched doc`, { doc, docErr });
-  if (!doc)
-    return void res.status(404).json({ detail: "Document not found" });
+    .maybeSingle();
+  if (error) return void res.status(503).json({ detail: "Unable to load the document. Please retry.", retryable: true });
+  if (!doc) return void res.status(404).json({ detail: "Document not found" });
   const access = await ensureDocAccess(doc, userId, userEmail, db);
-  if (!access.ok)
-    return void res.status(404).json({ detail: "Document not found" });
+  if (!access.ok) return void res.status(404).json({ detail: "Document not found" });
 
-  const active = await loadActiveVersion(documentId, db);
-  const latestPath = active?.storage_path ?? null;
-  console.log(`[edit-resolution] resolved latestPath`, {
-    latestPath,
-    current_version_id: doc.current_version_id,
-  });
-  if (!latestPath)
-    return void res.status(404).json({ detail: "No file to edit" });
-
-  const raw = await downloadFile(latestPath);
-  console.log(`[edit-resolution] downloaded bytes`, {
-    byteLength: raw?.byteLength ?? 0,
-  });
-  if (!raw)
-    return void res.status(404).json({ detail: "Document bytes not available" });
-
-  const wIds = [edit.del_w_id, edit.ins_w_id].filter(
-    (v): v is string => typeof v === "string" && v.length > 0,
-  );
-  const { bytes: resolvedBytes, found } = await resolveTrackedChange(
-    Buffer.from(raw),
-    wIds,
-    mode,
-  );
-  console.log(`[edit-resolution] resolveTrackedChange result`, {
-    mode,
-    change_id: edit.change_id,
-    wIds,
-    found,
-    resolvedByteLength: resolvedBytes?.byteLength ?? 0,
-  });
-  if (!found) {
-    console.log(
-      `[edit-resolution] change_id not found in docx — updating status only`,
-    );
-    // Still update DB status so the UI reflects the decision — the change
-    // may have been auto-consumed by a previous accept/reject pass.
-    const { error: updErr } = await db
-      .from("document_edits")
-      .update({ status: mode === "accept" ? "accepted" : "rejected", resolved_at: new Date().toISOString() })
-      .eq("id", editId);
-    console.log(`[edit-resolution] status-only update`, { updErr });
-    const { data: filenameRow } = await db
-      .from("documents")
-      .select("filename")
-      .eq("id", documentId)
-      .single();
-    const payload = {
+  try {
+    const result = await resolveDocumentEdit({ documentId, editId, mode }, {
+      database: pool,
+      download: downloadFile,
+      upload: uploadFile,
+      remove: deleteFile,
+      resolve: resolveTrackedChange,
+      report: (event, metadata) => console.error(`[edit-resolution] ${event}`, metadata),
+    });
+    res.json({
       ok: true,
-      version_id: doc.current_version_id,
-      download_url: buildDownloadUrl(
-        latestPath,
-        (filenameRow?.filename as string) ?? "document.docx",
-      ),
-      remaining_pending: 0,
-    };
-    console.log(`[edit-resolution] returning not-found payload`, payload);
-    return void res.status(200).json(payload);
+      already_resolved: result.already_resolved,
+      status: result.status,
+      version_id: result.version_id,
+      download_url: buildDownloadUrl(result.storage_path, result.filename),
+      remaining_pending: result.remaining_pending,
+    });
+  } catch (error) {
+    if (error instanceof EditResolutionError) {
+      return void res.status(error.status).json({ detail: error.message, code: error.code, retryable: error.status === 503 });
+    }
+    console.error("[edit-resolution] resolution failed", { documentId, editId });
+    res.status(503).json({ detail: "Unable to resolve this edit. Refresh the document and retry; the prior version is preserved.", retryable: true });
   }
-
-  // Overwrite bytes in place at the current version's storage path —
-  // accept/reject mutates the existing version rather than spawning a
-  // new row. This keeps document_versions lean (one row per assistant
-  // edit, not one per accept/reject click) and avoids the N-versions-
-  // per-doc churn as users resolve pending changes.
-  const ab = resolvedBytes.buffer.slice(
-    resolvedBytes.byteOffset,
-    resolvedBytes.byteOffset + resolvedBytes.byteLength,
-  ) as ArrayBuffer;
-  console.log(`[edit-resolution] overwriting bytes in place`, {
-    latestPath,
-    byteLength: ab.byteLength,
-  });
-  await uploadFile(
-    latestPath,
-    ab,
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  );
-
-  const { error: statusErr } = await db
-    .from("document_edits")
-    .update({
-      status: mode === "accept" ? "accepted" : "rejected",
-      resolved_at: new Date().toISOString(),
-    })
-    .eq("id", editId);
-  console.log(`[edit-resolution] updated document_edits status`, {
-    editId,
-    newStatus: mode === "accept" ? "accepted" : "rejected",
-    statusErr,
-  });
-
-  const { count: remainingPending } = await db
-    .from("document_edits")
-    .select("id", { count: "exact", head: true })
-    .eq("document_id", documentId)
-    .eq("status", "pending");
-  console.log(`[edit-resolution] remaining pending count`, { remainingPending });
-
-  const { data: filenameRow } = await db
-    .from("documents")
-    .select("filename")
-    .eq("id", documentId)
-    .single();
-  const payload = {
-    ok: true,
-    version_id: doc.current_version_id,
-    download_url: buildDownloadUrl(
-      latestPath,
-      (filenameRow?.filename as string) ?? "document.docx",
-    ),
-    remaining_pending: remainingPending ?? 0,
-  };
-  console.log(`[edit-resolution] returning success payload`, payload);
-  res.json(payload);
 }
 
 documentsRouter.post(
   "/:documentId/edits/:editId/accept",
   requireAuth,
-  (req, res) => void handleEditResolution(req, res, "accept"),
+  (req, res) => handleEditResolution(req, res, "accept"),
 );
 
 documentsRouter.post(
   "/:documentId/edits/:editId/reject",
   requireAuth,
-  (req, res) => void handleEditResolution(req, res, "reject"),
+  (req, res) => handleEditResolution(req, res, "reject"),
 );
 
 async function handleDocumentUpload(

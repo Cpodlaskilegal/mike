@@ -2,152 +2,9 @@
 
 import { useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { readEditResolutionError } from "@/app/lib/editResolutionError";
 import type { DocketEditAnnotation } from "../shared/types";
 
-function normalizeText(s: string) {
-    return s.replace(/\s+/g, " ").trim();
-}
-
-function findMatch(
-    container: Element,
-    tag: "ins" | "del",
-    opts: { w_id?: string | null; text?: string },
-): HTMLElement | null {
-    if (opts.w_id) {
-        // Values are numeric strings from our own backend — CSS.escape
-        // makes them hex-encoded which works but is harder to debug.
-        const byId = container.querySelector(
-            `${tag}[data-w-id="${opts.w_id}"]`,
-        ) as HTMLElement | null;
-        console.log("[EditCard] findMatch by w_id", {
-            tag,
-            w_id: opts.w_id,
-            found: !!byId,
-            totalTagged: container.querySelectorAll(`${tag}[data-w-id]`).length,
-            totalAny: container.querySelectorAll(tag).length,
-        });
-        if (byId) return byId;
-    }
-    const text = opts.text ?? "";
-    const target = normalizeText(text);
-    if (!target) return null;
-    const candidates = Array.from(
-        container.querySelectorAll(tag),
-    ) as HTMLElement[];
-    const byText =
-        candidates.find(
-            (el) => normalizeText(el.textContent ?? "") === target,
-        ) ??
-        candidates.find((el) =>
-            normalizeText(el.textContent ?? "").includes(target),
-        ) ??
-        null;
-    console.log("[EditCard] findMatch by text", {
-        tag,
-        target,
-        found: !!byText,
-        candidateCount: candidates.length,
-    });
-    return byText;
-}
-
-/**
- * Ephemeral DOM mutation so the tracked change visually resolves the
- * instant the user clicks Accept/Reject, instead of waiting for the
- * backend round-trip + re-render. The real re-render from the new
- * version supersedes this shortly after.
- */
-/**
- * Apply the optimistic DOM mutation for an accept/reject click. Returns
- * a revert function that undoes every style + class the mutation added,
- * so if the backend call later fails we can restore the original look.
- */
-export function applyOptimisticResolution(
-    annotation: DocketEditAnnotation,
-    verb: "accept" | "reject",
-): () => void {
-    const reverts: (() => void)[] = [];
-    if (typeof document === "undefined") return () => {};
-
-    const hide = (el: HTMLElement) => {
-        el.classList.add("docx-edit-hidden");
-        const prev = el.style.getPropertyValue("display");
-        const prevPriority = el.style.getPropertyPriority("display");
-        el.style.setProperty("display", "none", "important");
-        reverts.push(() => {
-            el.classList.remove("docx-edit-hidden");
-            if (prev) el.style.setProperty("display", prev, prevPriority);
-            else el.style.removeProperty("display");
-        });
-    };
-    const keep = (el: HTMLElement) => {
-        el.classList.add("docx-edit-kept");
-        const snapshot = {
-            color: [
-                el.style.getPropertyValue("color"),
-                el.style.getPropertyPriority("color"),
-            ] as const,
-            bg: [
-                el.style.getPropertyValue("background-color"),
-                el.style.getPropertyPriority("background-color"),
-            ] as const,
-            td: [
-                el.style.getPropertyValue("text-decoration"),
-                el.style.getPropertyPriority("text-decoration"),
-            ] as const,
-        };
-        el.style.setProperty("color", "inherit", "important");
-        el.style.setProperty("background-color", "transparent", "important");
-        el.style.setProperty("text-decoration", "none", "important");
-        reverts.push(() => {
-            el.classList.remove("docx-edit-kept");
-            const restore = (
-                prop: "color" | "background-color" | "text-decoration",
-                [v, p]: readonly [string, string],
-            ) => {
-                if (v) el.style.setProperty(prop, v, p);
-                else el.style.removeProperty(prop);
-            };
-            restore("color", snapshot.color);
-            restore("background-color", snapshot.bg);
-            restore("text-decoration", snapshot.td);
-        });
-    };
-
-    const scrolls = document.querySelectorAll(
-        `[data-document-id="${CSS.escape(annotation.document_id)}"]`,
-    );
-    console.log("[EditCard] optimistic scrolls found:", scrolls.length, {
-        document_id: annotation.document_id,
-        ins_w_id: annotation.ins_w_id,
-        del_w_id: annotation.del_w_id,
-        inserted_text: annotation.inserted_text?.slice(0, 40),
-        deleted_text: annotation.deleted_text?.slice(0, 40),
-    });
-    scrolls.forEach((scroll) => {
-        const container = scroll.querySelector(".docx-view-container");
-        if (!container) return;
-
-        const insEl = findMatch(container, "ins", {
-            w_id: annotation.ins_w_id,
-            text: annotation.inserted_text,
-        });
-        const delEl = findMatch(container, "del", {
-            w_id: annotation.del_w_id,
-            text: annotation.deleted_text,
-        });
-
-        if (verb === "accept") {
-            if (insEl) keep(insEl);
-            if (delEl) hide(delEl);
-        } else {
-            if (insEl) hide(insEl);
-            if (delEl) keep(delEl);
-        }
-    });
-
-    return () => reverts.forEach((fn) => fn());
-}
 
 interface Props {
     annotation: DocketEditAnnotation;
@@ -184,8 +41,8 @@ interface Props {
         downloadUrl: string | null;
     }) => void;
     /**
-     * Fires when the backend accept/reject call fails. The optimistic
-     * DOM mutation has already been reverted. Parent should surface a
+     * Fires when the backend accept/reject call fails. The original
+     * displayed bytes are preserved. Parent should surface a
      * warning (e.g. on the DocxView for this document + version) and
      * clear the per-edit in-flight state keyed on `editId`.
      */
@@ -211,6 +68,7 @@ export function EditCard({
     onError,
 }: Props) {
     const [busy, setBusy] = useState(false);
+    const [resolutionError, setResolutionError] = useState<string | null>(null);
     const [localStatus, setLocalStatus] = useState<
         "pending" | "accepted" | "rejected"
     >(annotation.status);
@@ -228,17 +86,12 @@ export function EditCard({
     const handle = async (verb: "accept" | "reject") => {
         if (busy || resolved) return;
         setBusy(true);
+        setResolutionError(null);
         onResolveStart?.({
             editId: annotation.edit_id,
             documentId: annotation.document_id,
             verb,
         });
-        let revert: (() => void) | null = null;
-        try {
-            revert = applyOptimisticResolution(annotation, verb);
-        } catch (e) {
-            console.error("[EditCard] optimistic update threw", e);
-        }
         try {
             const {
                 data: { session },
@@ -255,7 +108,7 @@ export function EditCard({
                         : undefined,
                 },
             );
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            if (!resp.ok) throw await readEditResolutionError(resp);
             const data = (await resp.json()) as {
                 ok: boolean;
                 already_resolved?: boolean;
@@ -275,19 +128,13 @@ export function EditCard({
             });
         } catch (e) {
             console.error("EditCard resolve failed", e);
-            try {
-                revert?.();
-            } catch (revertErr) {
-                console.error("[EditCard] revert threw", revertErr);
-            }
+            const message = e instanceof Error ? e.message : "Unable to save the decision. Refresh and retry.";
+            setResolutionError(message);
             onError?.({
                 editId: annotation.edit_id,
                 documentId: annotation.document_id,
                 versionId: annotation.version_id ?? null,
-                message:
-                    verb === "accept"
-                        ? "Couldn't save accept — reverted."
-                        : "Couldn't save reject — reverted.",
+                message,
             });
         } finally {
             setBusy(false);
@@ -313,6 +160,7 @@ export function EditCard({
                     </span>
                 )}
             </div>
+            {resolutionError && <p role="alert" className="mt-2 text-xs text-red-700">{resolutionError}</p>}
             <div className="flex gap-2 mt-3">
                 <button
                     onClick={() => handle("accept")}
