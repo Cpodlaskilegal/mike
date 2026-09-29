@@ -21,12 +21,14 @@ import {
   AssistantStreamAbortError,
   completeText,
   isAbortError,
-  parseMainModelRequest,
   throwIfAborted,
   type ProviderRunProgress,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { getEffectiveCustomInstructions } from "../lib/userInstructions";
+import { getProjectInstructions } from "../lib/projectInstructions";
+import { preflightAssistantModel } from "../lib/assistantModelPreflight";
+import { assistantGenerationForRecovery, validateAssistantModelIntent } from "../lib/assistantModelPolicy";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine, isRetryableChatStreamErrorCode, toChatStreamError } from "../lib/chatErrors";
 import { assistantStartupFailureResponse, assistantStartupPlaceholderAnnotations, classifyAssistantRunCreateError, clearAssistantStartupAnnotations, loadAccessibleAssistantRunMetadata, loadAccessibleAssistantStartupFailures, persistAssistantUserMessage, recordAssistantStartupFailure } from "../lib/assistantRunPresentation";
@@ -758,6 +760,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
   if (!parsedProjectId.ok) {
     return void res.status(400).json({ detail: parsedProjectId.detail });
   }
+  const modelIntent = validateAssistantModelIntent(body);
+  if (!modelIntent.ok) return void res.status(400).json({ detail: modelIntent.detail });
   const parsedAskInputsResponse = parseAskInputsResponsePayload(
     body.ask_inputs_response,
   );
@@ -771,25 +775,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
       detail: "ask_inputs_response requires an existing chat_id",
     });
   }
-  const parsedMainModel = parseMainModelRequest(req.body);
-  if (!parsedMainModel.ok) {
-    return void res.status(400).json({ detail: parsedMainModel.detail });
-  }
-  const mainModelRequest = parsedMainModel.value;
-
   const messages = parsedMessages.messages;
   const chat_id = parsedChatId.chatId;
-  const project_id = parsedProjectId.projectId;
-
-  devLog("[chat/stream] incoming request", {
-    userId,
-    chat_id,
-    project_id,
-    requestedModel: mainModelRequest.requestedModel,
-    resolvedModel: mainModelRequest.providerModel,
-    modelResolutionStatus: mainModelRequest.status,
-    messageCount: messages?.length,
-  });
 
   const userEmail = res.locals.userEmail as string | undefined;
   const db = createServerSupabase();
@@ -817,9 +804,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     chatTitle = existing.title;
   }
 
+  // Verify scope before inspecting project instructions or attachment metadata.
   if (!chatId) {
-    // If creating a chat tied to a project, the user must have access
-    // to the project (own or shared).
     const projectAccess = await validateAccessibleProjectId(
       resolvedProjectId,
       userId,
@@ -830,7 +816,22 @@ chatRouter.post("/", requireAuth, async (req, res) => {
       return void res
         .status(projectAccess.status)
         .json({ detail: projectAccess.detail });
+  }
 
+  const modelSettings = await getUserModelSettings(userId, db);
+  const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+  const parsedMainModel = await preflightAssistantModel({ body, messages,
+    projectId: resolvedProjectId, userId, db, apiKeys: modelSettings.api_keys, workflowStore });
+  if (!parsedMainModel.ok) return void res.status(400).json({ detail: parsedMainModel.detail });
+  const mainModelRequest = parsedMainModel.request;
+  const modelSelection = parsedMainModel.selection;
+  const personalAndFirmInstructions = await getEffectiveCustomInstructions(userId, db);
+  const projectInstructions = resolvedProjectId ? await getProjectInstructions(resolvedProjectId, userId, db) : null;
+  const customInstructions = { ...personalAndFirmInstructions,
+    projectInstructions: projectInstructions?.instructions,
+    projectInstructionVersion: projectInstructions?.version };
+
+  if (!chatId) {
     const { data: newChat, error } = await db
       .from("chats")
       .insert({ user_id: userId, project_id: resolvedProjectId })
@@ -878,6 +879,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
   const startDiagnostic = streamLifecycle;
 
   const lastUser = [...streamMessages].reverse().find((m) => m.role === "user");
+  if (lastUser) Object.assign(lastUser, { generation: assistantGenerationForRecovery(mainModelRequest, modelSelection) });
   let userMessageId: string | null = null;
   if (lastUser) {
     try {
@@ -1035,6 +1037,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         model: mainModelRequest.providerModel,
         reasoningMode: mainModelRequest.reasoningMode,
         reasoningEffort: mainModelRequest.reasoningEffort,
+        modelSelection,
+        projectInstructionVersion: projectInstructions?.version,
         traceId: streamLifecycle.traceId,
         revision: streamLifecycle.revision,
         gitSha: streamLifecycle.gitSha,
@@ -1294,6 +1298,8 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         traceId: streamLifecycle.traceId,
         revision: streamLifecycle.revision,
         continuingAfterDisconnect: backgroundRunEnabled,
+        modelSelection,
+        projectInstructionVersion: projectInstructions?.version,
       })}\n\n`,
     );
     if (parsedAskInputsResponse.response) {
@@ -1371,9 +1377,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
       db,
       docIndex,
     );
-    const { api_keys: apiKeys, legal_research_us: legalResearchUs } =
-      await getUserModelSettings(userId, db);
-    const customInstructions = await getEffectiveCustomInstructions(userId, db);
+    const { api_keys: apiKeys, legal_research_us: legalResearchUs } = modelSettings;
     const apiMessages = buildMessages(
       enrichedMessages,
       docAvailability,
@@ -1384,8 +1388,6 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     );
     const ownMailboxIntent =
       latestUserMessageHasOwnMailboxIntent(streamMessages);
-
-    const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
     devLog("[chat/stream] starting LLM stream", {
       apiMessageCount: apiMessages.length,

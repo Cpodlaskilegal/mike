@@ -1,5 +1,6 @@
 import type { createServerSupabase } from "./supabase";
 import { isRetryableChatStreamErrorCode } from "./chatErrors";
+import { assistantModelSelectionFromRow, type AssistantModelSelection } from "./assistantModelPolicy";
 import { isAssistantStreamRequestId, type AssistantRunDiagnosticStream } from "./assistantStreamLifecycle";
 
 const STARTUP_ANNOTATION_KEY = "docket_assistant_startup";
@@ -89,6 +90,8 @@ export function assistantStartupFailureResponse(
 }
 
 export type AssistantRunMessageMetadata = {
+  model_selection?: AssistantModelSelection;
+  project_instruction_version?: number;
   run_id: string;
   status: string;
   error_code: string | null;
@@ -102,12 +105,13 @@ export type AssistantRunMessageMetadata = {
 export async function persistAssistantUserMessage(
   db: ReturnType<typeof createServerSupabase>,
   chatId: string,
-  message: { content: string | null; files?: unknown; workflow?: unknown },
+  message: { content: string | null; files?: unknown; workflow?: unknown; generation?: unknown },
   diagnostic?: AssistantRunDiagnosticStream,
 ): Promise<string | null> {
   const insert = db.from("chat_messages").insert({
     chat_id: chatId,
     role: "user",
+    ...(message.generation ? { generation: message.generation } : {}),
     content: message.content,
     files: message.files ?? null,
     workflow: message.workflow ?? null,
@@ -256,7 +260,7 @@ export async function loadAccessibleAssistantRunMetadata(
   if (!messageIds.length) return new Map();
   const { data, error } = await db
     .from("assistant_background_runs")
-    .select("stream_request_id, assistant_message_id, status, error_code, safe_error_message, trace_id, revision, git_sha, created_at")
+    .select("stream_request_id, assistant_message_id, status, error_code, safe_error_message, trace_id, revision, git_sha, created_at, model, model_selection_mode, model_selection_reason, model_policy_version, model_task, model_budget_policy, project_instruction_version")
     .eq("chat_id", chatId)
     .in("assistant_message_id", messageIds)
     .order("created_at", { ascending: false });
@@ -270,6 +274,8 @@ export async function loadAccessibleAssistantRunMetadata(
     const status = String(row.status ?? "");
     const errorCode = typeof row.error_code === "string" ? row.error_code : null;
     byAssistantMessageId.set(messageId, {
+      ...(assistantModelSelectionFromRow(row) ? { model_selection: assistantModelSelectionFromRow(row) } : {}),
+      ...(Number.isInteger(row.project_instruction_version) ? { project_instruction_version: row.project_instruction_version as number } : {}),
       run_id: String(row.stream_request_id),
       status,
       error_code: errorCode,

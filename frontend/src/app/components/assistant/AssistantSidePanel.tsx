@@ -31,7 +31,7 @@ type CommonTab = {
     initialScrollTop?: number | null;
 };
 
-export type DocumentTab = CommonTab & { kind: "document" };
+export type DocumentTab = CommonTab & { kind: "document"; followCurrentVersion?: boolean };
 
 export type CitationTab = CommonTab & {
     kind: "citation";

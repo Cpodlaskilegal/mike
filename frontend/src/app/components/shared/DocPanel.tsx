@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { applyOptimisticResolution } from "../assistant/EditCard";
+import { readEditResolutionError } from "@/app/lib/editResolutionError";
 import { DocView } from "./DocView";
 import { DocxView } from "./DocxView";
 import {
@@ -343,17 +343,6 @@ function EditResolveButtons({
                 documentId: edit.document_id,
                 verb,
             });
-            // Optimistically mutate the DOM in the open viewer so the
-            // change reflects immediately. Revert if the backend errors.
-            let revert: (() => void) | null = null;
-            try {
-                revert = applyOptimisticResolution(edit, verb);
-            } catch (e) {
-                console.error(
-                    "[DocPanel] optimistic update threw",
-                    e,
-                );
-            }
             try {
                 const {
                     data: { session },
@@ -371,7 +360,7 @@ function EditResolveButtons({
                             : undefined,
                     },
                 );
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                if (!resp.ok) throw await readEditResolutionError(resp);
                 const data = (await resp.json()) as {
                     ok: boolean;
                     status?: "accepted" | "rejected";
@@ -391,22 +380,11 @@ function EditResolveButtons({
                 });
             } catch (e) {
                 console.error("[DocPanel] resolve failed", e);
-                try {
-                    revert?.();
-                } catch (revertErr) {
-                    console.error(
-                        "[DocPanel] revert threw",
-                        revertErr,
-                    );
-                }
                 onError?.({
                     editId: edit.edit_id,
                     documentId: edit.document_id,
                     versionId: edit.version_id ?? null,
-                    message:
-                        verb === "accept"
-                            ? "Couldn't save accept — please retry."
-                            : "Couldn't save reject — please retry.",
+                    message: e instanceof Error ? e.message : "Unable to save the decision. Refresh and retry.",
                 });
             } finally {
                 setBusy(false);

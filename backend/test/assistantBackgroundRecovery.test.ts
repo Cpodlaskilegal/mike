@@ -250,9 +250,12 @@ test("recovers a stale completed plain-text response and persists completion", a
 
   assert.deepEqual(result, { inspected: 1, recovered: 1, failed: 0 });
   assert.deepEqual(retrieved, ["resp_original"]);
-  assert.deepEqual(messages.get(run.assistantMessageId)?.content, [
-    { type: "content", text: "Recovered answer." },
-  ]);
+  const recoveredEvents = messages.get(run.assistantMessageId)?.content as { type: string; text?: string; report?: { decision: string; coverage: { verified: number }; checks: { field: string; status: string }[] } }[];
+  assert.deepEqual(recoveredEvents.at(-1), { type: "content", text: "Recovered answer." });
+  assert.equal(recoveredEvents[0].type, "legal_quality");
+  assert.equal(recoveredEvents[0].report?.decision, "attorney_review");
+  assert.equal(recoveredEvents[0].report?.coverage.verified, 0);
+  assert.ok(recoveredEvents[0].report?.checks.some((check) => check.field === "recovered_source_coverage" && check.status === "unchecked"));
   assert.equal(runs.get(run.streamRequestId)?.status, "completed");
   assert.equal(runs.get(run.streamRequestId)?.provider_status, "completed");
   assert.equal(

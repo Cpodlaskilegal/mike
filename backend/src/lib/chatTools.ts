@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "crypto";
 import {
     formatFirmInstructions,
     formatPersonalInstructions,
+    formatProjectInstructions,
     type CustomInstructions,
 } from "./customInstructionsPrompt";
 import {
@@ -90,6 +91,12 @@ import {
     hasExemplarIntent,
     runExemplarSearchPreflight,
 } from "./exemplarSearch";
+import {
+    createLegalQualityState, evaluateLegalOutput, finalizeLegalOutput,
+    inspectLegalDocx, legalTextHash, LEGAL_CLAIM_PARAMETERS,
+    LEGAL_QUALITY_PROMPT, LEGAL_QUALITY_TOOL, parseLegalClaims,
+    recordLegalDocumentSource, type LegalQualityEvent, type LegalQualityState,
+} from "./legalOutputGate";
 
 const STANDARD_FONT_DATA_URL = (() => {
     try {
@@ -676,6 +683,7 @@ const ASK_INPUTS_TOOL = {
 };
 
 export const TOOLS = [
+    LEGAL_QUALITY_TOOL,
     {
         type: "function",
         function: {
@@ -738,6 +746,7 @@ export const TOOLS = [
             parameters: {
                 type: "object",
                 properties: {
+                    legal_claims: LEGAL_CLAIM_PARAMETERS,
                     title: {
                         type: "string",
                         description:
@@ -900,6 +909,7 @@ export const TOOLS = [
             parameters: {
                 type: "object",
                 properties: {
+                    legal_claims: LEGAL_CLAIM_PARAMETERS,
                     doc_id: {
                         type: "string",
                         description: "Document slug (e.g. 'doc-0').",
@@ -1181,6 +1191,8 @@ export function buildMessages(
     if (customInstructions) {
         const firmInstructions = formatFirmInstructions(customInstructions.firmInstructions);
         if (firmInstructions) systemContent += `\n\n${firmInstructions}`;
+        const projectInstructions = formatProjectInstructions(customInstructions.projectInstructions ?? "", customInstructions.projectInstructionVersion);
+        if (projectInstructions) systemContent += `\n\n${projectInstructions}`;
     }
 
     if (systemPromptExtra) {
@@ -1288,9 +1300,18 @@ export async function generateDocx(
     sections: unknown[],
     userId: string,
     db: ReturnType<typeof createServerSupabase>,
-    options?: { landscape?: boolean; projectId?: string | null },
+    options?: { landscape?: boolean; projectId?: string | null; legalQualityState?: LegalQualityState; legalClaims?: unknown; onLegalQuality?: (event: LegalQualityEvent) => void },
 ) {
     try {
+        const draftText = [title, ...sections.flatMap((value) => {
+            const section = value as { heading?: string; content?: string; table?: { headers?: string[]; rows?: string[][] } };
+            return [section.heading ?? "", section.content ?? "", ...(section.table?.headers ?? []), ...(section.table?.rows ?? []).flat()];
+        })].join("\n");
+        const report = evaluateLegalOutput({ text: draftText, claims: parseLegalClaims(options?.legalClaims), sources: options?.legalQualityState?.sources.values() ?? [] });
+        if (report.decision === "blocked") {
+            options?.onLegalQuality?.({ type: "legal_quality", target: title, report });
+            return { error: "Legal evidence gate blocked this document. Correct demonstrated mismatches before retrying.", legal_quality: report };
+        }
         const {
             Document,
             Paragraph,
@@ -1713,6 +1734,9 @@ export async function generateDocx(
             sections: [{ properties: pageSetup, children }],
         });
         const buf = await Packer.toBuffer(doc);
+        const artifactReport = evaluateLegalOutput({ text: draftText, claims: parseLegalClaims(options?.legalClaims), sources: options?.legalQualityState?.sources.values() ?? [], artifactChecks: await inspectLegalDocx(buf) });
+        options?.onLegalQuality?.({ type: "legal_quality", target: title, report: artifactReport });
+        if (artifactReport.decision === "blocked") return { error: "Legal DOCX gate blocked malformed document output.", legal_quality: artifactReport };
         const zip = await import("jszip");
         const packageZip = await zip.default.loadAsync(buf);
         for (const requiredPath of [
@@ -2139,6 +2163,9 @@ export async function runEditDocument(params: {
         errors,
     } = await applyTrackedEdits(current.bytes, edits, { author: "Docket" });
 
+    const structureChecks = await inspectLegalDocx(editedBytes);
+    if (structureChecks.some((check) => check.status === "error")) return { ok: false, error: "DOCX structural gate blocked malformed tracked output." };
+
     if (changes.length === 0) {
         return {
             ok: false,
@@ -2510,6 +2537,7 @@ async function findInDocumentContent(params: {
     write: (s: string) => void;
     docIndex?: DocIndex;
     db?: ReturnType<typeof createServerSupabase>;
+    legalQualityState?: LegalQualityState;
 }): Promise<string> {
     const {
         docLabel,
@@ -2555,6 +2583,7 @@ async function findInDocumentContent(params: {
             emitEvents: false,
         },
     );
+    recordLegalDocumentSource(params.legalQualityState, docLabel, docInfo.filename, text, 0);
     if (!text || text === "Document could not be read.") {
         write(
             `data: ${JSON.stringify({
@@ -3117,6 +3146,7 @@ export async function runToolCalls(
     ownMailboxExecutor: typeof executeOwnMailboxTool = executeOwnMailboxTool,
     ownMailboxTurnState?: OwnMailboxTurnState,
     allowedToolNames?: ReadonlySet<string>,
+    legalQualityState?: LegalQualityState,
 ): Promise<{
     toolResults: unknown[];
     docsRead: { filename: string; document_id?: string }[];
@@ -3129,6 +3159,7 @@ export async function runToolCalls(
     courtlistenerEvents: CourtlistenerToolEvent[];
     caseCitationEvents: CaseCitationEvent[];
     mcpEvents: McpToolEvent[];
+    legalQualityEvents: LegalQualityEvent[];
 }> {
     throwIfAborted(signal);
     const toolResults: unknown[] = [];
@@ -3146,6 +3177,12 @@ export async function runToolCalls(
     const courtlistenerEvents: CourtlistenerToolEvent[] = [];
     const caseCitationEvents: CaseCitationEvent[] = [];
     const mcpEvents: McpToolEvent[] = [];
+    const legalQualityEvents: LegalQualityEvent[] = [];
+    const qualityState = legalQualityState ?? createLegalQualityState();
+    const publishLegalQuality = (event: LegalQualityEvent) => {
+        legalQualityEvents.push(event);
+        write(`data: ${JSON.stringify(event)}\n\n`);
+    };
     const courtState: CourtlistenerTurnState = courtlistenerState ?? {
         casesByClusterId: new Map(),
     };
@@ -3517,7 +3554,14 @@ export async function runToolCalls(
             break;
         }
 
-        if (tc.function.name === "read_document") {
+        if (tc.function.name === "check_legal_output") {
+            const text = typeof args.text === "string" ? args.text : "";
+            const claims = parseLegalClaims(args.claims);
+            qualityState.manifests.set(legalTextHash(text), claims);
+            const report = evaluateLegalOutput({ text, claims, sources: qualityState.sources.values() });
+            publishLegalQuality({ type: "legal_quality", target: "Proposed draft", report });
+            toolResults.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: report.decision !== "blocked", legal_quality: report }) });
+        } else if (tc.function.name === "read_document") {
             const rawDocId = args.doc_id as string;
             const docId =
                 resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -3552,6 +3596,7 @@ export async function runToolCalls(
                 content,
                 filename ?? docId,
             );
+            recordLegalDocumentSource(qualityState, docId, filename ?? docId, content, ASSISTANT_CONTEXT_LIMITS.fullDocumentChars);
             toolResults.push({
                 role: "tool",
                 tool_call_id: tc.id,
@@ -3581,6 +3626,7 @@ export async function runToolCalls(
                 write,
                 docIndex,
                 db,
+                legalQualityState: qualityState,
             });
             const filename = docStore.get(docId)?.filename;
             if (filename) {
@@ -3654,6 +3700,7 @@ export async function runToolCalls(
                     filename,
                     ASSISTANT_CONTEXT_LIMITS.fetchedDocumentChars,
                 );
+                recordLegalDocumentSource(qualityState, docId, filename, content, ASSISTANT_CONTEXT_LIMITS.fetchedDocumentChars);
                 parts.push(
                     `--- ${filename} (${docId}) ---\n${citationReminder(docId, filename)}\n\n${boundedContent}`,
                 );
@@ -3833,6 +3880,15 @@ export async function runToolCalls(
                     context_after: String(e.context_after ?? ""),
                     reason: e.reason ? String(e.reason) : undefined,
                 }));
+                const proposedText = edits.map((edit) => edit.replace).join("\n");
+                const qualityReport = evaluateLegalOutput({ text: proposedText, claims: parseLegalClaims(args.legal_claims), sources: qualityState.sources.values() });
+                publishLegalQuality({ type: "legal_quality", target: docInfo.filename, report: qualityReport });
+                if (qualityReport.decision === "blocked") {
+                    const error = "Legal evidence gate blocked proposed edits. Correct demonstrated mismatches before retrying.";
+                    emitEditError(docInfo.filename, indexed.document_id, error);
+                    toolResults.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error, legal_quality: qualityReport }) });
+                    continue;
+                }
                 const reuseVersion = turnEditState?.get(indexed.document_id);
                 const result = await runEditDocument({
                     documentId: indexed.document_id,
@@ -3843,6 +3899,7 @@ export async function runToolCalls(
                 });
 
                 if (result.ok) {
+                    qualityState.sources.delete(docId);
                     turnEditState?.set(indexed.document_id, {
                         versionId: result.version_id,
                         versionNumber: result.version_number,
@@ -4522,6 +4579,10 @@ export async function runToolCalls(
                 }
             }
             const totalMatches = hits.length;
+            for (const opinion of opinions) {
+                const id = `case-${record.clusterId}:${opinion.opinion_id ?? "unknown"}`;
+                if (qualityState.sources.get(id)?.completeness !== "complete") qualityState.sources.set(id, { id, label: record.caseName ?? id, authorityName: record.caseName, citations: record.citations, text: opinion.text, completeness: "partial" });
+            }
             const event: CourtlistenerToolEvent = {
                 type: "courtlistener_find_in_case",
                 cluster_id: record.clusterId,
@@ -4639,6 +4700,10 @@ export async function runToolCalls(
                 citation: record.citations[0] ?? null,
                 opinion_count: selectedOpinions.length,
             };
+            for (const opinion of selectedOpinions) {
+                const id = `case-${record.clusterId}:${opinion.opinion_id ?? "unknown"}`;
+                qualityState.sources.set(id, { id, label: record.caseName ?? id, authorityName: record.caseName, citations: record.citations, text: opinion.text, completeness: "complete" });
+            }
             write(`data: ${JSON.stringify(event)}\n\n`);
             courtlistenerEvents.push(event);
             toolResults.push({
@@ -4793,7 +4858,7 @@ export async function runToolCalls(
                 Array.isArray(args.sections) ? args.sections : [],
                 userId,
                 db,
-                { landscape: !!args.landscape, projectId: projectId ?? null },
+                { landscape: !!args.landscape, projectId: projectId ?? null, legalQualityState: qualityState, legalClaims: args.legal_claims, onLegalQuality: publishLegalQuality },
             );
             publishGeneratedDocument(tc, result, previewFilename, "docx");
         } else if (tc.function.name === "generate_excel") {
@@ -4879,6 +4944,7 @@ export async function runToolCalls(
         courtlistenerEvents,
         caseCitationEvents,
         mcpEvents,
+        legalQualityEvents,
     };
 }
 
@@ -4925,6 +4991,7 @@ export type EditAnnotation = {
 };
 
 type AssistantEvent =
+    | LegalQualityEvent
     | { type: "reasoning"; text: string }
     | { type: "doc_read"; filename: string; document_id?: string }
     | {
@@ -5075,7 +5142,7 @@ export async function runLLMStream(params: {
         userId,
         userEmail,
         db,
-        write,
+        write: publish,
         extraTools,
         workflowStore,
         tabularStore,
@@ -5096,6 +5163,19 @@ export async function runLLMStream(params: {
         docketAccessToken,
         ownMailboxIntent = false,
     } = params;
+
+    // Buffer every answer/citation chunk until completion: a later source
+    // tool can reveal an error in text the provider emitted before the tool.
+    // Tool/reasoning activity remains live; only legal/source-backed turns
+    // need a review report, and ordinary answers are released unchanged.
+    let holdLegalContent = includeResearchTools || docStore.size > 0 || /\b(?:legal|pleading|motion|authority|authorities|citation|cite|research|case law|statute|contract|redline|draft)\b/i.test([...apiMessages as { role: string; content?: string | null }[]].reverse().find((message) => message.role === "user")?.content ?? "");
+    const heldContent: string[] = [];
+    let contentReleased = false;
+    const write = (value: string) => {
+        if (!contentReleased && /^data: \{"type":"(?:content_delta|citations)"/.test(value)) heldContent.push(value);
+        else publish(value);
+    };
+    const legalQualityState = createLegalQualityState();
 
     // Extract system prompt; pass remaining turns to the adapter as
     // plain user/assistant messages.
@@ -5167,6 +5247,7 @@ export async function runLLMStream(params: {
         (activeTools as OpenAIToolSchema[]).map((tool) => tool.function.name),
     );
     systemPrompt += `\n\n${buildTurnCapabilityContext(activeTools as OpenAIToolSchema[])}`;
+    systemPrompt += `\n\n${LEGAL_QUALITY_PROMPT}`;
 
     const events: AssistantEvent[] = [];
     // One assistant turn produces at most one document_versions row per
@@ -5288,6 +5369,39 @@ export async function runLLMStream(params: {
             events.push({ type: "reasoning", text: iterReasoning });
             iterReasoning = "";
         }
+    };
+
+    const releaseLegalContent = (incomplete = false) => {
+        if (contentReleased) return;
+        holdLegalContent ||= fullText.includes(CITATIONS_OPEN_TAG);
+        const visibleText = events.filter((item): item is Extract<AssistantEvent, { type: "content" }> => item.type === "content").map((item) => item.text).join("");
+        if (!holdLegalContent) {
+            if (incomplete) {
+                if (visibleText) publish(`data: ${JSON.stringify({ type: "content_delta", text: visibleText })}\n\n`);
+            } else for (const content of heldContent) publish(content);
+            contentReleased = true;
+            return;
+        }
+        const result = finalizeLegalOutput(fullText, legalQualityState);
+        if (incomplete) {
+            result.report.checks.push({ claimId: "output", field: "response_completion", status: "unchecked", detail: "Provider stopped before completing this response; unfinished support and conclusions require review." });
+            result.report.coverage.unchecked += 1;
+        }
+        const event: LegalQualityEvent = { type: "legal_quality", target: incomplete ? "Incomplete assistant response" : "Assistant response", report: result.report };
+        events.push(event);
+        publish(`data: ${JSON.stringify(event)}\n\n`);
+        if (result.report.decision === "blocked") {
+            fullText = result.text;
+            for (let index = events.length - 1; index >= 0; index--) if (events[index].type === "content") events.splice(index, 1);
+            events.push({ type: "content", text: result.text });
+            publish(`data: ${JSON.stringify({ type: "content_delta", text: result.text })}\n\n`);
+        } else if (incomplete) {
+            if (visibleText) publish(`data: ${JSON.stringify({ type: "content_delta", text: visibleText })}\n\n`);
+        } else {
+            for (const content of heldContent) publish(content);
+        }
+        holdLegalContent = false;
+        contentReleased = true;
     };
 
     // Perform the designated library search before the model can select a
@@ -5464,6 +5578,7 @@ export async function runLLMStream(params: {
                     arguments: JSON.stringify(c.input),
                 },
             }));
+            if (calls.some((call) => ["check_legal_output", "generate_docx", "edit_document", "read_document", "fetch_documents", "find_in_document", COURTLISTENER_TOOL_NAMES.readCase, COURTLISTENER_TOOL_NAMES.findInCase].includes(call.name))) holdLegalContent = true;
             const {
                 toolResults,
                 docsRead,
@@ -5476,6 +5591,7 @@ export async function runLLMStream(params: {
                 courtlistenerEvents,
                 caseCitationEvents,
                 mcpEvents,
+                legalQualityEvents,
             } = await runToolCalls(
                 toolCalls,
                 docStore,
@@ -5518,6 +5634,7 @@ export async function runLLMStream(params: {
                 executeOwnMailboxTool,
                 ownMailboxTurnState,
                 allowedToolNames,
+                legalQualityState,
             );
             for (const r of docsRead) {
                 events.push({
@@ -5582,6 +5699,7 @@ export async function runLLMStream(params: {
             for (const event of mcpEvents) {
                 events.push(event);
             }
+            for (const event of legalQualityEvents) events.push(event);
 
             // Index alignment would break if any tool branch skips its
             // push (unhandled tool name, disabled store, guard failure).
@@ -5627,14 +5745,18 @@ export async function runLLMStream(params: {
             }
             if (signal?.aborted || isAbortError(error)) {
                 flushPartialTurn();
+                releaseLegalContent(true);
                 throw new AssistantStreamAbortError(fullText, events);
             }
             flushPartialTurn();
+            releaseLegalContent(true);
             throw new AssistantStreamFailureError(error, fullText, events);
         })
         ;
 
     flushText();
+
+    releaseLegalContent();
 
     // Parse and emit citations from <CITATIONS> block
     const citations = buildCitations

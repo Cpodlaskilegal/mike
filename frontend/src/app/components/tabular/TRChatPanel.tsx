@@ -32,6 +32,7 @@ import type {
 import { ModelToggle, TABULAR_MODELS } from "../assistant/ModelToggle";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
 import { PreResponseWrapper } from "../shared/PreResponseWrapper";
+import { LegalQualityBlock } from "../assistant/message/EventBlocks";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
@@ -236,6 +237,7 @@ function TRResponseStatus({ isActive }: { isActive: boolean }) {
 // ---------------------------------------------------------------------------
 
 type TREventGroup =
+    | { kind: "legal_quality"; event: Extract<AssistantEvent, { type: "legal_quality" }>; index: number }
     | { kind: "pre"; events: AssistantEvent[]; indices: number[] }
     | {
           kind: "content";
@@ -268,6 +270,11 @@ function TRAssistantMessage({
     {
         let current: Extract<TREventGroup, { kind: "pre" }> | null = null;
         events.forEach((e, i) => {
+            if (e.type === "legal_quality") {
+                if (current) { groups.push(current); current = null; }
+                groups.push({ kind: "legal_quality", event: e, index: i });
+                return;
+            }
             if (e.type === "content") {
                 if (current) {
                     groups.push(current);
@@ -405,6 +412,7 @@ function TRAssistantMessage({
             {groups.length > 0 && (
                 <div className="flex flex-col gap-2.5">
                     {groups.map((g, gIdx) => {
+                        if (g.kind === "legal_quality") return <LegalQualityBlock key={`legal-${g.index}`} event={g.event} />;
                         if (g.kind === "content") {
                             return renderContent(
                                 processedTexts[g.index],
@@ -1285,6 +1293,11 @@ export function TRChatPanel({
                                 });
                             }
                             startDrip();
+                            continue;
+                        }
+
+                        if (data.type === "legal_quality") {
+                            pushEvent(data as AssistantEvent);
                             continue;
                         }
 

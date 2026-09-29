@@ -5,9 +5,11 @@ import type {
   DocketCitation,
   DocketCitationAnnotation,
   DocketMessage,
+  DocketModelSelection,
 } from "../components/shared/types";
 
 export interface ServerChatMessage {
+  generation?: DocketMessage["generation"] | null;
   id: string;
   role: "user" | "assistant";
   content: string | AssistantEvent[] | null;
@@ -38,6 +40,8 @@ export interface ServerActiveAssistantRun {
 }
 
 export interface ServerAssistantRun {
+  model_selection?: DocketModelSelection;
+  project_instruction_version?: number;
   run_id: string;
   status: string;
   error_code: string | null;
@@ -68,7 +72,20 @@ export function hydrateAssistantRun(
     retryable: run.retryable,
     traceId: run.trace_id,
     revision: run.revision,
+    ...(parseDocketModelSelection(run.model_selection) ? { modelSelection: parseDocketModelSelection(run.model_selection) } : {}),
+    ...(Number.isInteger(run.project_instruction_version) ? { projectInstructionVersion: run.project_instruction_version } : {}),
   };
+}
+
+export function parseDocketModelSelection(value: unknown): DocketModelSelection | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if ((row.mode !== "auto" && row.mode !== "manual") || typeof row.model !== "string" ||
+    typeof row.reason !== "string" || typeof row.policyVersion !== "string" ||
+    (row.task !== "drafting" && row.task !== "research" && row.task !== "summary") ||
+    (row.budgetPolicy !== "economy" && row.budgetPolicy !== "balanced" && row.budgetPolicy !== "quality")) return undefined;
+  return { mode: row.mode, model: row.model, reason: row.reason, policyVersion: row.policyVersion,
+    task: row.task, budgetPolicy: row.budgetPolicy };
 }
 
 export function terminalAssistantRunError(
@@ -96,6 +113,7 @@ export function hydrateChatMessages(input: {
         content: typeof message.content === "string" ? message.content : "",
         files: message.files ?? undefined,
         workflow: message.workflow ?? undefined,
+        ...(message.generation ? { generation: message.generation } : {}),
       };
       const failure = message.assistant_start_failure;
       if (failure?.status !== "failed" || !failure.request_id) return [userMessage];
@@ -170,6 +188,8 @@ export function hydrateChatMessages(input: {
       events: events ?? (pending ? [{ type: "thinking" as const, isStreaming: true }] : undefined),
       pending,
       assistantRun,
+      ...(durableRun?.modelSelection ? { modelSelection: durableRun.modelSelection } : {}),
+      ...(durableRun?.projectInstructionVersion === undefined ? {} : { projectInstructionVersion: durableRun.projectInstructionVersion }),
       error: terminalError ??
         (completedWithoutResult
           ? "The assistant finished without a saved result. Please contact support with the run ID."

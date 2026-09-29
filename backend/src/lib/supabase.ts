@@ -14,7 +14,7 @@ const JSONB_COLUMNS: Record<string, Set<string>> = {
   projects: new Set(["shared_with"]),
   documents: new Set(["structure_tree"]),
   workflows: new Set(["columns_config"]),
-  chat_messages: new Set(["content", "files", "annotations", "citations", "workflow"]),
+  chat_messages: new Set(["content", "files", "annotations", "citations", "workflow", "generation"]),
   tabular_reviews: new Set(["columns_config", "document_ids", "shared_with"]),
   tabular_cells: new Set(["citations"]),
   tabular_review_chat_messages: new Set(["content", "annotations", "citations"]),

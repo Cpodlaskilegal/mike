@@ -10,6 +10,7 @@ import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { isAdminUser } from "../lib/userRoles";
+import { getProjectInstructions, parseProjectInstructionsBody, ProjectInstructionsError, saveProjectInstructions } from "../lib/projectInstructions";
 import {
   ALLOWED_DOCUMENT_TYPES,
   ALLOWED_DOCUMENT_TYPES_LABEL,
@@ -18,6 +19,38 @@ import {
 } from "../lib/documentTypes";
 
 export const projectsRouter = createAsyncRouter();
+
+// Current project access governs history reads; only the owner can change it.
+projectsRouter.get("/:projectId/instructions", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string;
+  const db = createServerSupabase();
+  const access = await checkProjectAccess(req.params.projectId, userId, userEmail, db, { allowAdmin: true });
+  if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
+  const state = await getProjectInstructions(req.params.projectId, userId, db);
+  const { data: history, error } = await db.from("project_instruction_history")
+    .select("version, instructions, edited_by_user_id, editor_email, created_at")
+    .eq("project_id", req.params.projectId).order("version", { ascending: false }).limit(50);
+  if (error) return void res.status(503).json({ detail: "Project instruction history could not load. Try again." });
+  res.json({ ...state, history: history ?? [] });
+});
+
+projectsRouter.patch("/:projectId/instructions", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string;
+  const parsed = parseProjectInstructionsBody(req.body);
+  if (!parsed.ok) return void res.status(400).json({ detail: parsed.detail });
+  const db = createServerSupabase();
+  const access = await checkProjectAccess(req.params.projectId, userId, userEmail, db, { allowAdmin: true });
+  if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
+  if (!access.isOwner) return void res.status(403).json({ detail: "Only the project owner may edit project instructions" });
+  try {
+    res.json(await saveProjectInstructions({ projectId: req.params.projectId, userId, userEmail, ...parsed }));
+  } catch (error) {
+    if (error instanceof ProjectInstructionsError) return void res.status(error.status).json({ detail: error.message });
+    return void res.status(503).json({ detail: "Project instructions could not be confirmed saved. Reload before retrying." });
+  }
+});
 
 function normalizeDocumentFilename(nextName: unknown, currentName: string) {
   if (typeof nextName !== "string") return null;

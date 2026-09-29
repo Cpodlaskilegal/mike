@@ -37,6 +37,9 @@ import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { UserMessage } from "@/app/components/assistant/UserMessage";
 import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
+import { AssistantModelSelectionDetails } from "@/app/components/assistant/AssistantModelSelectionDetails";
+import { followResolvedProjectDocumentVersion, type ProjectDocumentTabView } from "@/app/lib/projectResolvedDocumentTabs";
+import { ProjectInstructionsModal } from "@/app/components/projects/ProjectInstructionsModal";
 import {
     CaseLawPanel,
     type CaseTab,
@@ -76,6 +79,7 @@ interface Props {
 }
 
 type DocTab = {
+    view?: ProjectDocumentTabView;
     documentId: string;
     filename: string;
     quotes?: CitationQuote[];
@@ -240,6 +244,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     // Tabs
     const [tabs, setTabs] = useState<DocTab[]>([]);
+    const [instructionsModalOpen, setInstructionsModalOpen] = useState(false);
+    const [resolvedEditStatuses, setResolvedEditStatuses] = useState<Record<string, "accepted" | "rejected">>({});
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
     const [activeQuotes, setActiveQuotes] = useState<CitationQuote[] | null>(
         null,
@@ -454,24 +460,24 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         filename: string,
         quotes?: CitationQuote[],
         versionId?: string | null,
+        view: ProjectDocumentTabView = versionId ? "historical" : "current",
     ) {
         setActiveCase(null);
         setTabs((prev) => {
             const existing = prev.find((t) => t.documentId === docId);
             if (existing) {
                 if (
-                    versionId !== undefined &&
-                    existing.versionId !== versionId
+                    existing.versionId !== versionId || existing.view !== view
                 ) {
                     return prev.map((t) =>
-                        t.documentId === docId ? { ...t, versionId } : t,
+                        t.documentId === docId ? { ...t, versionId, view, quotes } : t,
                     );
                 }
-                return prev;
+                return prev.map((tab) => tab.documentId === docId ? { ...tab, view, quotes } : tab);
             }
             return [
                 ...prev,
-                { documentId: docId, filename, quotes, versionId },
+                { documentId: docId, filename, quotes, versionId, view },
             ];
         });
         setActiveTabId(docId);
@@ -523,6 +529,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             citation.document_id,
             citation.filename,
             expandCitationToEntries(citation),
+            citation.version_id,
+            "citation",
         );
     };
 
@@ -562,7 +570,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     };
 
     const handleEditViewClick = (ann: DocketEditAnnotation, filename: string) => {
-        openTab(ann.document_id, filename, undefined, ann.version_id ?? null);
+        openTab(ann.document_id, filename, undefined, ann.version_id ?? null, "edit");
         setEditScrollTarget({
             key: `${ann.edit_id}-${Date.now()}`,
             documentId: ann.document_id,
@@ -573,18 +581,23 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         });
     };
 
-    const handleEditResolved = (_args: {
+    const handleEditResolved = (args: {
         editId: string;
         documentId: string;
         status: "accepted" | "rejected";
         versionId: string | null;
         downloadUrl: string | null;
     }) => {
-        // Re-render after accept/reject is disabled while we verify the
-        // client-side optimistic mutation works on its own. Re-enable by
-        // bumping versionId + refetchKey on the matching tab and marking
-        // it reloading like before.
-        void _args;
+        setResolvedEditStatuses((previous) => ({ ...previous, [args.editId]: args.status }));
+        setTabs((previous) => followResolvedProjectDocumentVersion(previous, args));
+        setReloadingDocIds((previous) => {
+            const next = new Set(previous);
+            next.delete(args.documentId);
+            return next;
+        });
+        void getProject(projectId).then(setProject).catch(() => {
+            patchTab(args.documentId, { warning: "The edit was saved, but the project list could not refresh. Reload to view the latest version." });
+        });
     };
 
     const patchTab = (documentId: string, patch: Partial<DocTab>) => {
@@ -856,6 +869,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     )}
                 </div>
                 <div className="flex items-center gap-2">
+                    <button onClick={() => setInstructionsModalOpen(true)} className="h-8 px-2 text-sm text-gray-500 hover:text-gray-900">Instructions</button>
                     <button
                         onClick={handleNewChat}
                         disabled={creatingChat}
@@ -1267,6 +1281,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         </div>
                                     ) : (
                                         <>
+                                        <AssistantModelSelectionDetails selection={msg.modelSelection} instructionVersion={msg.projectInstructionVersion} />
                                         <AssistantMessage
                                             key={i}
                                             content={msg.content ?? ""}
@@ -1303,6 +1318,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             }
                                             onOpenDocument={handleOpenDocument}
                                             onEditResolved={handleEditResolved}
+                                            resolvedEditStatuses={resolvedEditStatuses}
                                             onEditError={handleEditError}
                                             isDocReloading={(docId) =>
                                                 reloadingDocIds.has(docId)
@@ -1366,6 +1382,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     </div>
                 </div>
             </div>
+            {instructionsModalOpen && <ProjectInstructionsModal projectId={projectId} onClose={() => setInstructionsModalOpen(false)} />}
             <OwnerOnlyModal
                 open={!!ownerOnlyAction}
                 action={ownerOnlyAction ?? undefined}

@@ -20,7 +20,6 @@ import {
 import { describeChatError } from "@/app/lib/chatErrors";
 import {
     assistantRequestContinuesAfterDisconnect,
-    buildAssistantGenerationPayload,
 } from "@/app/lib/assistantChatPayload";
 import {
     createAssistantStreamRequestId,
@@ -33,6 +32,7 @@ import {
     ASSISTANT_CANCELLATION_PENDING_MESSAGE,
     findHydratedAssistantRun,
     markAssistantCancellationPending,
+    parseDocketModelSelection,
 } from "@/app/lib/assistantRunHydration";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
@@ -156,7 +156,6 @@ export function useAssistantChat({
     const {
         activateSession,
         adoptCreatedChat,
-        effectiveSettings,
         hydrated,
     } =
         useAssistantGenerationSettings();
@@ -604,9 +603,7 @@ export function useAssistantChat({
         dripTargetRef.current = "";
         dripDisplayLenRef.current = 0;
         eventsRef.current = [];
-        const generationPayload = buildAssistantGenerationPayload(
-            effectiveSettings,
-        );
+        const generationPayload = message.generation ?? { model: "auto" };
         const continuingAfterDisconnect =
             assistantRequestContinuesAfterDisconnect(generationPayload);
 
@@ -746,6 +743,9 @@ export function useAssistantChat({
                                 const updated = [...prev];
                                 updated[updated.length - 1] = {
                                     ...last,
+                                    modelSelection: parseDocketModelSelection(data.modelSelection),
+                                    projectInstructionVersion: Number.isInteger(data.projectInstructionVersion)
+                                        ? data.projectInstructionVersion : undefined,
                                     assistantRun: {
                                         streamRequestId: observedRunId,
                                         projectId,
@@ -1004,6 +1004,11 @@ export function useAssistantChat({
                                 name: (data.name as string) ?? "",
                                 isStreaming: true,
                             });
+                            continue;
+                        }
+
+                        if (data.type === "legal_quality") {
+                            pushEvent(data as AssistantEvent);
                             continue;
                         }
 

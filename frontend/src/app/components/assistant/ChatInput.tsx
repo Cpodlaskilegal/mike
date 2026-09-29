@@ -27,6 +27,7 @@ import { ModelToggle } from "./ModelToggle";
 import { ReasoningEffortToggle } from "./ReasoningEffortToggle";
 import { ReasoningModeToggle } from "./ReasoningModeToggle";
 import { useAssistantGenerationSettings } from "@/app/contexts/AssistantGenerationSettingsContext";
+import { buildAssistantGenerationPayload } from "@/app/lib/assistantChatPayload";
 import {
     assistantReasoningEffortsFor,
     isOpenAiReasoningModel,
@@ -82,6 +83,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const [submissionRequestId, setSubmissionRequestId] = useState<string | null>(null);
     const [deferredRecoveryDraft, setDeferredRecoveryDraft] = useState<DocketMessage | null>(null);
     const [attachedDocs, setAttachedDocs] = useState<AttachedDoc[]>([]);
+    // A model override applies to one submitted response, never the next draft.
+    const [useAuto, setUseAuto] = useState(true);
+    const [task, setTask] = useState<"workflow" | "drafting" | "research" | "summary">("workflow");
     const [selectedWorkflow, setSelectedWorkflow] = useState<{
         id: string;
         title: string;
@@ -94,7 +98,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         selectEffort,
         setReasoningMode,
     } = useAssistantGenerationSettings();
-    const model = generationSettings.model;
+    const model = useAuto ? "auto" : generationSettings.model;
     const generationControlsDisabled = !hydrated || isLoading;
     const isGptModel = isOpenAiReasoningModel(model);
     const allowedEfforts = assistantReasoningEffortsFor(
@@ -128,6 +132,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                 })),
         );
         setSelectedWorkflow(message.workflow ?? null);
+        setTask(message.generation?.task ?? "workflow");
+        setUseAuto(message.generation?.model === undefined || message.generation.model === "auto");
+        if (message.generation?.model && message.generation.model !== "auto") selectModel(message.generation.model);
+        if (message.generation?.reasoning_effort) selectEffort(message.generation.reasoning_effort);
+        if (message.generation?.reasoning_mode) setReasoningMode(message.generation.reasoning_mode);
         requestAnimationFrame(() => {
             const textarea = textareaRef.current;
             if (!textarea) return;
@@ -135,7 +144,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             textarea.style.height = `${textarea.scrollHeight}px`;
             textarea.focus();
         });
-    }, []);
+    }, [selectModel, selectEffort, setReasoningMode]);
 
     useEffect(() => {
         if (!recoveryDraft) return;
@@ -192,7 +201,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const handleSubmit = () => {
         const query = value.trim();
         if (!query || isLoading || !hydrated) return;
-        if (apiKeys && !isModelAvailable(model, apiKeys)) {
+        if (model !== "auto" && apiKeys && !isModelAvailable(model, apiKeys)) {
             setApiKeyModalProvider(getModelProvider(model));
             return;
         }
@@ -214,7 +223,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             content: query,
             files: files.length > 0 ? files : undefined,
             workflow: wf ?? undefined,
+            generation: {
+                ...(useAuto ? { model: "auto" } : buildAssistantGenerationPayload(effectiveSettings)),
+                ...(task === "workflow" ? {} : { task }),
+            },
         };
+        setUseAuto(true);
+        setTask("workflow");
         setSubmissionError(null);
         setSubmissionRequestId(null);
         setDeferredRecoveryDraft(null);
@@ -395,9 +410,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                         </div>
 
                         <div className="flex flex-wrap items-center justify-end gap-1">
+                            <select aria-label="Task for this response" value={task}
+                                onChange={(event) => setTask(event.target.value as typeof task)}
+                                disabled={generationControlsDisabled}
+                                className="h-8 rounded-lg px-2 text-sm text-gray-500 bg-transparent border border-gray-200">
+                                <option value="workflow">Task: Workflow / general</option>
+                                <option value="drafting">Drafting</option>
+                                <option value="research">Research</option>
+                                <option value="summary">Summary</option>
+                            </select>
                             <ModelToggle
                                 value={model}
-                                onChange={selectModel}
+                                onChange={(id) => {
+                                    setUseAuto(id === "auto");
+                                    if (id !== "auto") selectModel(id);
+                                }}
                                 apiKeys={apiKeys}
                                 disabled={generationControlsDisabled}
                             />

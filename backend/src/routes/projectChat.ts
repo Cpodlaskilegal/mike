@@ -21,12 +21,14 @@ import {
   appendCancellationMarker,
   AssistantStreamAbortError,
   isAbortError,
-  parseMainModelRequest,
   throwIfAborted,
   type ProviderRunProgress,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import { getEffectiveCustomInstructions } from "../lib/userInstructions";
+import { getProjectInstructions } from "../lib/projectInstructions";
+import { preflightAssistantModel } from "../lib/assistantModelPreflight";
+import { assistantGenerationForRecovery, validateAssistantModelIntent } from "../lib/assistantModelPolicy";
 import { checkProjectAccess } from "../lib/access";
 import { chatStreamErrorLine, toChatStreamError } from "../lib/chatErrors";
 import { assistantStartupFailureResponse, assistantStartupPlaceholderAnnotations, classifyAssistantRunCreateError, clearAssistantStartupAnnotations, persistAssistantUserMessage, recordAssistantStartupFailure } from "../lib/assistantRunPresentation";
@@ -386,6 +388,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
   if (!parsedDisplayedDoc.ok) {
     return void res.status(400).json({ detail: parsedDisplayedDoc.detail });
   }
+  const modelIntent = validateAssistantModelIntent(body);
+  if (!modelIntent.ok) return void res.status(400).json({ detail: modelIntent.detail });
   const parsedAttachedDocuments = parseOptionalDocumentRefs(
     body.attached_documents,
   );
@@ -394,12 +398,6 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       .status(400)
       .json({ detail: parsedAttachedDocuments.detail });
   }
-  const parsedMainModel = parseMainModelRequest(req.body);
-  if (!parsedMainModel.ok) {
-    return void res.status(400).json({ detail: parsedMainModel.detail });
-  }
-  const mainModelRequest = parsedMainModel.value;
-
   const messages = parsedMessages.messages;
   const chat_id = parsedChatId.chatId;
   const displayed_doc = parsedDisplayedDoc.value;
@@ -419,6 +417,20 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
   );
   if (!projectAccess.ok)
     return void res.status(404).json({ detail: "Project not found" });
+
+  const modelSettings = await getUserModelSettings(userId, db);
+  const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+  const parsedMainModel = await preflightAssistantModel({ body, messages, projectId,
+    attachedDocumentIds: (attached_documents ?? []).map((file) => file.document_id),
+    userId, db, apiKeys: modelSettings.api_keys, workflowStore });
+  if (!parsedMainModel.ok) return void res.status(400).json({ detail: parsedMainModel.detail });
+  const mainModelRequest = parsedMainModel.request;
+  const modelSelection = parsedMainModel.selection;
+  const personalAndFirmInstructions = await getEffectiveCustomInstructions(userId, db);
+  const projectInstructions = await getProjectInstructions(projectId, userId, db);
+  const customInstructions = { ...personalAndFirmInstructions,
+    projectInstructions: projectInstructions.instructions,
+    projectInstructionVersion: projectInstructions.version };
 
   let chatId = chat_id ?? null;
   let chatTitle: string | null = null;
@@ -482,6 +494,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
   const startDiagnostic = streamLifecycle;
 
   const lastUser = [...streamMessages].reverse().find((m) => m.role === "user");
+  if (lastUser) Object.assign(lastUser, { generation: assistantGenerationForRecovery(mainModelRequest, modelSelection) });
   let userMessageId: string | null = null;
   if (lastUser) {
     try {
@@ -639,6 +652,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         model: mainModelRequest.providerModel,
         reasoningMode: mainModelRequest.reasoningMode,
         reasoningEffort: mainModelRequest.reasoningEffort,
+        modelSelection,
+        projectInstructionVersion: projectInstructions.version,
         traceId: streamLifecycle.traceId,
         revision: streamLifecycle.revision,
         gitSha: streamLifecycle.gitSha,
@@ -898,6 +913,8 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         traceId: streamLifecycle.traceId,
         revision: streamLifecycle.revision,
         continuingAfterDisconnect: backgroundRunEnabled,
+        modelSelection,
+        projectInstructionVersion: projectInstructions.version,
       })}\n\n`,
     );
     if (parsedAskInputsResponse.response) {
@@ -1004,9 +1021,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
       systemPromptExtra += `\n\nUSER-ATTACHED DOCUMENTS FOR THIS TURN:\nThe user has attached the following document(s) directly to their latest message. Treat these as the primary focus of the request unless their message clearly says otherwise.\n${lines.join("\n")}`;
     }
 
-    const { api_keys: apiKeys, legal_research_us: legalResearchUs } =
-      await getUserModelSettings(userId, db);
-    const customInstructions = await getEffectiveCustomInstructions(userId, db);
+    const { api_keys: apiKeys, legal_research_us: legalResearchUs } = modelSettings;
     const apiMessages = buildMessages(
       messagesForLLM,
       docAvailability,
@@ -1017,8 +1032,6 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     );
     const ownMailboxIntent =
       latestUserMessageHasOwnMailboxIntent(streamMessages);
-
-    const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
     const { fullText, events } = await runLLMStream({
       apiMessages,

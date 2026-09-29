@@ -417,7 +417,7 @@ function mainAssistantRouteResolutionProblems(
 ): string[] {
   const problems: string[] = [];
   const parseMatch = source.match(
-    /const\s+([A-Za-z_$][\w$]*)\s*=\s*parseMainModelRequest\(\s*req\.body\s*\)/,
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:parseMainModelRequest\(\s*req\.body\s*\)|await\s+preflightAssistantModel\(\{\s*body\b)/,
   );
   if (!parseMatch || parseMatch.index === undefined) {
     return [`${routeName} route does not parse the raw request body`];
@@ -476,7 +476,7 @@ function mainAssistantRouteResolutionProblems(
 
   const resolvedMatch = validationSource.match(
     new RegExp(
-      `const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${escapedParsedName}\\.value`,
+      `const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${escapedParsedName}\\.(?:value|request)`,
     ),
   );
   const runCallStart = source.indexOf("runLLMStream({", parseIndex);

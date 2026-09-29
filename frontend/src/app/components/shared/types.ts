@@ -17,6 +17,8 @@ export interface DocketProject {
   name: string;
   cm_number: string | null;
   shared_with: string[];
+  instructions?: string;
+  instruction_version?: number;
   created_at: string;
   updated_at: string;
   documents?: DocketDocument[];
@@ -118,6 +120,12 @@ export type DocketAskInputsResponse = {
 };
 
 export type AssistantEvent =
+  | { type: "legal_quality"; target: string; report: {
+      version: string; outputHash: string; decision: "blocked" | "attorney_review";
+      checks: { claimId: string; field: string; status: "verified" | "error" | "unchecked"; detail: string }[];
+      coverage: { claims: number; verified: number; errors: number; unchecked: number; sources: { id: string; label: string; completeness: "complete" | "partial" | "unavailable"; textHash: string; characters: number }[] };
+      limitations: string[];
+    } }
   | { type: "reasoning"; text: string; isStreaming?: boolean }
   | {
       type: "ask_inputs";
@@ -283,6 +291,14 @@ export interface DocketMessage {
   files?: { filename: string; document_id?: string }[];
   workflow?: { id: string; title: string };
   model?: string;
+  generation?: {
+    model: string;
+    reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+    reasoning_mode?: "standard" | "pro";
+    task?: "drafting" | "research" | "summary";
+  };
+  modelSelection?: DocketModelSelection;
+  projectInstructionVersion?: number;
   annotations?: DocketCitationAnnotation[];
   citations?: DocketCitation[];
   citationStatus?: "started" | "partial" | "final";
@@ -314,6 +330,8 @@ export type DocketAssistantRunStatus =
   | "interrupted";
 
 export interface DocketAssistantRun {
+  modelSelection?: DocketModelSelection;
+  projectInstructionVersion?: number;
   streamRequestId: string;
   projectId?: string;
   status: DocketAssistantRunStatus;
@@ -322,6 +340,15 @@ export interface DocketAssistantRun {
   retryable?: boolean;
   traceId?: string;
   revision?: string;
+}
+
+export interface DocketModelSelection {
+  mode: "auto" | "manual";
+  model: string;
+  reason: string;
+  policyVersion: string;
+  task: "drafting" | "research" | "summary";
+  budgetPolicy: "economy" | "balanced" | "quality";
 }
 
 export interface CitationQuote {

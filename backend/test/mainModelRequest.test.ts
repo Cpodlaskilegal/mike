@@ -512,7 +512,7 @@ test("main chat routes resolve the raw request before persistence and SSE", () =
         "src/routes/projectChat.ts",
     ]) {
         const source = readBackendSource(relativePath);
-        const parseIndex = source.indexOf("parseMainModelRequest(req.body)");
+        const parseIndex = source.indexOf("await preflightAssistantModel({ body");
         const placeholderIndex = source.indexOf(
             'role: "assistant"',
             parseIndex,

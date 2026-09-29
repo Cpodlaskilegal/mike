@@ -68,6 +68,7 @@ import {
 } from "@/app/components/shared/RowActions";
 import { AddDocumentsModal } from "@/app/components/shared/AddDocumentsModal";
 import { PeopleModal } from "@/app/components/shared/PeopleModal";
+import { ProjectInstructionsModal } from "./ProjectInstructionsModal";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { UploadNewVersionModal } from "@/app/components/shared/UploadNewVersionModal";
@@ -485,6 +486,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
     const tab = projectWorkspaceTabFromLegacyQuery(tabParam, initialTab);
     const [addDocsOpen, setAddDocsOpen] = useState(false);
     const [peopleModalOpen, setPeopleModalOpen] = useState(false);
+    const [instructionsModalOpen, setInstructionsModalOpen] = useState(false);
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const { user } = useAuth();
     const [uploadVersionDoc, setUploadVersionDoc] =
@@ -1609,6 +1611,8 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                 </div>
                 <div className="flex items-center gap-2">
                     <HeaderSearchBtn value={search} onChange={setSearch} placeholder="Search…" />
+                    <button onClick={() => setInstructionsModalOpen(true)}
+                        className="h-8 px-2 text-sm text-gray-500 hover:text-gray-900" title="Project instructions and edit permissions">Instructions</button>
                     <button
                         onClick={() => setPeopleModalOpen(true)}
                         className="flex h-8 w-8 items-center justify-center text-sm text-gray-500 transition-colors hover:text-gray-900 cursor-pointer"
@@ -2181,6 +2185,7 @@ export function ProjectPage({ projectId, initialTab = "documents" }: Props) {
                 onClose={() => setOwnerOnlyAction(null)}
             />
 
+            {instructionsModalOpen && <ProjectInstructionsModal projectId={projectId} onClose={() => setInstructionsModalOpen(false)} />}
             <PeopleModal
                 open={peopleModalOpen}
                 onClose={() => setPeopleModalOpen(false)}

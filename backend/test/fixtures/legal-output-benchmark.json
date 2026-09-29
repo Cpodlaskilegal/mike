@@ -1,0 +1,487 @@
+{
+  "version": "docket-legal-benchmark-v1",
+  "synthetic": true,
+  "cases": [
+    {
+      "id": "authority-clean",
+      "category": "wrong_authority",
+      "text": "Synthetic Alpha v. Beta, 999 Synth. 10.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "authority_identity",
+      "expectedStatus": "verified"
+    },
+    {
+      "id": "authority-wrong",
+      "category": "wrong_authority",
+      "text": "Synthetic Gamma v. Delta, 999 Synth. 10.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Gamma v. Delta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "blocked",
+      "expectedField": "authority_identity",
+      "expectedStatus": "error"
+    },
+    {
+      "id": "citation-wrong",
+      "category": "wrong_authority",
+      "text": "Synthetic Alpha v. Beta, 999 Synth. 55.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 55",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "blocked",
+      "expectedField": "citation",
+      "expectedStatus": "error"
+    },
+    {
+      "id": "quotation-clean",
+      "category": "false_quote",
+      "text": "Notice must be served before judgment.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "quotation",
+      "expectedStatus": "verified"
+    },
+    {
+      "id": "quotation-false",
+      "category": "false_quote",
+      "text": "Notice is never required.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice is never required.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "blocked",
+      "expectedField": "quotation",
+      "expectedStatus": "error"
+    },
+    {
+      "id": "pinpoint-clean",
+      "category": "bad_pinpoint",
+      "text": "A signed waiver excuses notice.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "A signed waiver excuses notice.",
+          "pinpoint": "11"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "pinpoint",
+      "expectedStatus": "verified"
+    },
+    {
+      "id": "pinpoint-wrong",
+      "category": "bad_pinpoint",
+      "text": "Notice must be served before judgment. (at 11)",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "11"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "blocked",
+      "expectedField": "pinpoint",
+      "expectedStatus": "error"
+    },
+    {
+      "id": "pinpoint-unmapped",
+      "category": "bad_pinpoint",
+      "text": "Notice must be served before judgment. (at 99)",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "99"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "pinpoint",
+      "expectedStatus": "unchecked"
+    },
+    {
+      "id": "adverse-included",
+      "category": "missing_adverse_authority",
+      "text": "Synthetic Adverse v. Notice limits the claim.",
+      "claims": [],
+      "sources": [
+        {
+          "id": "case-102:202",
+          "label": "Synthetic Adverse v. Notice",
+          "authorityName": "Synthetic Adverse v. Notice",
+          "citations": [
+            "999 Synth. 20"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          },
+          "requiredDiscussion": true
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "adverse_authority",
+      "expectedStatus": "verified"
+    },
+    {
+      "id": "adverse-missing",
+      "category": "missing_adverse_authority",
+      "text": "All courts agree that notice is required.",
+      "claims": [],
+      "sources": [
+        {
+          "id": "case-102:202",
+          "label": "Synthetic Adverse v. Notice",
+          "authorityName": "Synthetic Adverse v. Notice",
+          "citations": [
+            "999 Synth. 20"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          },
+          "requiredDiscussion": true
+        }
+      ],
+      "expectedDecision": "blocked",
+      "expectedField": "adverse_authority",
+      "expectedStatus": "error"
+    },
+    {
+      "id": "fact-source-present",
+      "category": "unsupported_fact",
+      "text": "The package arrived on May 5.",
+      "claims": [
+        {
+          "id": "f1",
+          "kind": "fact",
+          "sourceId": "doc-0",
+          "text": "The package arrived on May 5."
+        }
+      ],
+      "sources": [
+        {
+          "id": "doc-0",
+          "label": "Synthetic event record",
+          "text": "The package arrived on May 5.",
+          "completeness": "complete"
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "factual_support",
+      "expectedStatus": "unchecked"
+    },
+    {
+      "id": "fact-unsupported",
+      "category": "unsupported_fact",
+      "text": "The package arrived on May 1.",
+      "claims": [
+        {
+          "id": "f1",
+          "kind": "fact",
+          "sourceId": "doc-0",
+          "text": "The package arrived on May 1."
+        }
+      ],
+      "sources": [
+        {
+          "id": "doc-0",
+          "label": "Synthetic event record",
+          "text": "The package arrived on May 5.",
+          "completeness": "complete"
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "factual_support",
+      "expectedStatus": "unchecked"
+    },
+    {
+      "id": "source-complete",
+      "category": "truncated_source",
+      "text": "Notice must be served before judgment.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "Notice must be served before judgment.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served before judgment. A signed waiver excuses notice.",
+          "completeness": "complete",
+          "locators": {
+            "10": "Notice must be served before judgment.",
+            "11": "A signed waiver excuses notice."
+          }
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "quotation",
+      "expectedStatus": "verified"
+    },
+    {
+      "id": "source-truncated",
+      "category": "truncated_source",
+      "text": "A signed waiver excuses notice.",
+      "claims": [
+        {
+          "id": "a1",
+          "sourceId": "case-101:201",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citation": "999 Synth. 10",
+          "quote": "A signed waiver excuses notice.",
+          "pinpoint": "10"
+        }
+      ],
+      "sources": [
+        {
+          "id": "case-101:201",
+          "label": "Synthetic Alpha v. Beta",
+          "authorityName": "Synthetic Alpha v. Beta",
+          "citations": [
+            "999 Synth. 10"
+          ],
+          "text": "Notice must be served",
+          "completeness": "partial",
+          "locators": {}
+        }
+      ],
+      "expectedDecision": "attorney_review",
+      "expectedField": "quotation",
+      "expectedStatus": "unchecked"
+    },
+    {
+      "id": "docx-clean",
+      "category": "broken_docx_formatting",
+      "text": "Synthetic draft.",
+      "claims": [],
+      "sources": [],
+      "expectedDecision": "attorney_review",
+      "expectedField": "docx_structure",
+      "expectedStatus": "verified",
+      "docx": "valid"
+    },
+    {
+      "id": "docx-malformed",
+      "category": "broken_docx_formatting",
+      "text": "Synthetic draft.",
+      "claims": [],
+      "sources": [],
+      "expectedDecision": "blocked",
+      "expectedField": "docx_structure",
+      "expectedStatus": "error",
+      "docx": "malformed"
+    },
+    {
+      "id": "docx-missing",
+      "category": "broken_docx_formatting",
+      "text": "Synthetic draft.",
+      "claims": [],
+      "sources": [],
+      "expectedDecision": "blocked",
+      "expectedField": "docx_structure",
+      "expectedStatus": "error",
+      "docx": "missing"
+    },
+    {
+      "id": "docx-illegible",
+      "category": "broken_docx_formatting",
+      "text": "Synthetic draft.",
+      "claims": [],
+      "sources": [],
+      "expectedDecision": "blocked",
+      "expectedField": "docx_formatting",
+      "expectedStatus": "error",
+      "docx": "illegible"
+    }
+  ]
+}

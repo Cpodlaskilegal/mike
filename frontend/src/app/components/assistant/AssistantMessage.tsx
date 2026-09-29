@@ -25,6 +25,7 @@ import {
     DocReadBlock,
     DocReplicatedBlock,
     McpEventBlock,
+    LegalQualityBlock,
     ReasoningBlock,
     ThinkingBlock,
     ToolCallBlock,
@@ -92,6 +93,7 @@ interface Props {
 }
 
 type EventGroup =
+    | { kind: "legal_quality"; event: Extract<AssistantEvent, { type: "legal_quality" }>; index: number }
     | { kind: "pre"; events: AssistantEvent[]; indices: number[] }
     | {
           kind: "content";
@@ -105,6 +107,11 @@ function buildEventGroups(events: AssistantEvent[] | undefined): EventGroup[] {
     const groups: EventGroup[] = [];
     let current: Extract<EventGroup, { kind: "pre" }> | null = null;
     events.forEach((event, index) => {
+        if (event.type === "legal_quality") {
+            if (current) { groups.push(current); current = null; }
+            groups.push({ kind: "legal_quality", event, index });
+            return;
+        }
         if (event.type === "content") {
             if (current) {
                 groups.push(current);
@@ -411,6 +418,9 @@ export function AssistantMessage({
                 />
             );
         }
+        if (event.type === "legal_quality") {
+            return <LegalQualityBlock key={globalIndex} event={event} showConnector={showConnector} />;
+        }
         if (event.type === "workflow_applied") {
             return (
                 <WorkflowAppliedBlock
@@ -590,6 +600,7 @@ export function AssistantMessage({
                 {groups.length > 0 && (
                     <div className="flex flex-col gap-4">
                         {groups.map((group, groupIndex) => {
+                            if (group.kind === "legal_quality") return <LegalQualityBlock key={`legal-${group.index}`} event={group.event} />;
                             if (group.kind === "content") {
                                 return (
                                     <MarkdownContent
