@@ -385,7 +385,14 @@ test("Docket's own MCP client renews a sign-in early, under the gateway's lock, 
   // uses, and it never throws into the caller.
   const auth = source("src/lib/agentGateway/upstreamAuth.ts");
   const early = section(auth, "export async function refreshSignInBeforeUse(", "\n}\n");
-  assert.match(early, /if \(connector\.auth_type !== "oauth"\) return;/);
+  // Nothing at all for a connector without an OAuth sign-in, and nothing
+  // at all while the gateway is switched off: Docket's own path is then
+  // what it was, and unsetting DOCKET_AGENT_OPS_TOKEN switches this off.
+  assert.match(
+    early,
+    /if \(connector\.auth_type !== "oauth" \|\| !agentGatewayEnabled\(\)\) return;\n  try \{/,
+  );
+  assert.match(auth, /import \{ agentGatewayEnabled \} from "\.\/config";/);
   assert.match(
     early,
     /await ensureUpstreamSignIn\(\s*connector,\s*db,\s*\{ refresh: "if_near_expiry", skewMs: REQUEST_REFRESH_SKEW_MS \},\s*deps,\s*\);/,

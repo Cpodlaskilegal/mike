@@ -22,6 +22,7 @@ import {
   seedPerUserPracticePantherConnector,
   seedUser,
   setGatewayEnv,
+  TEST_OPS_TOKEN,
   type FakeDb,
 } from "./helpers/agentGatewayFakes";
 import assert from "node:assert/strict";
@@ -58,9 +59,13 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   });
 }
 
-/** A world with one connected user whose access token has just expired. */
+/**
+ * A world with one connected user whose access token has just expired.
+ * The gateway is switched on, as it is wherever a Docket Agent session can
+ * share a sign-in with chat.
+ */
 function setup() {
-  setGatewayEnv();
+  setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const db = createFakeDb();
   seedUser(db, { id: "user-1", email: "garrett.lewis@podlaskilegal.com" });
   const connector = seedPerUserPracticePantherConnector(db, "user-1");
@@ -367,6 +372,40 @@ test("the early refresh in Docket's own MCP client path never fails the call it 
   const calls = world.tokenCalls.length;
   await refreshSignInBeforeUse(world.connector, world.db.asDb(), deps);
   assert.equal(world.tokenCalls.length, calls);
+});
+
+test("with the gateway switched off, Docket's own MCP client path does nothing here: it is as it was", async () => {
+  const world = setup();
+  singleUseTokenEndpoint(world);
+  let lockAsked = 0;
+  const deps = {
+    now: () => Date.now(),
+    withRefreshLock: <T>(_connectorId: string, run: () => Promise<T>) => {
+      lockAsked += 1;
+      return run();
+    },
+    refreshUpstreamToken: world.refresh,
+  };
+  const before = tokenRows(world.db);
+
+  // DOCKET_AGENT_OPS_TOKEN unset, and set to something too short to count:
+  // an expired sign-in is not read, not locked and not refreshed.
+  for (const values of [{}, { DOCKET_AGENT_OPS_TOKEN: "short" }]) {
+    setGatewayEnv(values);
+    const queries = world.db.calls.length;
+    await refreshSignInBeforeUse(world.connector, world.db.asDb(), deps);
+    assert.equal(world.db.calls.length, queries, "the sign-in row was not read");
+  }
+  assert.equal(lockAsked, 0);
+  assert.equal(world.tokenCalls.length, 0);
+  assert.deepEqual(tokenRows(world.db), before);
+
+  // Switched on, the same call renews it.
+  setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
+  await refreshSignInBeforeUse(world.connector, world.db.asDb(), deps);
+  assert.equal(lockAsked, 1);
+  assert.equal(world.tokenCalls.length, 1);
+  assert.equal(world.db.table("user_mcp_oauth_tokens").length, 1);
 });
 
 test("a sign-in that is not near its end is left alone by the early refresh", async () => {

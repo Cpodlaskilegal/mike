@@ -7,7 +7,8 @@
 // Docket chat and the Docket Agent gateway use the same PracticePanther and
 // Box sign-in rows, so both go through here: the gateway before every
 // request, and Docket's own MCP client path (lib/mcp/servers.ts,
-// withMcpClient) before it opens a connection.
+// withMcpClient) before it opens a connection. The second only while the
+// gateway is switched on: with it off, Docket's own path does nothing here.
 
 import { auth as runMcpOAuth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Pool } from "pg";
@@ -19,6 +20,7 @@ import {
 } from "../mcp/oauth";
 import type { ConnectorRow, Db, OAuthTokenRow } from "../mcp/types";
 import { safeErrorLog } from "../safeError";
+import { agentGatewayEnabled } from "./config";
 import type { AgentGatewayDeps } from "./deps";
 
 export type UpstreamSignIn =
@@ -130,13 +132,22 @@ export async function defaultRefreshUpstreamToken(
 
 const runningRefreshes = new Map<string, Promise<unknown>>();
 
-/** The two calls the lock needs from a database connection. */
+/**
+ * What the lock needs from a database connection: the two calls, and a way
+ * to hear that the connection dropped. `release(true)` tells the pool to
+ * close the connection instead of handing it out again.
+ */
 export type LockClient = {
   query: (
     text: string,
     values?: unknown[],
   ) => Promise<{ rows: Array<Record<string, unknown>> }>;
-  release: () => void;
+  release: (destroy?: boolean) => void;
+  on?: (event: "error", listener: (err: Error) => void) => unknown;
+  removeListener?: (
+    event: "error",
+    listener: (err: Error) => void,
+  ) => unknown;
 };
 
 let lockPool: Pool | null = null;
@@ -189,6 +200,17 @@ export async function withPostgresAdvisoryLock<T>(
   waitMs: number = LOCK_WAIT_MS,
 ): Promise<T> {
   const client = await connect();
+  // The pool stops listening for a connection's errors while it is lent
+  // out. A connection that drops while the lock is held or waited for (a
+  // database restart or failover) would then be an 'error' event nobody
+  // hears, and Node ends the process on one. So the lock listens itself.
+  // A dropped connection has let the lock go; the refresh under way is not
+  // stopped, and the connection is closed, not reused.
+  let dropped = false;
+  const onError = () => {
+    dropped = true;
+  };
+  client.on?.("error", onError);
   let inTransaction = false;
   try {
     await client.query("begin");
@@ -208,10 +230,14 @@ export async function withPostgresAdvisoryLock<T>(
     return await run();
   } finally {
     // Ending the transaction releases the lock. Nothing was written in it.
-    if (inTransaction) {
+    if (inTransaction && !dropped) {
       await client.query("rollback").catch(() => undefined);
     }
-    client.release();
+    // Given back first: the pool listens again from that moment, so there
+    // is no instant in which nobody does.
+    if (dropped) client.release(true);
+    else client.release();
+    client.removeListener?.("error", onError);
   }
 }
 
@@ -272,13 +298,18 @@ const defaultEarlyRefreshDeps: EarlyRefreshDeps = {
  *
  * It decides nothing and never throws: whatever it finds, the connection
  * is opened exactly as before.
+ *
+ * While the gateway is switched off (DOCKET_AGENT_OPS_TOKEN unset) it does
+ * nothing at all: no Docket Agent session shares the sign-in then, and
+ * Docket's own client path is what it was before the gateway existed.
+ * Unsetting that variable is therefore also the off switch for this.
  */
 export async function refreshSignInBeforeUse(
   connector: ConnectorRow,
   db: Db,
   deps: EarlyRefreshDeps = defaultEarlyRefreshDeps,
 ): Promise<void> {
-  if (connector.auth_type !== "oauth") return;
+  if (connector.auth_type !== "oauth" || !agentGatewayEnabled()) return;
   try {
     await ensureUpstreamSignIn(
       connector,

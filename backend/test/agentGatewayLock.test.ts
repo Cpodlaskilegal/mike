@@ -8,11 +8,16 @@
 //   eleventh, and every query of the backend hung.
 // - The lock is a transaction lock, so it cannot leak behind a connection
 //   pooler in transaction mode and always goes when the connection goes.
+// - A connection that drops while the lock is held or waited for must not
+//   end the backend process. The pool does not listen for a lent-out
+//   connection's errors, and Node ends a process on an 'error' event
+//   nobody hears. It did: the lock code had no listener of its own.
 // No real database: the connection is a stand-in that records what it is
 // asked.
 
 import "./helpers/agentGatewayFakes";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -184,6 +189,89 @@ test("a connection that cannot be had fails the refresh and holds nothing", asyn
     ),
     /timeout exceeded/,
   );
+});
+
+/**
+ * A lent-out connection as the real one behaves: an event emitter with no
+ * 'error' listener of the pool's while it is checked out, whose queries
+ * fail once the connection is gone.
+ */
+class DroppableClient extends EventEmitter implements LockClient {
+  readonly statements: string[] = [];
+  readonly releases: Array<boolean | undefined> = [];
+  private gone = false;
+  async query(text: string) {
+    if (this.gone) throw new Error("Connection terminated unexpectedly");
+    this.statements.push(text);
+    return { rows: text.includes("pg_try_advisory_xact_lock") ? [{ locked: true }] : [] };
+  }
+  release(destroy?: boolean) {
+    this.releases.push(destroy);
+  }
+  /** What the database does on a restart or a failover. */
+  drop() {
+    this.gone = true;
+    // With no listener this throws, as an unheard 'error' event ends Node.
+    this.emit("error", new Error("Connection terminated unexpectedly"));
+  }
+}
+
+test("a connection that drops while the lock is held does not end the process", async () => {
+  const client = new DroppableClient();
+  assert.equal(client.listenerCount("error"), 0, "as lent out by the pool");
+  const result = await withPostgresAdvisoryLock(
+    "docket-agent-oauth:c1",
+    async () => {
+      assert.equal(client.listenerCount("error"), 1, "the lock listens while it holds");
+      client.drop();
+      return "the refresh still finished";
+    },
+    async () => client,
+  );
+  assert.equal(result, "the refresh still finished");
+  // Nothing more is asked of a dead connection, it is closed and not handed
+  // out again, and the lock's listener is gone with it.
+  assert.deepEqual(client.statements, [
+    "begin",
+    "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as locked",
+  ]);
+  assert.deepEqual(client.releases, [true]);
+  assert.equal(client.listenerCount("error"), 0);
+});
+
+test("a connection that drops while the lock is waited for fails that refresh only", async () => {
+  class Waiting extends DroppableClient {
+    async query(text: string) {
+      const answer = await super.query(text);
+      if (!text.includes("pg_try_advisory_xact_lock")) return answer;
+      // Someone else holds the lock. The connection drops during the wait.
+      setTimeout(() => this.drop(), 20);
+      return { rows: [{ locked: false }] };
+    }
+  }
+  const client = new Waiting();
+  let ran = false;
+  await assert.rejects(
+    withPostgresAdvisoryLock(
+      "docket-agent-oauth:c1",
+      async () => {
+        ran = true;
+      },
+      async () => client,
+    ),
+    /Connection terminated unexpectedly/,
+  );
+  assert.equal(ran, false);
+  assert.deepEqual(client.releases, [true]);
+  assert.equal(client.listenerCount("error"), 0);
+});
+
+test("a connection that did not drop goes back to the pool as before, with no listener left on it", async () => {
+  const client = new DroppableClient();
+  await withPostgresAdvisoryLock("docket-agent-oauth:c1", async () => "done", async () => client);
+  assert.deepEqual(client.statements.at(-1), "rollback");
+  assert.deepEqual(client.releases, [undefined]);
+  assert.equal(client.listenerCount("error"), 0);
 });
 
 test("the lock never borrows a connection from the web app's pool", () => {
