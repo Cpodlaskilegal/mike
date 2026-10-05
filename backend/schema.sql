@@ -105,6 +105,12 @@ create table if not exists public.user_mcp_connectors (
 create index if not exists idx_user_mcp_connectors_user
   on public.user_mcp_connectors(user_id);
 
+-- A user has at most one connector per Docket Agent source. Only a row the
+-- Docket Agent gateway makes for itself carries this mark (today: Quo).
+create unique index if not exists idx_user_mcp_connectors_docket_agent_source
+  on public.user_mcp_connectors (user_id, (tool_policy->>'docketAgentSource'))
+  where (tool_policy->>'docketAgentSource') is not null;
+
 create table if not exists public.user_mcp_oauth_tokens (
   id uuid primary key default gen_random_uuid(),
   connector_id uuid not null references public.user_mcp_connectors(id) on delete cascade,
@@ -192,6 +198,9 @@ create table if not exists public.user_mcp_tool_audit_logs (
   trace_id text,
   project_id text,
   tool_call_id text,
+  origin text not null default 'docket'
+    check (origin in ('docket', 'docket_agent')),
+  agent_token_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -300,6 +309,30 @@ create index if not exists idx_user_mcp_tool_approvals_message_terminal
   where
     assistant_message_id is not null
     and status in ('succeeded', 'failed', 'indeterminate', 'rejected', 'expired');
+
+-- Docket Agent gateway. One row per agent token ever minted. Only a SHA-256
+-- hash is stored.
+create table if not exists public.docket_agent_tokens (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null references public.app_users(id) on delete cascade,
+  token_hash text not null unique,
+  -- The hash of the same enrolment's Box file token (dkf_...). It opens the
+  -- Box file routes only. Null on a row minted before those routes existed.
+  file_token_hash text unique,
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  last_used_at timestamptz
+);
+
+-- A user has at most one live token. Minting a new one revokes the old one.
+create unique index if not exists idx_docket_agent_tokens_one_active
+  on public.docket_agent_tokens(user_id)
+  where revoked_at is null;
+
+-- Tell Docket Agent calls apart from Docket chat calls in the audit log.
+create index if not exists idx_user_mcp_tool_audit_logs_agent_created
+  on public.user_mcp_tool_audit_logs(user_id, created_at desc)
+  where origin = 'docket_agent';
 
 create table if not exists public.projects (
   id uuid primary key default gen_random_uuid(),

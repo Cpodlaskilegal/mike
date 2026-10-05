@@ -34,6 +34,8 @@ import {
   updateUserMcpConnector,
 } from "../lib/mcpConnectors";
 import { practicePantherMcpServerUrl } from "../lib/mcp/defaults";
+import { disconnectPracticePantherSignIn } from "../lib/agentGateway/sources";
+import { withSignInLock } from "../lib/agentGateway/upstreamAuth";
 import {
   getUserRole,
   getUserRoleStrict,
@@ -988,6 +990,54 @@ userRouter.post(
         error: detail,
       });
       res.status(400).json({ detail });
+    }
+  },
+);
+
+// POST /user/mcp-connectors/:connectorId/oauth/disconnect
+// Removes the caller's own PracticePanther sign-in from Docket. Any
+// signed-in user may do this to his own per-user PracticePanther connector
+// and to nothing else: it is how a sign-in made with the wrong
+// PracticePanther account is cleared, and how he takes PracticePanther away
+// from Docket chat and Docket Agent, which share that sign-in.
+userRouter.post(
+  "/mcp-connectors/:connectorId/oauth/disconnect",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    try {
+      const result = await disconnectPracticePantherSignIn(
+        userId,
+        req.params.connectorId,
+        db,
+        withSignInLock,
+      );
+      if (!result.ok) {
+        return void res
+          .status(result.reason === "not_found" ? 404 : 403)
+          .json({
+            detail:
+              result.reason === "not_found"
+                ? "Connector not found."
+                : "Only your own PracticePanther connection can be disconnected here.",
+          });
+      }
+      console.info("[user/mcp-connectors] practicepanther sign-in removed", {
+        userId,
+        connectorId: req.params.connectorId,
+      });
+      res.json(await getUserMcpConnector(userId, req.params.connectorId, db));
+    } catch (err) {
+      console.error("[user/mcp-connectors] oauth disconnect failed", {
+        userId,
+        connectorId: req.params.connectorId,
+        error: errorMessage(err),
+      });
+      // A fixed text: the cause may name the database, which is not his to see.
+      res.status(500).json({
+        detail: "PracticePanther could not be disconnected. Try again.",
+      });
     }
   },
 );

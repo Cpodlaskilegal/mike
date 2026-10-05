@@ -133,7 +133,7 @@ function lowerLimit(value: number | undefined, maximum: number): number {
     : maximum;
 }
 
-function downloadUrl(raw: string): URL {
+export function downloadUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);

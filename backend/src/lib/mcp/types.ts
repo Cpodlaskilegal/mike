@@ -88,6 +88,9 @@ export type McpExecutionContext = {
     traceId?: string | null;
     projectId?: string | null;
     toolCallId?: string | null;
+    /** Set only by the Docket Agent gateway. */
+    origin?: "docket_agent";
+    agentTokenId?: string | null;
 };
 
 export type ConnectorRow = {

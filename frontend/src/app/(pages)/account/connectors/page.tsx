@@ -20,6 +20,7 @@ import {
   createMcpConnector,
   createMcpConnectorFromPreset,
   deleteMcpConnector,
+  disconnectMcpConnectorOAuth,
   listMcpConnectorPresets,
   listMcpConnectors,
   refreshMcpConnectorTools,
@@ -277,6 +278,31 @@ export default function ConnectorsPage() {
         err instanceof Error
           ? err.message
           : "Failed to connect PracticePanther.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Removes the user's own PracticePanther sign-in from Docket, so a
+  // sign-in made with the wrong account can be cleared and made again.
+  const handlePracticePantherDisconnect = async (connectorId: string) => {
+    if (
+      !window.confirm(
+        "Disconnect your PracticePanther account from Docket? Docket cannot use PracticePanther for you until you connect again.",
+      )
+    ) {
+      return;
+    }
+    setBusy(`oauth:${connectorId}`);
+    setError(null);
+    try {
+      replaceConnector(await disconnectMcpConnectorOAuth(connectorId));
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to disconnect PracticePanther.",
       );
     } finally {
       setBusy(null);
@@ -566,6 +592,7 @@ export default function ConnectorsPage() {
               busy={busy}
               onRefresh={handleRefresh}
               onPracticePantherConnection={handlePracticePantherConnection}
+              onPracticePantherDisconnect={handlePracticePantherDisconnect}
               onDelete={handleDelete}
               onConnectorEnabled={handleConnectorEnabled}
               onToolEnabled={handleToolEnabled}
@@ -583,6 +610,7 @@ function ConnectorPanel({
   busy,
   onRefresh,
   onPracticePantherConnection,
+  onPracticePantherDisconnect,
   onDelete,
   onConnectorEnabled,
   onToolEnabled,
@@ -592,6 +620,7 @@ function ConnectorPanel({
   busy: string | null;
   onRefresh: (connectorId: string) => Promise<void>;
   onPracticePantherConnection: (connectorId: string) => Promise<void>;
+  onPracticePantherDisconnect: (connectorId: string) => Promise<void>;
   onDelete: (connectorId: string) => Promise<void>;
   onConnectorEnabled: (
     connector: McpConnectorSummary,
@@ -740,6 +769,17 @@ function ConnectorPanel({
                 : connector.oauthConnected
                   ? "Check connection"
                   : "Connect PracticePanther"}
+            </button>
+          )}
+          {connector.authType === "oauth" && connector.oauthConnected && (
+            <button
+              type="button"
+              onClick={() => void onPracticePantherDisconnect(connector.id)}
+              disabled={busy === `oauth:${connector.id}`}
+              className="ml-2 rounded-md border border-blue-300 bg-white px-3 py-1.5 font-medium text-blue-800 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-50"
+              title="Remove this PracticePanther sign-in from Docket. Connect then starts a new one."
+            >
+              Disconnect
             </button>
           )}
         </div>

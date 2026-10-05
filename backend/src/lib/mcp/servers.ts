@@ -36,6 +36,7 @@ import {
     validateCustomHeaders,
     validateRemoteMcpUrl,
 } from "./client";
+import { refreshSignInBeforeUse } from "../agentGateway/upstreamAuth";
 import {
     backendManagedBy,
     ensureDefaultMcpConnectors,
@@ -129,12 +130,16 @@ async function ensureDefaultConnectorsForUser(userId: string, db: Db) {
     }
 }
 
-async function withMcpClient<T>(
+export async function withMcpClient<T>(
     connector: ConnectorRow,
     callback: (client: Client) => Promise<T>,
     db: Db = createServerSupabase(),
 ): Promise<T> {
     await validateRemoteMcpUrl(connector.server_url);
+    // Chat and the Docket Agent gateway share OAuth sign-ins whose refresh
+    // tokens are single-use. A sign-in about to expire is renewed here, under
+    // one lock, before either of them connects. Never throws.
+    await refreshSignInBeforeUse(connector, db);
     const authConfig = decryptAuthConfig(connector);
     const authProvider =
         connector.auth_type === "oauth"
@@ -1545,6 +1550,13 @@ function auditContextColumns(context: McpExecutionContext) {
         trace_id: context.traceId ?? null,
         project_id: context.projectId ?? null,
         tool_call_id: context.toolCallId ?? null,
+        // Only Docket Agent calls name these columns. Chat rows are unchanged.
+        ...(context.origin
+            ? {
+                  origin: context.origin,
+                  agent_token_id: context.agentTokenId ?? null,
+              }
+            : {}),
     };
 }
 
@@ -1703,8 +1715,12 @@ export async function executeResolvedMcpToolCall(params: {
                   params.tool.annotations,
               );
     const actorEmail = normalizeDocketActorEmail(context.actorEmail);
+    // A Docket Agent gateway call (only it sets an origin) is recorded in
+    // Docket's own audit log alone: no PracticePanther audit note, and its
+    // arguments are sent as they came. Chat calls are unchanged.
     const isPracticePanther =
-        backendManagedBy(params.connector) === "practicepanther";
+        backendManagedBy(params.connector) === "practicepanther" &&
+        context.origin !== "docket_agent";
     const initialRefs = extractPracticePantherTargetRefs(
         params.tool.tool_name,
         params.args,

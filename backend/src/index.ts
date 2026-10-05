@@ -12,6 +12,7 @@ import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
+import { agentMcpRouter } from "./routes/agentMcp";
 import { startAssistantBackgroundRecovery } from "./lib/assistantBackgroundRecovery";
 import { apiErrorHandler } from "./middleware/asyncRouteErrors";
 
@@ -102,6 +103,11 @@ app.use(
     referrerPolicy: { policy: "no-referrer" },
   }),
 );
+
+// Docket Agent gateway. Server-to-server only. It has its own rate limit,
+// its own small body limit and its own error handler, so it sits before
+// CORS, the general limiter and the 50mb JSON parser.
+app.use("/agent-mcp", agentMcpRouter);
 
 app.use(
   cors({

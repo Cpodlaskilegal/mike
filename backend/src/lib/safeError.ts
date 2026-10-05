@@ -8,6 +8,10 @@ const PROVIDER_KEY_PATTERNS = [
   /\bsk-(?:proj-|ant-|or-)?[A-Za-z0-9_-]{12,}\b/g,
   /\bAIza[A-Za-z0-9_-]{20,}\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  // Docket Agent gateway agent tokens.
+  /\bdka_[A-Za-z0-9_-]{20,}\b/g,
+  // Docket Agent gateway Box file tokens.
+  /\bdkf_[A-Za-z0-9_-]{20,}\b/g,
 ];
 
 export function redactSensitiveText(value: string): string {
