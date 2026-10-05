@@ -20,6 +20,7 @@ import {
   createMcpConnector,
   createMcpConnectorFromPreset,
   deleteMcpConnector,
+  disconnectMcpConnectorOAuth,
   listMcpConnectorPresets,
   listMcpConnectors,
   refreshMcpConnectorTools,
@@ -316,6 +317,27 @@ export default function ConnectorsPage() {
     }
   };
 
+  // Only for a Docket Agent connector: removes the stored sign-in, so
+  // Docket Agent can no longer use it and Connect starts a new one.
+  const handleDisconnect = async (connectorId: string) => {
+    if (
+      !window.confirm(
+        "Disconnect this account from Docket Agent? Docket Agent cannot use it again until you click Connect and sign in.",
+      )
+    ) {
+      return;
+    }
+    setBusy(`disconnect:${connectorId}`);
+    setError(null);
+    try {
+      replaceConnector(await disconnectMcpConnectorOAuth(connectorId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleDelete = async (connectorId: string) => {
     if (!window.confirm("Delete this connector?")) return;
     setBusy(`delete:${connectorId}`);
@@ -566,6 +588,7 @@ export default function ConnectorsPage() {
               busy={busy}
               onRefresh={handleRefresh}
               onPracticePantherConnection={handlePracticePantherConnection}
+              onDisconnect={handleDisconnect}
               onDelete={handleDelete}
               onConnectorEnabled={handleConnectorEnabled}
               onToolEnabled={handleToolEnabled}
@@ -583,6 +606,7 @@ function ConnectorPanel({
   busy,
   onRefresh,
   onPracticePantherConnection,
+  onDisconnect,
   onDelete,
   onConnectorEnabled,
   onToolEnabled,
@@ -592,6 +616,7 @@ function ConnectorPanel({
   busy: string | null;
   onRefresh: (connectorId: string) => Promise<void>;
   onPracticePantherConnection: (connectorId: string) => Promise<void>;
+  onDisconnect: (connectorId: string) => Promise<void>;
   onDelete: (connectorId: string) => Promise<void>;
   onConnectorEnabled: (
     connector: McpConnectorSummary,
@@ -608,6 +633,13 @@ function ConnectorPanel({
     connector.managedBy === "practicepanther" &&
     connector.authType !== "oauth" &&
     !connector.enabled;
+  // A connector Docket made for the Docket Agent email assistant. Its owner
+  // signs in to it here; Docket chat never uses it.
+  const agentSource =
+    typeof connector.toolPolicy?.docketAgentSource === "string"
+      ? connector.toolPolicy.docketAgentSource
+      : null;
+  const isDocketAgent = agentSource !== null;
   const displayedTools =
     isRetiredPracticePanther
       ? []
@@ -660,10 +692,22 @@ function ConnectorPanel({
                 Backend managed
               </span>
             )}
+            {isDocketAgent && (
+              <span className="rounded bg-purple-50 px-1.5 py-0.5 text-[11px] text-purple-700">
+                Docket Agent
+              </span>
+            )}
           </div>
           <p className="mt-1 truncate text-xs text-gray-500">
             {connector.serverUrl}
           </p>
+          {isDocketAgent && (
+            <p className="mt-1 text-xs text-gray-500">
+              Used by Docket Agent only. Sign in as yourself. Not used in
+              Docket chat. Disconnect removes the sign-in; Connect starts a
+              new one.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-gray-600">
@@ -671,7 +715,9 @@ function ConnectorPanel({
               type="checkbox"
               checked={connector.enabled}
               disabled={
-                isBackendManaged || busy === `connector:${connector.id}`
+                isBackendManaged ||
+                isDocketAgent ||
+                busy === `connector:${connector.id}`
               }
               onChange={(event) =>
                 void onConnectorEnabled(connector, event.target.checked)
@@ -679,7 +725,28 @@ function ConnectorPanel({
             />
             Enabled
           </label>
-          {(isBackendManaged || isAdmin) && !isRetiredPracticePanther && (
+          {isDocketAgent && !connector.oauthConnected && (
+            <button
+              type="button"
+              onClick={() => void onRefresh(connector.id)}
+              disabled={busy === `refresh:${connector.id}`}
+              className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
+            >
+              Connect
+            </button>
+          )}
+          {isDocketAgent && connector.oauthConnected && (
+            <button
+              type="button"
+              onClick={() => void onDisconnect(connector.id)}
+              disabled={busy === `disconnect:${connector.id}`}
+              className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
+              title="Remove this sign-in. Docket Agent can no longer use it."
+            >
+              Disconnect
+            </button>
+          )}
+          {(isBackendManaged || isAdmin || isDocketAgent) && !isRetiredPracticePanther && (
             <button
               type="button"
               onClick={() => void onRefresh(connector.id)}

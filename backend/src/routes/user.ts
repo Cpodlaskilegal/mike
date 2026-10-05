@@ -34,6 +34,8 @@ import {
   updateUserMcpConnector,
 } from "../lib/mcpConnectors";
 import { practicePantherMcpServerUrl } from "../lib/mcp/defaults";
+import { docketAgentSourceOf } from "../lib/mcp/agentSource";
+import { disconnectAgentConnector } from "../lib/agentGateway/sources";
 import {
   getUserRole,
   getUserRoleStrict,
@@ -966,6 +968,7 @@ userRouter.post(
       if (
         connector.managedBy !== "box" &&
         connector.managedBy !== "practicepanther" &&
+        !docketAgentSourceOf(connector.toolPolicy) &&
         !(await isAdminUser(db, userId))
       ) {
         return void res.status(403).json({
@@ -983,6 +986,51 @@ userRouter.post(
     } catch (err) {
       const detail = errorMessage(err);
       console.error("[user/mcp-connectors] oauth start failed", {
+        userId,
+        connectorId: req.params.connectorId,
+        error: detail,
+      });
+      res.status(400).json({ detail });
+    }
+  },
+);
+
+// POST /user/mcp-connectors/:connectorId/oauth/disconnect
+// Removes the stored sign-in from one of the caller's own Docket Agent
+// connector rows. Any signed-in user may do this to his own row: it is how
+// he takes a source away from Docket Agent, or clears a sign-in made with
+// the wrong account so that Connect starts a new one.
+userRouter.post(
+  "/mcp-connectors/:connectorId/oauth/disconnect",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    try {
+      const result = await disconnectAgentConnector(
+        userId,
+        req.params.connectorId,
+        db,
+      );
+      if (!result.ok) {
+        return void res
+          .status(result.reason === "not_found" ? 404 : 403)
+          .json({
+            detail:
+              result.reason === "not_found"
+                ? "Connector not found."
+                : "Only a Docket Agent connector can be disconnected here.",
+          });
+      }
+      console.info("[user/mcp-connectors] docket agent sign-in removed", {
+        userId,
+        connectorId: req.params.connectorId,
+        source: result.source,
+      });
+      res.json(await getUserMcpConnector(userId, req.params.connectorId, db));
+    } catch (err) {
+      const detail = errorMessage(err);
+      console.error("[user/mcp-connectors] oauth disconnect failed", {
         userId,
         connectorId: req.params.connectorId,
         error: detail,
@@ -1044,7 +1092,11 @@ userRouter.post(
         req.params.connectorId,
         db,
       );
-      if (current.managedBy === null && !(await isAdminUser(db, userId))) {
+      if (
+        current.managedBy === null &&
+        !docketAgentSourceOf(current.toolPolicy) &&
+        !(await isAdminUser(db, userId))
+      ) {
         return void res.status(403).json({
           detail: "Admin access is required to refresh a custom MCP connector.",
         });

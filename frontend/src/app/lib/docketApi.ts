@@ -562,6 +562,19 @@ export async function startMcpConnectorOAuth(
   }>(`/user/mcp-connectors/${connectorId}/oauth/start`, { method: "POST" });
 }
 
+/**
+ * Removes the stored sign-in from one of the user's own Docket Agent
+ * connectors. The connector stays; Connect then starts a new sign-in.
+ */
+export async function disconnectMcpConnectorOAuth(
+  connectorId: string,
+): Promise<McpConnectorSummary> {
+  return apiRequest<McpConnectorSummary>(
+    `/user/mcp-connectors/${connectorId}/oauth/disconnect`,
+    { method: "POST" },
+  );
+}
+
 export async function setMcpToolEnabled(
   connectorId: string,
   toolId: string,

@@ -129,7 +129,7 @@ async function ensureDefaultConnectorsForUser(userId: string, db: Db) {
     }
 }
 
-async function withMcpClient<T>(
+export async function withMcpClient<T>(
     connector: ConnectorRow,
     callback: (client: Client) => Promise<T>,
     db: Db = createServerSupabase(),
@@ -1545,6 +1545,13 @@ function auditContextColumns(context: McpExecutionContext) {
         trace_id: context.traceId ?? null,
         project_id: context.projectId ?? null,
         tool_call_id: context.toolCallId ?? null,
+        // Only Docket Agent calls name these columns. Chat rows are unchanged.
+        ...(context.origin
+            ? {
+                  origin: context.origin,
+                  agent_token_id: context.agentTokenId ?? null,
+              }
+            : {}),
     };
 }
 
