@@ -16,6 +16,7 @@ import {
   LEGACY_ASSISTANT_MODEL_STORAGE_KEY,
   OPENAI_MAIN_MODEL_IDS,
   PRO_REASONING_EFFORTS,
+  SOL61_MODEL_ID,
   activateAssistantSession,
   adoptCreatedAssistantChat,
   assistantReasoningEffortsFor,
@@ -79,7 +80,7 @@ test("exports the exact GPT-5.6 model and effort contracts", () => {
 });
 
 test("GPT-6 Sol and Luna are selectable and keep their model IDs in saved and outgoing settings", () => {
-  assert.deepEqual(GPT6_MODEL_IDS, ["gpt-6-sol", "gpt-6-luna"]);
+  assert.deepEqual(GPT6_MODEL_IDS, [SOL61_MODEL_ID, "gpt-6-sol", "gpt-6-luna"]);
 
   for (const [model, label] of [
     ["gpt-6-sol", "GPT-6 Sol"],
@@ -112,6 +113,96 @@ test("GPT-6 Sol and Luna are selectable and keep their model IDs in saved and ou
       effectiveAssistantGenerationSettings(pro),
     ), { model, reasoning_effort: "medium", reasoning_mode: "pro" });
   }
+});
+
+test("GPT-6.1 Sol is selectable only in main chat and preserves its saved model and effort", () => {
+  assert.equal(SOL61_MODEL_ID, "gpt-6.1-sol");
+  assert.equal(MODELS[1]?.id, SOL61_MODEL_ID);
+  assert.equal(MODELS[1]?.label, "GPT-6.1 Sol");
+  assert.equal(MODELS[1]?.description, "Balanced intelligence and cost");
+  assert.equal(ALLOWED_MAIN_MODEL_IDS.has(SOL61_MODEL_ID), true);
+  assert.equal(isOpenAiReasoningModel(SOL61_MODEL_ID), true);
+  assert.equal(getModelProvider(SOL61_MODEL_ID), "openai");
+  assert.equal(TABULAR_MODELS.some(({ id }) => id === SOL61_MODEL_ID), false);
+  assert.equal(DEFAULT_MODEL_ID, ASTRA_MODEL_ID);
+  assert.equal(defaultAssistantGenerationSettings().standardEffort, "max");
+
+  const selected = selectAssistantEffort(
+    selectAssistantModel(defaultAssistantGenerationSettings(), SOL61_MODEL_ID),
+    "xhigh",
+  );
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: serializeAssistantGenerationSettings(selected),
+    legacy: ASTRA_MODEL_ID,
+  });
+  assert.equal(restored.model, SOL61_MODEL_ID);
+  assert.equal(restored.standardEffort, "xhigh");
+  assert.deepEqual(buildAssistantGenerationPayload(
+    effectiveAssistantGenerationSettings(restored),
+  ), { model: SOL61_MODEL_ID, reasoning_effort: "xhigh", reasoning_mode: "standard" });
+  assert.equal(deserializeAssistantGenerationSettings({ legacy: SOL61_MODEL_ID }).model, SOL61_MODEL_ID);
+});
+
+test("GPT-6.1 Sol normalizes None to Low across model transitions, storage and outgoing requests", () => {
+  const none = selectAssistantEffort(
+    selectAssistantModel(defaultAssistantGenerationSettings(), "gpt-6-sol"),
+    "none",
+  );
+  const sol61 = selectAssistantModel(none, SOL61_MODEL_ID);
+  assert.equal(sol61.standardEffort, "low");
+  assert.equal(selectAssistantEffort(sol61, "none").standardEffort, "low");
+
+  const restored = deserializeAssistantGenerationSettings({
+    versioned: JSON.stringify({ version: 1, model: SOL61_MODEL_ID, standardEffort: "none" }),
+  });
+  assert.equal(restored.model, SOL61_MODEL_ID);
+  assert.equal(restored.standardEffort, "low");
+  assert.equal(restored.proEffort, "medium");
+  const staleEffort = { ...sol61, standardEffort: "none" as const };
+  assert.equal(JSON.parse(serializeAssistantGenerationSettings(staleEffort)).standardEffort, "low");
+  assert.deepEqual(buildAssistantGenerationPayload(
+    effectiveAssistantGenerationSettings(staleEffort),
+  ), { model: SOL61_MODEL_ID, reasoning_effort: "low", reasoning_mode: "standard" });
+  assert.deepEqual(buildAssistantGenerationPayload({
+    model: SOL61_MODEL_ID,
+    reasoningEffort: "none",
+    reasoningMode: "standard",
+  }), { model: SOL61_MODEL_ID, reasoning_effort: "low", reasoning_mode: "standard" });
+});
+
+test("GPT-6.1 Sol offers supported Standard and Pro efforts without changing the selected model", () => {
+  assert.deepEqual(assistantReasoningEffortsFor(SOL61_MODEL_ID, "standard"),
+    ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(assistantReasoningEffortsFor(SOL61_MODEL_ID, "pro"), PRO_REASONING_EFFORTS);
+  for (const effort of ASTRA_REASONING_EFFORTS) {
+    const standard = selectAssistantEffort(
+      selectAssistantModel(defaultAssistantGenerationSettings(), SOL61_MODEL_ID),
+      effort,
+    );
+    assert.deepEqual(buildAssistantGenerationPayload(effectiveAssistantGenerationSettings(standard)), {
+      model: SOL61_MODEL_ID,
+      reasoning_effort: effort,
+      reasoning_mode: "standard",
+    });
+  }
+  const low = selectAssistantEffort(
+    selectAssistantModel(defaultAssistantGenerationSettings(), SOL61_MODEL_ID),
+    "low",
+  );
+  const pro = setAssistantReasoningMode(low, "pro");
+  assert.equal(pro.proEffort, "medium");
+  for (const effort of PRO_REASONING_EFFORTS) {
+    const payload = buildAssistantGenerationPayload(effectiveAssistantGenerationSettings(
+      selectAssistantEffort(pro, effort),
+    ));
+    assert.deepEqual(payload, {
+      model: SOL61_MODEL_ID,
+      reasoning_effort: effort,
+      reasoning_mode: "pro",
+    });
+    assert.equal(assistantRequestContinuesAfterDisconnect(payload), true);
+  }
+  assert.equal(setAssistantReasoningMode(pro, "standard").standardEffort, "low");
 });
 
 test("offers the latest Claude models while retaining existing selections", () => {

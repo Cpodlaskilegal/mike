@@ -31,6 +31,12 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
     cachedInput: usdPerMillion("1"),
     output: usdPerMillion("50"),
   },
+  "gpt-6.1-sol": {
+    // https://developers.openai.com/api/docs/pricing (verified 2026-10-05).
+    input: usdPerMillion("2"),
+    cachedInput: usdPerMillion("0.1"),
+    output: usdPerMillion("10"),
+  },
   "gpt-6-sol": {
     input: usdPerMillion("2"),
     cachedInput: usdPerMillion("0.2"),
@@ -141,13 +147,18 @@ const PRICE_PER_MILLION: Record<string, PricePerMillion> = {
   },
 };
 
-// https://developers.openai.com/api/docs/pricing (verified 2026-09-22).
+// https://developers.openai.com/api/docs/pricing (GPT-6.1 Sol verified 2026-10-05).
 // GPT-6 long-context rates apply to the full request above 272K input tokens.
 const GPT_6_LONG_CONTEXT_PRICE_PER_MILLION: Record<string, PricePerMillion> = {
   "gpt-6-astra": {
     input: usdPerMillion("20"),
     cachedInput: usdPerMillion("2"),
     output: usdPerMillion("75"),
+  },
+  "gpt-6.1-sol": {
+    input: usdPerMillion("4"),
+    cachedInput: usdPerMillion("0.2"),
+    output: usdPerMillion("15"),
   },
   "gpt-6-sol": {
     input: usdPerMillion("4"),

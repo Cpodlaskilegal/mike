@@ -20,6 +20,7 @@ test.before(async () => {
 
 const OPENAI_MAIN_MODELS = [
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",
@@ -189,6 +190,28 @@ test("builds Pro as a stored background request without inventing a model slug",
       mode: "pro",
     });
     assert.equal(String(request.model).includes("-pro"), false);
+  }
+});
+
+test("forwards GPT-6.1 Sol efforts and modes with its exact provider slug", () => {
+  for (const reasoningEffort of ["low", "medium", "high", "xhigh", "max"] as const) {
+    const standard = adapter.buildOpenAIStandardStreamingRequest({
+      model: "gpt-6.1-sol",
+      input: "Hello",
+      reasoningEffort,
+    });
+    assert.equal(standard.model, "gpt-6.1-sol");
+    assert.deepEqual(standard.reasoning, { effort: reasoningEffort });
+    if (reasoningEffort === "low") continue;
+    const pro = adapter.buildOpenAIProBackgroundRequest({
+      model: "gpt-6.1-sol",
+      input: "Hello",
+      reasoningEffort,
+    });
+    assert.equal(pro.model, "gpt-6.1-sol");
+    assert.deepEqual(pro.reasoning, { effort: reasoningEffort, mode: "pro" });
+    assert.equal(pro.background, true);
+    assert.equal(pro.stream, false);
   }
 });
 
