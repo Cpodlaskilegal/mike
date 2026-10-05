@@ -30,7 +30,7 @@ import {
   createFakeDb,
   createMemoryRefreshLock,
   QUO_URL,
-  seedAgentPracticePantherConnector,
+  seedPerUserPracticePantherConnector,
   seedConnector,
   seedManagedBoxConnector,
   seedOAuthToken,
@@ -103,7 +103,7 @@ function seedScenario(): void {
     );
 
     if (user.practicepanther === "connected" || user.practicepanther === "stale") {
-      const connector = seedAgentPracticePantherConnector(db, userId);
+      const connector = seedPerUserPracticePantherConnector(db, userId);
       // "stale": a sign-in that was started and never finished.
       seedOAuthToken(
         db,

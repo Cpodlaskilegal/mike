@@ -105,10 +105,11 @@ create table if not exists public.user_mcp_connectors (
 create index if not exists idx_user_mcp_connectors_user
   on public.user_mcp_connectors(user_id);
 
--- A user has at most one connector per Docket Agent source.
+-- A user has at most one connector per Docket Agent source. Only a row the
+-- Docket Agent gateway makes for itself carries this mark (today: Quo).
 create unique index if not exists idx_user_mcp_connectors_docket_agent_source
   on public.user_mcp_connectors (user_id, (tool_policy->>'docketAgentSource'))
-  where tool_policy ? 'docketAgentSource';
+  where (tool_policy->>'docketAgentSource') is not null;
 
 create table if not exists public.user_mcp_oauth_tokens (
   id uuid primary key default gen_random_uuid(),

@@ -2,7 +2,10 @@
 // environment when it is asked for, never at import, so the gateway can be
 // switched on or off without a code change and tests can set values.
 
-import { practicePantherMcpServerUrl } from "../mcp/defaults";
+import {
+  managedMcpAuthType,
+  practicePantherMcpServerUrl,
+} from "../mcp/defaults";
 
 export const AGENT_SOURCES = ["practicepanther", "box", "quo"] as const;
 export type AgentSource = (typeof AGENT_SOURCES)[number];
@@ -10,10 +13,6 @@ export type AgentSource = (typeof AGENT_SOURCES)[number];
 export function isAgentSource(value: unknown): value is AgentSource {
   return (AGENT_SOURCES as readonly unknown[]).includes(value);
 }
-
-/** The per-user PracticePanther connector. Each user signs in as himself. */
-export const DEFAULT_AGENT_PRACTICEPANTHER_MCP_URL =
-  "https://warm-pulse-vyvir.run.mcp-use.com/mcp";
 
 /**
  * The old shared PracticePanther connector (one identity for the whole firm).
@@ -98,19 +97,18 @@ export function isAgentEmailAllowed(email: string): boolean {
 }
 
 /**
- * The only PracticePanther server an agent token may reach. Null means the
- * source is off: the value is not HTTPS, or it points at the old shared
- * connector, or it equals the connector Docket chat manages.
+ * The only PracticePanther server an agent token may reach: the per-user
+ * connector Docket itself runs on (PRACTICEPANTHER_USER_MCP_SERVER_URL),
+ * where every user signs in as himself. The gateway has no setting of its
+ * own for it. Null means the source is off: Docket is still on the old
+ * shared connector, PracticePanther is switched off, or the configured
+ * address is not usable.
  */
 export function agentPracticePantherMcpUrl(): string | null {
-  const url = normalizeAgentUrl(
-    process.env.DOCKET_AGENT_PRACTICEPANTHER_MCP_URL ||
-      DEFAULT_AGENT_PRACTICEPANTHER_MCP_URL,
-  );
-  if (!url) return null;
-  if (isLegacySharedPracticePantherUrl(url)) return null;
-  const managedUrl = normalizeAgentUrl(practicePantherMcpServerUrl());
-  if (managedUrl && managedUrl === url) return null;
+  // "oauth" only when Docket's per-user PracticePanther sign-in is on.
+  if (managedMcpAuthType("practicepanther") !== "oauth") return null;
+  const url = practicePantherMcpServerUrl();
+  if (!url || isLegacySharedPracticePantherUrl(url)) return null;
   return url;
 }
 

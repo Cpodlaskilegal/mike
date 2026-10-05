@@ -29,7 +29,7 @@ const GATEWAY_ENV_NAMES = [
   "DOCKET_AGENT_STATUS_TOKEN",
   "DOCKET_AGENT_ALLOWED_EMAILS",
   "RATE_LIMIT_AGENT_MCP_UNAUTH_MAX",
-  "DOCKET_AGENT_PRACTICEPANTHER_MCP_URL",
+  "PRACTICEPANTHER_USER_MCP_SERVER_URL",
   "DOCKET_AGENT_QUO_MCP_URL",
   "DOCKET_AGENT_PRACTICEPANTHER_WRITES",
   "DOCKET_AGENT_BOX_ORGANIZE",
@@ -53,9 +53,14 @@ const allowedEmails = new Set<string>();
  * list of allowed users belongs to the test world, not to one call: it
  * stays as `seedUser` and `allowAgentEmails` left it, unless `values`
  * names DOCKET_AGENT_ALLOWED_EMAILS itself.
+ *
+ * Docket itself runs on the per-user PracticePanther connector, as in
+ * production (PRACTICEPANTHER_USER_MCP_SERVER_URL). A test that wants
+ * Docket still on the old shared connector passes that name with "".
  */
 export function setGatewayEnv(values: Record<string, string> = {}): void {
   for (const name of GATEWAY_ENV_NAMES) delete process.env[name];
+  process.env.PRACTICEPANTHER_USER_MCP_SERVER_URL = PER_USER_PP_URL;
   process.env.DOCKET_AGENT_ALLOWED_EMAILS = [...allowedEmails].join(",");
   for (const [name, value] of Object.entries(values)) process.env[name] = value;
 }
@@ -371,35 +376,47 @@ export function seedConnector(
   return row;
 }
 
-/** The marked PracticePanther row provisioning would create. */
-export function seedAgentPracticePantherConnector(
+/**
+ * The PracticePanther row Docket keeps for a user once per-user sign-in is
+ * on: the one he connects on Docket's connectors page, Docket chat uses,
+ * and the gateway serves. Exactly what Docket's own code creates
+ * (ensureDefaultMcpConnector in src/lib/mcp/defaults.ts).
+ */
+export function seedPerUserPracticePantherConnector(
   db: FakeDb,
   userId: string,
   overrides: Partial<ConnectorRow> = {},
 ): ConnectorRow {
   return seedConnector(db, {
-    id: `pp-agent-${userId}`,
+    id: `pp-user-${userId}`,
     user_id: userId,
-    name: "PracticePanther (Docket Agent)",
+    name: "PracticePanther MCP",
     server_url: PER_USER_PP_URL,
-    tool_policy: { docketAgentSource: "practicepanther" },
+    auth_type: "oauth",
+    enabled: true,
+    tool_policy: { managedBy: "backend", managedConnector: "practicepanther" },
     ...overrides,
   });
 }
 
-/** The PracticePanther row Docket chat manages (the old shared connector). */
-export function seedManagedPracticePantherConnector(
+/**
+ * The old shared PracticePanther row (one identity for the whole firm), as
+ * Docket leaves it after the per-user cutover: retired and switched off.
+ */
+export function seedLegacySharedPracticePantherConnector(
   db: FakeDb,
   userId: string,
+  overrides: Partial<ConnectorRow> = {},
 ): ConnectorRow {
   return seedConnector(db, {
-    id: `pp-managed-${userId}`,
+    id: `pp-shared-${userId}`,
     user_id: userId,
     name: "PracticePanther MCP",
     server_url: LEGACY_SHARED_PP_URL,
     auth_type: "none",
-    enabled: true,
+    enabled: false,
     tool_policy: { managedBy: "backend", managedConnector: "practicepanther" },
+    ...overrides,
   });
 }
 

@@ -563,8 +563,8 @@ export async function startMcpConnectorOAuth(
 }
 
 /**
- * Removes the stored sign-in from one of the user's own Docket Agent
- * connectors. The connector stays; Connect then starts a new sign-in.
+ * Removes the user's own PracticePanther sign-in from Docket. The connector
+ * stays; Connect then starts a new sign-in.
  */
 export async function disconnectMcpConnectorOAuth(
   connectorId: string,

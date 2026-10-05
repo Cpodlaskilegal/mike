@@ -5,10 +5,10 @@ import {
   createMemoryRefreshLock,
   FAKE_UPSTREAM_ACCESS_TOKEN,
   QUO_URL,
-  seedAgentPracticePantherConnector,
+  seedPerUserPracticePantherConnector,
   seedConnector,
   seedManagedBoxConnector,
-  seedManagedPracticePantherConnector,
+  seedLegacySharedPracticePantherConnector,
   seedOAuthToken,
   seedTool,
   seedUser,
@@ -134,9 +134,12 @@ async function enroll(
   return token;
 }
 
-/** The user's connected PracticePanther agent row with a tool cache. */
+/**
+ * The user's own PracticePanther connection in Docket (the row Docket keeps
+ * and chat uses), connected, with a tool cache.
+ */
 function connectPracticePanther(db: FakeDb, userId: string): ConnectorRow {
-  const connector = seedAgentPracticePantherConnector(db, userId);
+  const connector = seedPerUserPracticePantherConnector(db, userId);
   seedOAuthToken(db, connector.id, { expiresAt: iso(30 * MINUTE) });
   for (const name of PP_TOOLS) {
     seedTool(db, connector.id, name, {
@@ -342,7 +345,7 @@ test("a source the user has not connected answers 401 with the reason", async ()
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
   // Only Docket chat's shared connector: never served to an agent token.
-  const managed = seedManagedPracticePantherConnector(db, "user-1");
+  const managed = seedLegacySharedPracticePantherConnector(db, "user-1");
   seedTool(db, managed.id, "Tasks_GetTasks");
   // Box row exists, but its sign-in expired and cannot be refreshed.
   const box = seedManagedBoxConnector(db, "user-1");
@@ -549,7 +552,7 @@ test("tools/list reads the upstream tool list once when the cache is empty", asy
   const { app, db, toolRefreshes } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(30 * MINUTE) });
 
   await withApp(app, async (baseUrl) => {
@@ -714,10 +717,16 @@ test("with writes on, a task is created only after a pending audit row exists", 
       "db:update:user_mcp_tool_audit_logs:ok",
     ],
   );
-  // Arguments reach PracticePanther exactly as sent: no actor tag is added.
+  // It ran on the row Docket itself manages for him (the one chat uses) ...
+  assert.deepEqual(upstream.calls[0].connector.tool_policy, {
+    managedBy: "backend",
+    managedConnector: "practicepanther",
+  });
+  // ... and still: arguments reach PracticePanther exactly as sent, with no
+  // actor tag added,
   assert.equal(upstream.calls.length, 1);
   assert.deepEqual(upstream.calls[0].args, args);
-  // No Docket audit note is posted into PracticePanther.
+  // and no Docket audit note is posted into PracticePanther.
   assert.ok(!upstream.calls.some((call) => call.name === "Notes_PostNote"));
 
   assert.equal(auditRows(db).length, 1);
@@ -945,7 +954,7 @@ test("a sign-in near expiry is refreshed before the call, once", async () => {
   const { app, db, refreshed } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(2 * MINUTE) });
   seedTool(db, connector.id, "Tasks_GetTasks");
 
@@ -1175,14 +1184,15 @@ test("a rotation conflict answers 409", async () => {
   });
 });
 
-test("provisioning over HTTP makes the agent row and reports each source", async () => {
+test("provisioning over HTTP reports each source and makes no PracticePanther or Box row", async () => {
   const { app, db } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   seedUser(db, { id: "user-1", email: GARRETT });
-  seedManagedPracticePantherConnector(db, "user-1");
+  // He has not opened Docket since per-user sign-in was switched on.
+  seedLegacySharedPracticePantherConnector(db, "user-1");
   const box = seedManagedBoxConnector(db, "user-1");
   seedOAuthToken(db, box.id, { expiresAt: iso(30 * MINUTE) });
-  const chatRowsBefore = JSON.stringify(db.table("user_mcp_connectors"));
+  const rowsBefore = JSON.stringify(db.table("user_mcp_connectors"));
 
   await withApp(app, async (baseUrl) => {
     const first = await ops(baseUrl, "/provision", {
@@ -1193,32 +1203,65 @@ test("provisioning over HTTP makes the agent row and reports each source", async
     assert.deepEqual(first.json, {
       email: GARRETT,
       sources: {
-        practicepanther: { connector: "created", state: "not_connected" },
+        practicepanther: { connector: "missing", state: "not_connected" },
         box: { connector: "managed", state: "connected" },
         quo: { connector: "not_configured", state: "not_connected" },
       },
     });
+    assert.equal(JSON.stringify(db.table("user_mcp_connectors")), rowsBefore);
 
+    // He opens Docket (Docket makes his row) and connects PracticePanther
+    // there, the normal way. Nothing more is needed.
+    const own = seedPerUserPracticePantherConnector(db, "user-1");
     const second = await ops(baseUrl, "/provision", {
       method: "POST",
       body: JSON.stringify({ email: GARRETT }),
     });
-    assert.equal(second.json.sources.practicepanther.connector, "unchanged");
+    assert.deepEqual(second.json.sources.practicepanther, {
+      connector: "managed",
+      state: "not_connected",
+    });
+    seedOAuthToken(db, own.id, { expiresAt: iso(30 * MINUTE) });
+    const third = await ops(baseUrl, "/provision", {
+      method: "POST",
+      body: JSON.stringify({ email: GARRETT }),
+    });
+    assert.deepEqual(third.json.sources.practicepanther, {
+      connector: "managed",
+      state: "connected",
+    });
+
+    // Docket itself still on the old shared connector: the source is off.
+    setGatewayEnv({
+      DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN,
+      PRACTICEPANTHER_USER_MCP_SERVER_URL: "",
+    });
+    const off = await ops(baseUrl, "/provision", {
+      method: "POST",
+      body: JSON.stringify({ email: GARRETT }),
+    });
+    assert.deepEqual(off.json.sources.practicepanther, {
+      connector: "disabled",
+      state: "not_connected",
+    });
   });
 
+  // Three rows: the two that were there and the one Docket made. The
+  // gateway wrote none, and none carries a Docket Agent mark or name.
   const rows = db.table("user_mcp_connectors");
   assert.equal(rows.length, 3);
-  // Docket chat's two rows are exactly as they were.
-  assert.equal(JSON.stringify(rows.slice(0, 2)), chatRowsBefore);
-  assert.equal(rows[2].enabled, false);
-  assert.deepEqual(rows[2].tool_policy, { docketAgentSource: "practicepanther" });
+  assert.equal(JSON.stringify(rows.slice(0, 2)), rowsBefore);
+  for (const row of rows) {
+    assert.equal("docketAgentSource" in (row.tool_policy ?? {}), false);
+    assert.doesNotMatch(String(row.name), /Docket Agent/);
+  }
 });
 
 test("status with keepalive refreshes sign-ins that are near expiry", async () => {
   const { app, db, refreshed } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   await enroll(db, "user-1", GARRETT);
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(10 * MINUTE) });
 
   await withApp(app, async (baseUrl) => {
@@ -1713,7 +1756,7 @@ test("with writes on, a matter, a logged email, an account and a relationship ar
   const { app, db, upstream } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(30 * MINUTE) });
   for (const name of ADDED_PP_WRITES) {
     seedTool(db, connector.id, name, { enabled: false, requires_confirmation: true });
@@ -1812,7 +1855,7 @@ test("the firm's PracticePanther user list is a read for a non-admin; no other a
   const { app, db, upstream } = setup();
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(30 * MINUTE) });
   // Every admin-only name the connector could have, in its tool cache.
   for (const name of ADMIN_ONLY_PRACTICEPANTHER_TOOLS) {
@@ -2316,9 +2359,9 @@ test("with writes on, PracticePanther files are written after a pending audit ro
   setGatewayEnv({ DOCKET_AGENT_OPS_TOKEN: TEST_OPS_TOKEN });
   const token = await enroll(db, "user-1", GARRETT);
   const adminToken = await enroll(db, "admin-1", JERAD, "admin");
-  const connector = seedAgentPracticePantherConnector(db, "user-1");
+  const connector = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, connector.id, { expiresAt: iso(30 * MINUTE) });
-  const adminConnector = seedAgentPracticePantherConnector(db, "admin-1");
+  const adminConnector = seedPerUserPracticePantherConnector(db, "admin-1");
   seedOAuthToken(db, adminConnector.id, { expiresAt: iso(30 * MINUTE) });
   for (const row of [connector, adminConnector]) {
     for (const name of [...PP_FILE_WRITES, ...PP_MESSAGE_WRITES]) {
@@ -2401,7 +2444,7 @@ test("an admin's token reads and, with writes on, writes the records Docket keep
   ];
   const rows: Record<string, ConnectorRow> = {};
   for (const userId of ["user-1", "admin-1"]) {
-    rows[userId] = seedAgentPracticePantherConnector(db, userId);
+    rows[userId] = seedPerUserPracticePantherConnector(db, userId);
     seedOAuthToken(db, rows[userId].id, { expiresAt: iso(30 * MINUTE) });
     for (const name of adminOnly) {
       seedTool(db, rows[userId].id, name, { enabled: false, requires_confirmation: true });

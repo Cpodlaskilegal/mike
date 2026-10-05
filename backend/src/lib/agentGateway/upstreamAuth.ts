@@ -2,7 +2,12 @@
 //
 // Refresh tokens of the per-user PracticePanther connector and of Box are
 // single-use. Two refreshes at once would end with one of them deleting the
-// user's sign-in. So the gateway refreshes early, and one at a time.
+// user's sign-in. So a sign-in is refreshed early, and one at a time.
+//
+// Docket chat and the Docket Agent gateway use the same PracticePanther and
+// Box sign-in rows, so both go through here: the gateway before every
+// request, and Docket's own MCP client path (lib/mcp/servers.ts,
+// withMcpClient) before it opens a connection.
 
 import { auth as runMcpOAuth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Pool } from "pg";
@@ -228,4 +233,64 @@ export function defaultWithRefreshLock<T>(
   });
   runningRefreshes.set(connectorId, promise);
   return promise;
+}
+
+/**
+ * Runs `run` while no refresh of this connector's sign-in is under way, in
+ * this process or any other. Unlike the refresh lock it never hands back
+ * another caller's result: it is for a change that must happen (removing
+ * the sign-in), not for a refresh that only needs to happen once.
+ */
+export function withSignInLock<T>(
+  connectorId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  // The same lock name as the refresh lock above.
+  return withPostgresAdvisoryLock(`docket-agent-oauth:${connectorId}`, run);
+}
+
+type EarlyRefreshDeps = Pick<
+  AgentGatewayDeps,
+  "refreshUpstreamToken" | "withRefreshLock" | "now"
+>;
+
+const defaultEarlyRefreshDeps: EarlyRefreshDeps = {
+  refreshUpstreamToken: defaultRefreshUpstreamToken,
+  withRefreshLock: defaultWithRefreshLock,
+  now: () => Date.now(),
+};
+
+/**
+ * Called by Docket's own MCP client path before it opens a connection
+ * with an OAuth sign-in: a sign-in that is about to expire is renewed
+ * first, under the same lock as every other refresh of that sign-in.
+ *
+ * Without it the only refresh on that path is the MCP SDK's own, after the
+ * server has refused an expired token, with no lock. Docket chat and a
+ * Docket Agent session could then both spend the same single-use refresh
+ * token, and the one that lost would delete the user's sign-in.
+ *
+ * It decides nothing and never throws: whatever it finds, the connection
+ * is opened exactly as before.
+ */
+export async function refreshSignInBeforeUse(
+  connector: ConnectorRow,
+  db: Db,
+  deps: EarlyRefreshDeps = defaultEarlyRefreshDeps,
+): Promise<void> {
+  if (connector.auth_type !== "oauth") return;
+  try {
+    await ensureUpstreamSignIn(
+      connector,
+      db,
+      { refresh: "if_near_expiry", skewMs: REQUEST_REFRESH_SKEW_MS },
+      deps,
+    );
+  } catch (err) {
+    console.warn("[mcp-connectors] early sign-in refresh was skipped", {
+      userId: connector.user_id,
+      connectorId: connector.id,
+      error: safeErrorLog(err),
+    });
+  }
 }

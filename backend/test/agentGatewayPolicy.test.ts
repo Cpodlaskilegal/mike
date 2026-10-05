@@ -42,11 +42,13 @@ function connector(source: AgentSource): ConnectorRow {
     server_url:
       source === "box" ? BOX_URL : source === "quo" ? QUO_URL : PER_USER_PP_URL,
     auth_type: "oauth",
-    enabled: source === "box",
+    // PracticePanther and Box: the rows Docket itself keeps and chat uses.
+    // Quo: the gateway's own row, switched off for chat.
+    enabled: source !== "quo",
     tool_policy:
-      source === "box"
-        ? { managedBy: "backend", managedConnector: "box" }
-        : { docketAgentSource: source },
+      source === "quo"
+        ? { docketAgentSource: source }
+        : { managedBy: "backend", managedConnector: source },
     encrypted_auth_config: null,
     auth_config_iv: null,
     auth_config_tag: null,

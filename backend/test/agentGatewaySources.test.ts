@@ -7,10 +7,10 @@ import {
   LEGACY_SHARED_PP_URL,
   PER_USER_PP_URL,
   QUO_URL,
-  seedAgentPracticePantherConnector,
+  seedPerUserPracticePantherConnector,
   seedConnector,
   seedManagedBoxConnector,
-  seedManagedPracticePantherConnector,
+  seedLegacySharedPracticePantherConnector,
   seedOAuthToken,
   seedTool,
   seedUser,
@@ -24,7 +24,7 @@ import {
   agentQuoMcpUrl,
 } from "../src/lib/agentGateway/config";
 import {
-  disconnectAgentConnector,
+  disconnectPracticePantherSignIn,
   provisionAgentConnectors,
   resolveAgentConnector,
 } from "../src/lib/agentGateway/sources";
@@ -64,10 +64,25 @@ const neverValidate = async (): Promise<string> => {
 };
 const acceptUrl = async (url: string) => url;
 
-test("PracticePanther: a user with only Docket's managed connector has no agent connector", async () => {
+test("PracticePanther: the row Docket keeps for the user is the one served", async () => {
   setGatewayEnv();
   const db = createFakeDb();
-  seedManagedPracticePantherConnector(db, "user-1");
+  seedLegacySharedPracticePantherConnector(db, "user-1");
+  const own = seedPerUserPracticePantherConnector(db, "user-1");
+
+  const resolved = await resolveAgentConnector("user-1", "practicepanther", db.asDb());
+  assert.ok(resolved.ok);
+  assert.equal(resolved.connector.id, own.id);
+  assert.equal(resolved.connector.server_url, PER_USER_PP_URL);
+  assert.equal(resolved.connector.auth_type, "oauth");
+  // No row was written: the gateway only reads Docket's rows.
+  assert.equal(db.table("user_mcp_connectors").length, 2);
+});
+
+test("PracticePanther: a user who only has the old shared connector is refused", async () => {
+  setGatewayEnv();
+  const db = createFakeDb();
+  seedLegacySharedPracticePantherConnector(db, "user-1");
 
   assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
     ok: false,
@@ -75,21 +90,38 @@ test("PracticePanther: a user with only Docket's managed connector has no agent 
   });
 });
 
-test("PracticePanther: a marked row at the old shared server is refused", async () => {
-  setGatewayEnv();
+test("PracticePanther: a row at the old shared server is never served, whatever it says", async () => {
   const db = createFakeDb();
-  seedAgentPracticePantherConnector(db, "user-1", { server_url: LEGACY_SHARED_PP_URL });
+  // Switched on and calling itself an OAuth connector: still the shared server.
+  seedLegacySharedPracticePantherConnector(db, "user-1", {
+    auth_type: "oauth",
+    enabled: true,
+  });
 
+  setGatewayEnv();
   assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
     ok: false,
-    detail: "wrong_server",
+    detail: "no_connector",
   });
+  // Docket itself still on the shared connector: the source is off.
+  setGatewayEnv({ PRACTICEPANTHER_USER_MCP_SERVER_URL: "" });
+  assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
+    ok: false,
+    detail: "source_disabled",
+  });
+  // Someone pointed the per-user setting at the shared server.
+  setGatewayEnv({ PRACTICEPANTHER_USER_MCP_SERVER_URL: LEGACY_SHARED_PP_URL });
+  assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
+    ok: false,
+    detail: "source_disabled",
+  });
+  setGatewayEnv();
 });
 
-test("PracticePanther: a marked row that is not an OAuth connector is refused", async () => {
+test("PracticePanther: a row that is not an OAuth connector is refused", async () => {
   setGatewayEnv();
   const db = createFakeDb();
-  seedAgentPracticePantherConnector(db, "user-1", { auth_type: "none" });
+  seedPerUserPracticePantherConnector(db, "user-1", { auth_type: "none" });
 
   assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
     ok: false,
@@ -97,37 +129,50 @@ test("PracticePanther: a marked row that is not an OAuth connector is refused", 
   });
 });
 
-test("PracticePanther: a marked row that also carries the managed mark is refused", async () => {
+test("PracticePanther: a row at the right address that is not Docket's PracticePanther row is refused", async () => {
   setGatewayEnv();
   const db = createFakeDb();
-  seedAgentPracticePantherConnector(db, "user-1", {
+  seedPerUserPracticePantherConnector(db, "user-1", {
+    tool_policy: { managedBy: "backend", managedConnector: "box" },
+  });
+  assert.deepEqual(await resolveAgentConnector("user-1", "practicepanther", db.asDb()), {
+    ok: false,
+    detail: "wrong_server",
+  });
+
+  // A row that carries a Docket Agent mark is not Docket's own row.
+  const marked = createFakeDb();
+  seedPerUserPracticePantherConnector(marked, "user-1", {
     tool_policy: {
       docketAgentSource: "practicepanther",
       managedBy: "backend",
       managedConnector: "practicepanther",
     },
   });
-
-  const resolved = await resolveAgentConnector("user-1", "practicepanther", db.asDb());
+  const resolved = await resolveAgentConnector("user-1", "practicepanther", marked.asDb());
   assert.equal(resolved.ok, false);
 });
 
-test("PracticePanther: pointing the agent URL at the shared or managed server switches the source off", async () => {
+test("PracticePanther: the source is off unless Docket runs on a usable per-user connector", async () => {
   const db = createFakeDb();
   seedUser(db, { id: "user-1", email: "garrett.lewis@podlaskilegal.com" });
-  seedAgentPracticePantherConnector(db, "user-2");
+  seedPerUserPracticePantherConnector(db, "user-2");
 
   const cases: Array<Record<string, string>> = [
-    { DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: LEGACY_SHARED_PP_URL },
+    // Docket still on the old shared connector.
+    { PRACTICEPANTHER_USER_MCP_SERVER_URL: "" },
+    { PRACTICEPANTHER_USER_MCP_SERVER_URL: LEGACY_SHARED_PP_URL },
     // The old host on any path.
-    { DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: "https://wild-spark-qn7iy.run.mcp-use.com/other" },
-    // Equal to whatever Docket chat's managed connector uses.
+    { PRACTICEPANTHER_USER_MCP_SERVER_URL: "https://wild-spark-qn7iy.run.mcp-use.com/other" },
+    // The host Docket's shared-connector setting names.
     {
-      DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: "https://pp.example.invalid/mcp",
+      PRACTICEPANTHER_USER_MCP_SERVER_URL: "https://pp.example.invalid/mcp",
       PRACTICEPANTHER_MCP_SERVER_URL: "https://pp.example.invalid/mcp",
     },
-    { DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: "http://warm-pulse-vyvir.run.mcp-use.com/mcp" },
-    { DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: "not a url" },
+    { PRACTICEPANTHER_USER_MCP_SERVER_URL: "http://warm-pulse-vyvir.run.mcp-use.com/mcp" },
+    { PRACTICEPANTHER_USER_MCP_SERVER_URL: "not a url" },
+    // PracticePanther switched off for the whole backend.
+    { PRACTICEPANTHER_MCP_ENABLED: "false" },
   ];
   for (const env of cases) {
     setGatewayEnv(env);
@@ -137,7 +182,7 @@ test("PracticePanther: pointing the agent URL at the shared or managed server sw
       detail: "source_disabled",
     });
     const provisioned = await provisionAgentConnectors("user-1", db.asDb(), neverValidate);
-    assert.equal(provisioned.practicepanther, "not_configured");
+    assert.equal(provisioned.practicepanther, "disabled");
     assert.equal(
       db.table("user_mcp_connectors").filter((row) => row.user_id === "user-1").length,
       0,
@@ -152,7 +197,7 @@ test("PracticePanther: pointing the agent URL at the shared or managed server sw
 test("a token user never gets another user's connector row", async () => {
   setGatewayEnv({ DOCKET_AGENT_QUO_MCP_URL: QUO_URL });
   const db = createFakeDb();
-  const rowB = seedAgentPracticePantherConnector(db, "user-b");
+  const rowB = seedPerUserPracticePantherConnector(db, "user-b");
   seedManagedBoxConnector(db, "user-b");
   seedConnector(db, {
     id: "quo-b",
@@ -170,7 +215,7 @@ test("a token user never gets another user's connector row", async () => {
   }
 
   // A has rows of his own: he gets his, never B's.
-  const rowA = seedAgentPracticePantherConnector(db, "user-a");
+  const rowA = seedPerUserPracticePantherConnector(db, "user-a");
   seedManagedBoxConnector(db, "user-a");
   for (const source of ["practicepanther", "box"] as const) {
     const resolved = await resolveAgentConnector("user-a", source, db.asDb());
@@ -241,13 +286,13 @@ test("source states without keep-alive make no refresh", async () => {
   });
   assert.deepEqual(
     await stateOf((db) => {
-      seedAgentPracticePantherConnector(db, "user-1");
+      seedPerUserPracticePantherConnector(db, "user-1");
     }),
     { state: "not_connected", detail: "never_connected" },
   );
   assert.deepEqual(
     await stateOf((db) => {
-      const row = seedAgentPracticePantherConnector(db, "user-1");
+      const row = seedPerUserPracticePantherConnector(db, "user-1");
       seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
     }),
     { state: "connected" },
@@ -255,7 +300,7 @@ test("source states without keep-alive make no refresh", async () => {
   // No expiry recorded counts as valid.
   assert.deepEqual(
     await stateOf((db) => {
-      const row = seedAgentPracticePantherConnector(db, "user-1");
+      const row = seedPerUserPracticePantherConnector(db, "user-1");
       seedOAuthToken(db, row.id, { expiresAt: null });
     }),
     { state: "connected" },
@@ -263,14 +308,14 @@ test("source states without keep-alive make no refresh", async () => {
   // Expired, but a refresh token is stored: the next real call will refresh.
   assert.deepEqual(
     await stateOf((db) => {
-      const row = seedAgentPracticePantherConnector(db, "user-1");
+      const row = seedPerUserPracticePantherConnector(db, "user-1");
       seedOAuthToken(db, row.id, { expiresAt: iso(-5 * MINUTE) });
     }),
     { state: "connected" },
   );
   assert.deepEqual(
     await stateOf((db) => {
-      const row = seedAgentPracticePantherConnector(db, "user-1");
+      const row = seedPerUserPracticePantherConnector(db, "user-1");
       seedOAuthToken(db, row.id, { expiresAt: iso(-5 * MINUTE), refreshToken: false });
     }),
     { state: "needs_reconnect", detail: "expired_no_refresh_token" },
@@ -278,7 +323,7 @@ test("source states without keep-alive make no refresh", async () => {
   // A Connect that was started and not finished: a row with no access token.
   assert.deepEqual(
     await stateOf((db) => {
-      const row = seedAgentPracticePantherConnector(db, "user-1");
+      const row = seedPerUserPracticePantherConnector(db, "user-1");
       seedOAuthToken(db, row.id, { accessToken: false });
     }),
     { state: "needs_reconnect", detail: "token_missing" },
@@ -291,7 +336,7 @@ test("keep-alive refreshes an expiring sign-in once and leaves a fresh one alone
 
   // Expires in 10 minutes: inside the 15 minute keep-alive window.
   const db = createFakeDb();
-  const row = seedAgentPracticePantherConnector(db, "user-1");
+  const row = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, row.id, { expiresAt: iso(10 * MINUTE) });
   const expiring = signInDeps(db);
   assert.deepEqual(
@@ -305,7 +350,7 @@ test("keep-alive refreshes an expiring sign-in once and leaves a fresh one alone
 
   // Expires in 40 minutes: not near expiry, not refreshed.
   const freshDb = createFakeDb();
-  const freshRow = seedAgentPracticePantherConnector(freshDb, "user-1");
+  const freshRow = seedPerUserPracticePantherConnector(freshDb, "user-1");
   seedOAuthToken(freshDb, freshRow.id, { expiresAt: iso(40 * MINUTE) });
   const fresh = signInDeps(freshDb);
   assert.deepEqual(
@@ -321,7 +366,7 @@ test("a failing refresh reports needs_reconnect, unless the old token is still g
 
   // Already expired and the refresh is refused.
   const db = createFakeDb();
-  const row = seedAgentPracticePantherConnector(db, "user-1");
+  const row = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, row.id, { expiresAt: iso(-1 * MINUTE) });
   const failing = signInDeps(db, { refreshFails: true });
   assert.deepEqual(
@@ -332,7 +377,7 @@ test("a failing refresh reports needs_reconnect, unless the old token is still g
 
   // Refresh fails, but the access token has 10 minutes left: still usable.
   const okDb = createFakeDb();
-  const okRow = seedAgentPracticePantherConnector(okDb, "user-1");
+  const okRow = seedPerUserPracticePantherConnector(okDb, "user-1");
   seedOAuthToken(okDb, okRow.id, { expiresAt: iso(10 * MINUTE) });
   const stillGood = signInDeps(okDb, { refreshFails: true });
   assert.deepEqual(
@@ -342,7 +387,7 @@ test("a failing refresh reports needs_reconnect, unless the old token is still g
 
   // The refused refresh deleted the stored sign-in (what the SDK does).
   const goneDb = createFakeDb();
-  const goneRow = seedAgentPracticePantherConnector(goneDb, "user-1");
+  const goneRow = seedPerUserPracticePantherConnector(goneDb, "user-1");
   seedOAuthToken(goneDb, goneRow.id, { expiresAt: iso(-1 * MINUTE) });
   const deleting = signInDeps(goneDb);
   deleting.deps.refreshUpstreamToken = async () => {
@@ -358,7 +403,7 @@ test("a failing refresh reports needs_reconnect, unless the old token is still g
 test("ten concurrent calls on one expiring connector cause exactly one refresh", async () => {
   setGatewayEnv();
   const db = createFakeDb();
-  const row = seedAgentPracticePantherConnector(db, "user-1");
+  const row = seedPerUserPracticePantherConnector(db, "user-1");
   // Inside the 3 minute request window.
   seedOAuthToken(db, row.id, { expiresAt: iso(1 * MINUTE) });
   const { deps, refreshed } = signInDeps(db);
@@ -378,70 +423,47 @@ test("ten concurrent calls on one expiring connector cause exactly one refresh",
   for (const result of results) assert.deepEqual(result, { state: "connected" });
 });
 
-test("provisioning creates the marked row once and leaves Docket chat's rows alone", async () => {
+test("provisioning makes nothing for PracticePanther or Box and leaves Docket's rows alone", async () => {
   setGatewayEnv();
   const db = createFakeDb();
   seedUser(db, { id: "user-1", email: "garrett.lewis@podlaskilegal.com" });
-  seedManagedPracticePantherConnector(db, "user-1");
+  // He has not opened Docket since per-user sign-in was switched on: only
+  // the retired shared row is there.
+  seedLegacySharedPracticePantherConnector(db, "user-1");
   const box = seedManagedBoxConnector(db, "user-1");
   seedOAuthToken(db, box.id, { expiresAt: iso(30 * MINUTE) });
   seedTool(db, box.id, "search_files_keyword");
   // Another user's rows must not move either.
+  seedPerUserPracticePantherConnector(db, "user-2");
   seedManagedBoxConnector(db, "user-2");
 
-  const managedBefore = JSON.stringify(
-    db.table("user_mcp_connectors").filter((row) => !row.tool_policy?.docketAgentSource),
-  );
-  const validated: string[] = [];
-  const validate = async (url: string) => {
-    validated.push(url);
-    return url;
-  };
-
-  const first = await provisionAgentConnectors("user-1", db.asDb(), validate);
+  const before = JSON.stringify(db.tables);
+  const first = await provisionAgentConnectors("user-1", db.asDb(), neverValidate);
   assert.deepEqual(first, {
-    practicepanther: "created",
+    practicepanther: "missing",
     box: "managed",
     quo: "not_configured",
   });
-  assert.deepEqual(validated, [PER_USER_PP_URL]);
+  assert.equal(JSON.stringify(db.tables), before, "nothing was written");
 
-  const marked = db
-    .table("user_mcp_connectors")
-    .filter((row) => row.tool_policy?.docketAgentSource);
-  assert.equal(marked.length, 1);
-  assert.equal(marked[0].user_id, "user-1");
-  assert.equal(marked[0].name, "PracticePanther (Docket Agent)");
-  assert.equal(marked[0].enabled, false);
-  assert.equal(marked[0].auth_type, "oauth");
-  assert.equal(marked[0].server_url, PER_USER_PP_URL);
-  assert.deepEqual(marked[0].tool_policy, { docketAgentSource: "practicepanther" });
-  assert.equal(marked[0].encrypted_auth_config, null);
-
-  // The new row is the one the gateway serves, and it is not connected yet.
+  // Docket makes his row when he opens it. Then it is the one served.
+  const own = seedPerUserPracticePantherConnector(db, "user-1");
+  const withRow = JSON.stringify(db.tables);
+  const second = await provisionAgentConnectors("user-1", db.asDb(), neverValidate);
+  assert.deepEqual(second, {
+    practicepanther: "managed",
+    box: "managed",
+    quo: "not_configured",
+  });
+  assert.equal(JSON.stringify(db.tables), withRow, "nothing was written");
   const resolved = await resolveAgentConnector("user-1", "practicepanther", db.asDb());
   assert.ok(resolved.ok);
-  assert.equal(resolved.connector.id, marked[0].id);
-
-  // Again: nothing changes.
-  const snapshot = JSON.stringify(db.tables);
-  const second = await provisionAgentConnectors("user-1", db.asDb(), validate);
-  assert.deepEqual(second, {
-    practicepanther: "unchanged",
-    box: "managed",
-    quo: "not_configured",
-  });
-  assert.equal(JSON.stringify(db.tables), snapshot);
-
-  // The managed PracticePanther and Box rows are byte-for-byte the same.
-  assert.equal(
-    JSON.stringify(
-      db.table("user_mcp_connectors").filter((row) => !row.tool_policy?.docketAgentSource),
-    ),
-    managedBefore,
-  );
-  assert.equal(db.table("user_mcp_oauth_tokens").length, 1);
-  assert.equal(db.table("user_mcp_connector_tools").length, 1);
+  assert.equal(resolved.connector.id, own.id);
+  // No row carries a Docket Agent mark, and none is named for Docket Agent.
+  for (const row of db.table("user_mcp_connectors")) {
+    assert.equal("docketAgentSource" in (row.tool_policy ?? {}), false);
+    assert.doesNotMatch(String(row.name), /Docket Agent/);
+  }
 });
 
 test("provisioning reports Box as missing or disabled and creates nothing for it", async () => {
@@ -474,37 +496,57 @@ test("provisioning makes a Quo row only when Quo is configured", async () => {
   assert.equal(quo.auth_type, "oauth");
 });
 
-test("a changed PracticePanther URL repoints the agent row and clears only its sign-in and tools", async () => {
-  setGatewayEnv();
+test("a changed Quo URL repoints the Quo row and clears only its sign-in and tools", async () => {
+  setGatewayEnv({ DOCKET_AGENT_QUO_MCP_URL: QUO_URL });
   const db = createFakeDb();
-  const agent = seedAgentPracticePantherConnector(db, "user-1");
-  seedOAuthToken(db, agent.id, { expiresAt: iso(30 * MINUTE) });
-  seedTool(db, agent.id, "Tasks_GetTasks");
-  const box = seedManagedBoxConnector(db, "user-1");
-  seedOAuthToken(db, box.id, { expiresAt: iso(30 * MINUTE) });
-  seedTool(db, box.id, "search_files_keyword");
-  const boxBefore = JSON.stringify(db.table("user_mcp_connectors").find((row) => row.id === box.id));
+  const quo = seedConnector(db, {
+    id: "quo-1",
+    user_id: "user-1",
+    name: "Quo (Docket Agent)",
+    server_url: QUO_URL,
+    tool_policy: { docketAgentSource: "quo" },
+  });
+  seedOAuthToken(db, quo.id, { expiresAt: iso(30 * MINUTE) });
+  seedTool(db, quo.id, "list-contacts");
+  const kept = [
+    seedManagedBoxConnector(db, "user-1"),
+    seedPerUserPracticePantherConnector(db, "user-1"),
+  ];
+  for (const row of kept) {
+    seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
+    seedTool(db, row.id, "search_files_keyword");
+  }
+  const keptBefore = JSON.stringify(
+    db.table("user_mcp_connectors").filter((row) => row.id !== quo.id),
+  );
 
-  const newUrl = "https://new-pp-connector.example.invalid/mcp";
-  setGatewayEnv({ DOCKET_AGENT_PRACTICEPANTHER_MCP_URL: newUrl });
+  const newUrl = "https://new-quo-connector.example.invalid/mcp";
+  setGatewayEnv({ DOCKET_AGENT_QUO_MCP_URL: newUrl });
   const result = await provisionAgentConnectors("user-1", db.asDb(), acceptUrl);
-  assert.equal(result.practicepanther, "repointed");
+  assert.deepEqual(result, {
+    practicepanther: "managed",
+    box: "managed",
+    quo: "repointed",
+  });
 
-  const row = db.table("user_mcp_connectors").find((item) => item.id === agent.id);
+  const row = db.table("user_mcp_connectors").find((item) => item.id === quo.id);
   assert.equal(row?.server_url, newUrl);
   assert.equal(row?.enabled, false);
+  const keptIds = kept.map((item) => item.id).sort();
   assert.deepEqual(
-    db.table("user_mcp_oauth_tokens").map((item) => item.connector_id),
-    [box.id],
+    db.table("user_mcp_oauth_tokens").map((item) => item.connector_id).sort(),
+    keptIds,
   );
   assert.deepEqual(
-    db.table("user_mcp_connector_tools").map((item) => item.connector_id),
-    [box.id],
+    db.table("user_mcp_connector_tools").map((item) => item.connector_id).sort(),
+    keptIds,
   );
+  // Docket's own PracticePanther and Box rows are byte-for-byte the same.
   assert.equal(
-    JSON.stringify(db.table("user_mcp_connectors").find((item) => item.id === box.id)),
-    boxBefore,
+    JSON.stringify(db.table("user_mcp_connectors").filter((item) => item.id !== quo.id)),
+    keptBefore,
   );
+  setGatewayEnv();
 });
 
 test("status lists users with a live token and named users, and reports bad emails apart", async () => {
@@ -524,7 +566,7 @@ test("status lists users with a live token and named users, and reports bad emai
   await mintAgentToken("user-1", db.asDb());
   await mintAgentToken("gone", db.asDb());
   await mintAgentToken("user-9", db.asDb());
-  const row = seedAgentPracticePantherConnector(db, "user-1");
+  const row = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
   const { deps, refreshed } = signInDeps(db);
 
@@ -582,80 +624,128 @@ test("status lists users with a live token and named users, and reports bad emai
 });
 
 // ---------------------------------------------------------------------------
-// Removing a sign-in from a Docket Agent row.
+// Removing the user's own PracticePanther sign-in (Disconnect in Docket).
 // ---------------------------------------------------------------------------
 
-test("the owner can remove the sign-in from his own Docket Agent row, and only that", async () => {
-  setGatewayEnv();
+/** A lock that records which connector it was taken for, and when. */
+function recordingLock(db: FakeDb) {
+  const taken: string[] = [];
+  return {
+    taken,
+    withSignInLock: async <T>(connectorId: string, run: () => Promise<T>): Promise<T> => {
+      taken.push(connectorId);
+      const signIns = () => db.table("user_mcp_oauth_tokens").length;
+      db.events.push(`lock:taken:${connectorId}:sign-ins=${signIns()}`);
+      try {
+        return await run();
+      } finally {
+        db.events.push(`lock:released:${connectorId}:sign-ins=${signIns()}`);
+      }
+    },
+  };
+}
+
+test("the owner can remove his own PracticePanther sign-in, and nothing else", async () => {
+  setGatewayEnv({ DOCKET_AGENT_QUO_MCP_URL: QUO_URL });
   const db = createFakeDb();
   seedUser(db, { id: "user-1", email: "garrett.lewis@podlaskilegal.com" });
   seedUser(db, { id: "user-2", email: "jerad.marks@podlaskilegal.com" });
-  const mine = seedAgentPracticePantherConnector(db, "user-1");
-  const theirs = seedAgentPracticePantherConnector(db, "user-2");
+  const mine = seedPerUserPracticePantherConnector(db, "user-1");
+  const theirs = seedPerUserPracticePantherConnector(db, "user-2");
   const box = seedManagedBoxConnector(db, "user-1");
-  const chat = seedManagedPracticePantherConnector(db, "user-1");
-  for (const row of [mine, theirs, box]) {
+  const shared = seedLegacySharedPracticePantherConnector(db, "user-1");
+  const quo = seedConnector(db, {
+    id: "quo-1",
+    user_id: "user-1",
+    server_url: QUO_URL,
+    tool_policy: { docketAgentSource: "quo" },
+  });
+  for (const row of [mine, theirs, box, quo]) {
     seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
     seedTool(db, row.id, "Tasks_GetTasks");
   }
   const { deps } = signInDeps(db);
+  const lock = recordingLock(db);
   const state = (userId: string) =>
     agentSourceStatus(userId, "practicepanther", db.asDb(), { refresh: "never", skewMs: 0 }, deps);
+  const disconnect = (userId: string, connectorId: string) =>
+    disconnectPracticePantherSignIn(userId, connectorId, db.asDb(), lock.withSignInLock);
   assert.deepEqual(await state("user-1"), { state: "connected" });
 
   // Another user's row: as if it did not exist.
-  assert.deepEqual(await disconnectAgentConnector("user-1", theirs.id, db.asDb()), {
-    ok: false,
-    reason: "not_found",
-  });
-  // The rows Docket chat uses are not Docket Agent rows.
-  for (const row of [box, chat]) {
-    assert.deepEqual(await disconnectAgentConnector("user-1", row.id, db.asDb()), {
+  assert.deepEqual(await disconnect("user-1", theirs.id), { ok: false, reason: "not_found" });
+  assert.deepEqual(await disconnect("user-1", "no-such-row"), { ok: false, reason: "not_found" });
+  // His Box row, the retired shared row and a Quo row are not his
+  // PracticePanther sign-in.
+  for (const row of [box, shared, quo]) {
+    assert.deepEqual(await disconnect("user-1", row.id), {
       ok: false,
-      reason: "not_agent_connector",
+      reason: "not_practicepanther",
     });
   }
-  assert.deepEqual(await disconnectAgentConnector("user-1", "no-such-row", db.asDb()), {
-    ok: false,
-    reason: "not_found",
-  });
-  assert.equal(db.table("user_mcp_oauth_tokens").length, 3, "nothing was removed yet");
+  assert.equal(db.table("user_mcp_oauth_tokens").length, 4, "nothing was removed yet");
+  assert.deepEqual(lock.taken, [], "a refusal takes no lock");
 
-  assert.deepEqual(await disconnectAgentConnector("user-1", mine.id, db.asDb()), {
-    ok: true,
-    source: "practicepanther",
-  });
-  // His sign-in and tool list are gone. The row stays, so he can connect again.
+  db.events.length = 0;
+  assert.deepEqual(await disconnect("user-1", mine.id), { ok: true });
+  // The sign-in went while the lock was held, so no refresh under way can
+  // write it back afterwards.
+  assert.deepEqual(db.events, [
+    `lock:taken:${mine.id}:sign-ins=4`,
+    `lock:released:${mine.id}:sign-ins=3`,
+  ]);
   const ids = (table: string) => db.table(table).map((row) => row.connector_id).sort();
-  assert.deepEqual(ids("user_mcp_oauth_tokens"), [box.id, theirs.id].sort());
-  assert.deepEqual(ids("user_mcp_connector_tools"), [box.id, theirs.id].sort());
-  assert.equal(db.table("user_mcp_connectors").length, 4);
-  // Docket Agent can no longer use it, and the other user is not affected.
+  assert.deepEqual(ids("user_mcp_oauth_tokens"), [box.id, theirs.id, quo.id].sort());
+  // The row and its tool list stay, so he can connect again.
+  assert.deepEqual(
+    ids("user_mcp_connector_tools"),
+    [box.id, mine.id, theirs.id, quo.id].sort(),
+  );
+  assert.equal(db.table("user_mcp_connectors").length, 5);
+  // Neither Docket chat nor Docket Agent can use it now. The other user is
+  // not affected.
   assert.deepEqual(await state("user-1"), { state: "not_connected", detail: "never_connected" });
   assert.deepEqual(await state("user-2"), { state: "connected" });
   // Doing it again changes nothing.
-  assert.deepEqual(await disconnectAgentConnector("user-1", mine.id, db.asDb()), {
-    ok: true,
-    source: "practicepanther",
-  });
+  assert.deepEqual(await disconnect("user-1", mine.id), { ok: true });
+  setGatewayEnv();
 });
 
-test("a row that carries both the agent mark and the managed mark is never disconnected", async () => {
-  setGatewayEnv();
+test("only Docket's per-user PracticePanther connector can be disconnected", async () => {
   const db = createFakeDb();
-  const row = seedAgentPracticePantherConnector(db, "user-1", {
+  const lock = recordingLock(db);
+  const row = seedPerUserPracticePantherConnector(db, "user-1");
+  seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
+  const marked = seedPerUserPracticePantherConnector(db, "user-2", {
     tool_policy: {
       docketAgentSource: "practicepanther",
       managedBy: "backend",
       managedConnector: "practicepanther",
     },
   });
-  seedOAuthToken(db, row.id, { expiresAt: iso(30 * MINUTE) });
-  assert.deepEqual(await disconnectAgentConnector("user-1", row.id, db.asDb()), {
-    ok: false,
-    reason: "not_agent_connector",
-  });
-  assert.equal(db.table("user_mcp_oauth_tokens").length, 1);
+  seedOAuthToken(db, marked.id, { expiresAt: iso(30 * MINUTE) });
+
+  // Docket not on the per-user connector: there is no such sign-in to remove.
+  setGatewayEnv({ PRACTICEPANTHER_USER_MCP_SERVER_URL: "" });
+  assert.deepEqual(
+    await disconnectPracticePantherSignIn("user-1", row.id, db.asDb(), lock.withSignInLock),
+    { ok: false, reason: "not_practicepanther" },
+  );
+  setGatewayEnv();
+  assert.deepEqual(
+    await disconnectPracticePantherSignIn("user-2", marked.id, db.asDb(), lock.withSignInLock),
+    { ok: false, reason: "not_practicepanther" },
+  );
+  assert.equal(db.table("user_mcp_oauth_tokens").length, 2);
+  assert.deepEqual(lock.taken, []);
+
+  // A failed removal is an error, not a silent "done".
+  db.failOn("user_mcp_oauth_tokens", "delete");
+  await assert.rejects(
+    disconnectPracticePantherSignIn("user-1", row.id, db.asDb(), lock.withSignInLock),
+    /Sign-in could not be removed\./,
+  );
+  assert.equal(db.table("user_mcp_oauth_tokens").length, 2);
 });
 
 test("a named address that is allowed but has no Docket user is unknown, not refused", async () => {

@@ -3,7 +3,7 @@ import {
   createFakeUpstream,
   createMemoryRefreshLock,
   FAKE_UPSTREAM_ACCESS_TOKEN,
-  seedAgentPracticePantherConnector,
+  seedPerUserPracticePantherConnector,
   seedManagedBoxConnector,
   seedOAuthToken,
   seedTool,
@@ -530,7 +530,7 @@ test("an MCP token is refused on every Box file route, and a Box file token on t
   setEnv({ DOCKET_AGENT_BOX_UPLOADS: "on", DOCKET_AGENT_STATUS_TOKEN: TEST_STATUS_TOKEN });
   const { token, fileToken } = await enroll(db, "user-1", GARRETT);
   connectBox(db, box, "user-1");
-  const pp = seedAgentPracticePantherConnector(db, "user-1");
+  const pp = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, pp.id, { expiresAt: iso(30 * MINUTE) });
   seedTool(db, pp.id, "Tasks_GetTasks");
   const boxRow = db.table("user_mcp_connectors").find((row) => row.name === "Box MCP")!;
@@ -624,7 +624,7 @@ test("minting returns both tokens once; rotating and revoking end both", async (
   connectBox(db, box, "user-1");
   box.addFile({ id: "111", name: "a.docx", bytes: documentBytes(64) });
   box.grant(boxTokenOf("user-1"), "111");
-  const pp = seedAgentPracticePantherConnector(db, "user-1");
+  const pp = seedPerUserPracticePantherConnector(db, "user-1");
   seedOAuthToken(db, pp.id, { expiresAt: iso(30 * MINUTE) });
 
   await withApp(app, async (baseUrl) => {
@@ -2543,7 +2543,7 @@ test("a file token has its own request budget, and a flood of bad bearers does n
   const b = await enroll(db, "user-b", JERAD);
   connectBox(db, box, "user-a");
   connectBox(db, box, "user-b");
-  const pp = seedAgentPracticePantherConnector(db, "user-a");
+  const pp = seedPerUserPracticePantherConnector(db, "user-a");
   seedOAuthToken(db, pp.id, { expiresAt: iso(30 * MINUTE) });
   box.addFile({ id: "111", name: "a.docx", bytes: documentBytes(100) });
   box.grant(boxTokenOf("user-a"), "111");

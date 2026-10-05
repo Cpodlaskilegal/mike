@@ -1,5 +1,8 @@
-// Finds the one connector row of a user that serves a Docket Agent source,
-// and creates the rows that need creating (provisioning).
+// Finds the one connector row of a user that serves a Docket Agent source.
+//
+// PracticePanther and Box are served by the rows Docket itself keeps for
+// the user: the ones he connects on Docket's own connectors page and that
+// Docket chat uses. Quo has a row of its own, made by provisioning.
 //
 // Every query filters on the user's id. A row is only ever returned to the
 // user it belongs to.
@@ -7,9 +10,14 @@
 import {
   DOCKET_AGENT_SOURCE_KEY,
   docketAgentSourceOf,
+  hasDocketAgentMark,
   type DocketAgentMarkedSource,
 } from "../mcp/agentSource";
-import { backendManagedBy, boxMcpServerUrl } from "../mcp/defaults";
+import {
+  backendManagedBy,
+  boxMcpServerUrl,
+  isPrimaryPracticePantherConnector,
+} from "../mcp/defaults";
 import type { ConnectorRow, Db } from "../mcp/types";
 import {
   agentPracticePantherMcpUrl,
@@ -30,14 +38,11 @@ export type ResolvedConnector =
   | { ok: false; detail: ConnectorResolveFailure };
 
 const MARKED_CONNECTOR_NAMES: Record<DocketAgentMarkedSource, string> = {
-  practicepanther: "PracticePanther (Docket Agent)",
   quo: "Quo (Docket Agent)",
 };
 
-function allowedMarkedUrl(source: DocketAgentMarkedSource): string | null {
-  return source === "practicepanther"
-    ? agentPracticePantherMcpUrl()
-    : agentQuoMcpUrl();
+function allowedMarkedUrl(_source: DocketAgentMarkedSource): string | null {
+  return agentQuoMcpUrl();
 }
 
 /** The user's rows that carry the mark for this source (normally 0 or 1). */
@@ -89,6 +94,54 @@ async function resolveMarkedConnector(
   return { ok: true, connector: row };
 }
 
+/**
+ * PracticePanther uses the row Docket keeps for this user, and only while
+ * that row is the per-user connector: the one each user signs in to as
+ * himself (auth type "oauth", at the per-user server Docket is configured
+ * with). A user who connected PracticePanther in Docket needs nothing more.
+ *
+ * Never the old shared connector (one identity for the whole firm, auth
+ * type "none"): with Docket still on it the source is off, and a row that
+ * points at it is not looked at.
+ */
+async function resolvePracticePantherConnector(
+  userId: string,
+  db: Db,
+): Promise<ResolvedConnector> {
+  const allowedUrl = agentPracticePantherMcpUrl();
+  if (!allowedUrl) return { ok: false, detail: "source_disabled" };
+
+  const { data, error } = await db
+    .from("user_mcp_connectors")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("server_url", allowedUrl)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error("Connector lookup failed.");
+  // Check again in code. Never trust the query alone for ownership.
+  const row = ((data ?? []) as ConnectorRow[]).find(
+    (candidate) =>
+      candidate.user_id === userId &&
+      candidate.server_url === allowedUrl &&
+      !hasDocketAgentMark(candidate.tool_policy),
+  );
+  if (!row) return { ok: false, detail: "no_connector" };
+  if (
+    isLegacySharedPracticePantherUrl(row.server_url) ||
+    backendManagedBy(row) !== "practicepanther"
+  ) {
+    return { ok: false, detail: "wrong_server" };
+  }
+  if (row.auth_type !== "oauth") {
+    return { ok: false, detail: "wrong_auth_type" };
+  }
+  // Docket's own test for "this is the per-user connector, not a retired one".
+  if (!isPrimaryPracticePantherConnector(row)) {
+    return { ok: false, detail: "wrong_server" };
+  }
+  return { ok: true, connector: row };
+}
+
 /** Box uses the row Docket chat already manages for this user. */
 async function resolveBoxConnector(
   userId: string,
@@ -109,7 +162,7 @@ async function resolveBoxConnector(
       candidate.user_id === userId &&
       candidate.server_url === allowedUrl &&
       backendManagedBy(candidate) === "box" &&
-      docketAgentSourceOf(candidate.tool_policy) === null,
+      !hasDocketAgentMark(candidate.tool_policy),
   );
   if (!row) return { ok: false, detail: "no_connector" };
   if (row.auth_type !== "oauth") {
@@ -124,20 +177,23 @@ export async function resolveAgentConnector(
   db: Db,
 ): Promise<ResolvedConnector> {
   if (source === "box") return resolveBoxConnector(userId, db);
-  if (source === "practicepanther" || source === "quo") {
-    return resolveMarkedConnector(userId, source, db);
+  if (source === "practicepanther") {
+    return resolvePracticePantherConnector(userId, db);
   }
+  if (source === "quo") return resolveMarkedConnector(userId, source, db);
   return { ok: false, detail: "source_disabled" };
 }
 
 export type ProvisionedConnector =
+  // PracticePanther and Box: Docket's own rows. Provisioning makes nothing.
+  | "managed" // the user's row exists
+  | "missing" // the user has no such row yet (he has not opened Docket since)
+  | "disabled" // the source is off on this backend
+  // Quo: a row of its own.
   | "created" // a new marked row was made
   | "unchanged" // the marked row was already right
   | "repointed" // the marked row pointed elsewhere; it now needs a new sign-in
-  | "not_configured" // the source is off on this backend
-  | "managed" // Box: the user's managed Box row exists
-  | "missing" // Box: the user has no managed Box row yet
-  | "disabled"; // Box: Box is off on this backend
+  | "not_configured"; // Quo is off on this backend
 
 async function provisionMarkedConnector(
   userId: string,
@@ -199,22 +255,22 @@ async function provisionMarkedConnector(
 }
 
 /**
- * Removes the stored sign-in (and the tool list read with it) from one of
- * the user's own Docket Agent connector rows. The row stays, so he can
- * click Connect again. This is how a user takes a source away from Docket
- * Agent, and how a sign-in made with the wrong account is cleared.
+ * Removes the caller's own PracticePanther sign-in from Docket. The row and
+ * its tool list stay, so he can connect again. This is how a sign-in made
+ * with the wrong PracticePanther account is cleared, and how a user takes
+ * PracticePanther away from Docket (Docket chat and Docket Agent alike:
+ * they use the same sign-in).
  *
- * Only a row that carries the Docket Agent mark, and only the caller's
- * own. Box is not such a row: it is the one Docket chat uses.
+ * Only the per-user PracticePanther connector, and only the caller's own
+ * row. `withSignInLock` keeps a refresh that is under way from writing the
+ * sign-in back after it was removed.
  */
-export async function disconnectAgentConnector(
+export async function disconnectPracticePantherSignIn(
   userId: string,
   connectorId: string,
   db: Db,
-): Promise<
-  | { ok: true; source: DocketAgentMarkedSource }
-  | { ok: false; reason: "not_found" | "not_agent_connector" }
-> {
+  withSignInLock: <T>(connectorId: string, run: () => Promise<T>) => Promise<T>,
+): Promise<{ ok: true } | { ok: false; reason: "not_found" | "not_practicepanther" }> {
   const { data, error } = await db
     .from("user_mcp_connectors")
     .select("*")
@@ -224,37 +280,38 @@ export async function disconnectAgentConnector(
   if (error) throw new Error("Connector lookup failed.");
   const row = data as ConnectorRow | null;
   if (!row || row.user_id !== userId) return { ok: false, reason: "not_found" };
-  const source = docketAgentSourceOf(row.tool_policy);
-  if (!source || backendManagedBy(row) !== null) {
-    return { ok: false, reason: "not_agent_connector" };
+  if (
+    !isPrimaryPracticePantherConnector(row) ||
+    row.auth_type !== "oauth" ||
+    hasDocketAgentMark(row.tool_policy)
+  ) {
+    return { ok: false, reason: "not_practicepanther" };
   }
-  const { error: tokenError } = await db
-    .from("user_mcp_oauth_tokens")
-    .delete()
-    .eq("connector_id", row.id);
-  if (tokenError) throw new Error("Sign-in could not be removed.");
-  const { error: toolError } = await db
-    .from("user_mcp_connector_tools")
-    .delete()
-    .eq("connector_id", row.id);
-  if (toolError) throw new Error("Tool list could not be cleared.");
-  return { ok: true, source };
+  await withSignInLock(row.id, async () => {
+    const { error: tokenError } = await db
+      .from("user_mcp_oauth_tokens")
+      .delete()
+      .eq("connector_id", row.id);
+    if (tokenError) throw new Error("Sign-in could not be removed.");
+  });
+  return { ok: true };
 }
 
-async function provisionBoxConnector(
-  userId: string,
-  db: Db,
-): Promise<ProvisionedConnector> {
-  if (!boxMcpServerUrl()) return "disabled";
-  const resolved = await resolveBoxConnector(userId, db);
+/** Docket's own row for the source: is it there. Nothing is created. */
+function reportManagedConnector(
+  resolved: ResolvedConnector,
+): ProvisionedConnector {
   if (resolved.ok) return "managed";
+  if (resolved.detail === "source_disabled") return "disabled";
   return resolved.detail === "no_connector" ? "missing" : "managed";
 }
 
 /**
- * Makes sure the user has the connector rows the agent sources need. It
- * connects nothing, never edits a row without the mark, and never changes
- * `enabled` on any row. Calling it again changes nothing.
+ * Says which connector rows the agent sources will use, and makes the one
+ * row that is the gateway's own (Quo, when Quo is configured). It connects
+ * nothing, creates nothing for PracticePanther or Box, never edits a row
+ * without the mark, and never changes `enabled` on any row. Calling it
+ * again changes nothing.
  */
 export async function provisionAgentConnectors(
   userId: string,
@@ -262,13 +319,10 @@ export async function provisionAgentConnectors(
   validateServerUrl: (url: string) => Promise<string>,
 ): Promise<Record<AgentSource, ProvisionedConnector>> {
   return {
-    practicepanther: await provisionMarkedConnector(
-      userId,
-      "practicepanther",
-      db,
-      validateServerUrl,
+    practicepanther: reportManagedConnector(
+      await resolvePracticePantherConnector(userId, db),
     ),
-    box: await provisionBoxConnector(userId, db),
+    box: reportManagedConnector(await resolveBoxConnector(userId, db)),
     quo: await provisionMarkedConnector(userId, "quo", db, validateServerUrl),
   };
 }

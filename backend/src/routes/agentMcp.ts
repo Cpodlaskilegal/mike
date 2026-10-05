@@ -2,7 +2,9 @@
 //
 // Server-to-server only. A Docket Agent session presents a per-user agent
 // token and reaches that one user's own PracticePanther, Box and Quo
-// connectors through Docket. Docket keeps the sign-ins.
+// connectors through Docket. Docket keeps the sign-ins. PracticePanther and
+// Box are the connections the user made in Docket itself, the ones Docket
+// chat uses; there is nothing separate to connect for Docket Agent.
 //
 // - POST /agent-mcp/{source}       MCP (tools only), agent token
 // - /agent-mcp/box/files...        Box file bytes, Box file token
@@ -535,7 +537,10 @@ function createOpsRouter(deps: AgentGatewayDeps): Router {
   });
 
   // POST /agent-mcp/ops/provision {"email": "..."}
-  // Makes the connector rows. Connects nothing: the user signs in himself.
+  // Says which connector rows the user's sources will use. PracticePanther
+  // and Box are Docket's own rows: nothing is made for them. Only Quo, when
+  // it is configured, gets a row here. Connects nothing: the user signs in
+  // himself, in Docket.
   ops.post("/provision", async (req, res) => {
     const user = await userFor(req.body?.email, res);
     if (!user) return;
