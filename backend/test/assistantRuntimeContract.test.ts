@@ -58,6 +58,7 @@ function writeRuntimeFixture(
 ) {
   const openAiMainModels = options.openAiMainModels ?? [
     "gpt-6-astra",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",
@@ -1065,6 +1066,7 @@ test("assistant-runtime-check rejects a matching backend and picker that omit GP
     writeRuntimeFixture(root, {
       openAiMainModels: [
         "gpt-6-astra",
+        "gpt-6.1-sol",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -1076,6 +1078,31 @@ test("assistant-runtime-check rejects a matching backend and picker that omit GP
     assert.equal(result.status, 1, output);
     assert.match(output, /OpenAI main model literals are exact: FAIL/);
     assert.match(output, /missing: gpt-6-luna, gpt-6-sol/);
+    assert.match(output, /main model picker matches backend canonical models: PASS/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant-runtime-check rejects a matching backend and picker that omit GPT-6.1 Sol", () => {
+  const root = mkdtempSync(join(tmpdir(), "docket-runtime-contract-"));
+  try {
+    writeRuntimeFixture(root, {
+      openAiMainModels: [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+      ],
+    });
+    const result = runHarness(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 1, output);
+    assert.match(output, /OpenAI main model literals are exact: FAIL/);
+    assert.match(output, /missing: gpt-6\.1-sol/);
     assert.match(output, /main model picker matches backend canonical models: PASS/);
   } finally {
     rmSync(root, { recursive: true, force: true });

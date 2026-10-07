@@ -56,9 +56,10 @@ test("prices every GPT-5.6 family model at its exact per-million rate", async ()
   }
 });
 
-test("prices GPT-6 Sol and Luna at their short-context rates", async () => {
+test("prices GPT-6.1 Sol, GPT-6 Sol, and Luna at their short-context rates", async () => {
   const spend = await loadSpend();
   const cases = [
+    ["gpt-6.1-sol", 10_400_000_000n],
     ["gpt-6-sol", 10_400_000_000n],
     ["gpt-6-luna", 520_000_000n],
   ] as const;
@@ -75,9 +76,10 @@ test("prices GPT-6 Sol and Luna at their short-context rates", async () => {
   }
 });
 
-test("switches GPT-6 Sol and Luna to full-request long-context rates above 272K input", async () => {
+test("switches GPT-6.1 Sol, GPT-6 Sol, and Luna to full-request long-context rates above 272K input", async () => {
   const spend = await loadSpend();
   const cases = [
+    ["gpt-6.1-sol", 544_000_000n, 1_088_004_000n],
     ["gpt-6-sol", 544_000_000n, 1_088_004_000n],
     ["gpt-6-luna", 27_200_000n, 54_400_200n],
   ] as const;
@@ -121,6 +123,29 @@ test("prices GPT-6 Sol and Luna cached reads, writes, and output at long-context
     assert.equal(result.cachedInputCostNanos, cachedCost, model);
     assert.equal(result.outputCostNanos, outputCost, model);
     assert.equal(result.totalCostNanos, inputCost + cachedCost + outputCost, model);
+  }
+});
+
+test("prices GPT-6.1 Sol cached input and output at the total-input long-context boundary", async () => {
+  const spend = await loadSpend();
+  const cases = [
+    [272_000, 504_000_000n, 2_000_000n, 100_000_000n],
+    [272_001, 1_008_004_000n, 4_000_000n, 150_000_000n],
+  ] as const;
+
+  for (const [inputTokens, inputCost, cachedCost, outputCost] of cases) {
+    const result = spend.calculateLlmCostNanos({
+      provider: "openai",
+      model: "gpt-6.1-sol",
+      inputTokens,
+      cachedInputTokens: 20_000,
+      outputTokens: 10_000,
+    });
+    assert.equal(result.pricingStatus, "priced");
+    assert.equal(result.inputCostNanos, inputCost);
+    assert.equal(result.cachedInputCostNanos, cachedCost);
+    assert.equal(result.outputCostNanos, outputCost);
+    assert.equal(result.totalCostNanos, inputCost + cachedCost + outputCost);
   }
 });
 

@@ -12,6 +12,7 @@ import {
     DEFAULT_TABULAR_MODEL,
     DEFAULT_TITLE_MODEL,
     GPT_5_6_REASONING_EFFORTS,
+    GPT_6_1_SOL_REASONING_EFFORTS,
     OPENAI_MAIN_MODELS,
     isTabularModelId,
     parseMainModelRequest,
@@ -41,6 +42,7 @@ function sourceSection(
 test("defines the canonical OpenAI main-model contract", () => {
     assert.deepEqual(OPENAI_MAIN_MODELS, [
         "gpt-6-astra",
+        "gpt-6.1-sol",
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-5.6-sol",
@@ -108,6 +110,53 @@ test("routes Astra directly with its supported efforts and Pro mode", () => {
         "low",
     );
     assert.equal(isTabularModelId("gpt-6-astra"), false);
+});
+
+test("routes GPT-6.1 Sol directly with Medium defaults and supported efforts in both modes", () => {
+    assert.deepEqual(resolveMainModelRequest({ model: "gpt-6.1-sol" }), {
+        requestedModel: "gpt-6.1-sol",
+        selectionModel: "gpt-6.1-sol",
+        providerModel: "gpt-6.1-sol",
+        provider: "openai",
+        reasoningEffort: "medium",
+        reasoningMode: "standard",
+        status: "direct",
+    });
+    for (const reasoning_mode of ["standard", "pro"] as const) {
+        for (const reasoning_effort of GPT_6_1_SOL_REASONING_EFFORTS) {
+            const result = parseMainModelRequest({
+                model: "gpt-6.1-sol", reasoning_effort, reasoning_mode,
+            });
+            assert.equal(result.ok, true, `${reasoning_mode}/${reasoning_effort}`);
+            if (!result.ok) continue;
+            assert.equal(result.value.selectionModel, "gpt-6.1-sol");
+            assert.equal(result.value.providerModel, "gpt-6.1-sol");
+            assert.equal(result.value.provider, "openai");
+            assert.equal(result.value.status, "direct");
+            assert.equal(result.value.reasoningMode, reasoning_mode);
+            assert.equal(result.value.reasoningEffort,
+                reasoning_mode === "pro" && reasoning_effort === "low"
+                    ? "medium"
+                    : reasoning_effort,
+            );
+        }
+    }
+    for (const reasoning_effort of ["none", "minimal", "ultra"]) {
+        const result = parseMainModelRequest({
+            model: "gpt-6.1-sol",
+            reasoning_effort,
+        });
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.match(result.detail, /low, medium, high, xhigh, max/);
+    }
+    assert.equal(
+        resolveMainModelRequest({
+            model: "gpt-6.1-sol",
+            reasoning_effort: "none",
+        }).reasoningEffort,
+        "low",
+    );
+    assert.equal(isTabularModelId("gpt-6.1-sol"), false);
 });
 
 test("routes GPT-6 Sol and Luna directly with Medium defaults and supported efforts", () => {

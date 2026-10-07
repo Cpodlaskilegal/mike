@@ -21,6 +21,7 @@ export const GEMINI_MAIN_MODELS = [
 ] as const;
 export const OPENAI_MAIN_MODELS = [
     "gpt-6-astra",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",
@@ -52,6 +53,15 @@ export type Gpt56ReasoningEffort = AssistantReasoningEffort;
 
 // https://developers.openai.com/api/docs/models/gpt-6-astra
 export const ASTRA_REASONING_EFFORTS = [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+] as const;
+
+// https://developers.openai.com/api/docs/models/gpt-6.1-sol
+export const GPT_6_1_SOL_REASONING_EFFORTS = [
     "low",
     "medium",
     "high",
@@ -133,6 +143,14 @@ const OPENAI_MAIN_MODEL_REGISTRY = {
         supportedReasoningEfforts: ASTRA_REASONING_EFFORTS,
         supportedReasoningModes: ["standard", "pro"],
         defaultReasoningEffort: "max",
+        streamingByMode: { standard: true, pro: false },
+    },
+    "gpt-6.1-sol": {
+        selectionModel: "gpt-6.1-sol",
+        providerModel: "gpt-6.1-sol",
+        supportedReasoningEfforts: GPT_6_1_SOL_REASONING_EFFORTS,
+        supportedReasoningModes: ["standard", "pro"],
+        defaultReasoningEffort: "medium",
         streamingByMode: { standard: true, pro: false },
     },
     "gpt-6-sol": {
@@ -395,7 +413,10 @@ export function resolveMainModelRequest(
 
     const reasoningMode = request.reasoning_mode ?? defaultMode;
     let reasoningEffort = request.reasoning_effort ?? defaultEffort;
-    if (selectionModel === "gpt-6-astra" && reasoningEffort === "none") {
+    if (
+        (selectionModel === "gpt-6-astra" || selectionModel === "gpt-6.1-sol") &&
+        reasoningEffort === "none"
+    ) {
         reasoningEffort = "low";
     }
     if (

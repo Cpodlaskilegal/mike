@@ -5,8 +5,10 @@ export const GPT56_MODEL_IDS = [
 ] as const;
 
 export const ASTRA_MODEL_ID = "gpt-6-astra";
+export const SOL61_MODEL_ID = "gpt-6.1-sol";
 
 export const GPT6_MODEL_IDS = [
+    SOL61_MODEL_ID,
     "gpt-6-sol",
     "gpt-6-luna",
 ] as const;
@@ -210,7 +212,9 @@ export function normalizeOpenAiReasoningEffort(
     model: unknown,
     effort: AssistantReasoningEffort,
 ): AssistantReasoningEffort {
-    return model === ASTRA_MODEL_ID && effort === "none" ? "low" : effort;
+    return (model === ASTRA_MODEL_ID || model === SOL61_MODEL_ID) && effort === "none"
+        ? "low"
+        : effort;
 }
 
 export function isClaudeOpus5Model(
@@ -235,7 +239,7 @@ export function assistantReasoningEffortsFor(
     if (!isOpenAiReasoningModel(model)) return null;
     return mode === "pro"
         ? PRO_REASONING_EFFORTS
-        : model === ASTRA_MODEL_ID
+        : model === ASTRA_MODEL_ID || model === SOL61_MODEL_ID
           ? ASTRA_REASONING_EFFORTS
           : GPT56_REASONING_EFFORTS;
 }
